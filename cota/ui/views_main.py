@@ -1,0 +1,618 @@
+"""
+Vista Principal del Portafolio y Operaciones del Estudio:
+Portafolio de Proyectos, Directorio de Contratistas, Finanzas Globales,
+Control Operativo Diario, Calendario Técnico y Archivo Histórico.
+"""
+
+import calendar
+import datetime
+import altair as alt
+import pandas as pd
+import streamlit as st
+
+from cota.config import (
+    STATUS_PROYECTOS,
+    STATUS_TASKS,
+    TIPOS_PROYECTO,
+)
+from cota.db import (
+    COLS_PROY,
+    clear_base_dfs,
+    get_proyectos_activos,
+    get_proyectos_archivados,
+    guardar_tabla,
+    purgar_proyecto_cascada,
+    renombrar_proyecto,
+    sembrar_fases_default,
+)
+from cota.ui.components import render_metric_card
+from cota.utils import (
+    calcular_rating,
+    format_currency,
+    format_date,
+    get_now,
+    parse_date,
+    safe_float,
+    safe_str,
+    to_bool,
+)
+
+
+def render_main_view(conn, sheet_url, nube_ok, lista_socios):
+    """Renderiza la vista principal cuando no hay un proyecto abierto individualmente."""
+    now_dt = get_now()
+    fecha_hoy = now_dt.date()
+    df_hoy = pd.DataFrame({'Hoy': [pd.to_datetime(fecha_hoy)], 'Etiqueta': ['DIA ACTUAL']})
+
+    # Asegurar columnas requeridas en proyectos
+    for col in ['Nombre', 'Encargado', 'Ubicación', 'Estado', 'Inicio', 'Fin', 'Color', 'Cliente', 'Presupuesto', 'Archivado', 'Division', 'Tipo_Proyecto']:
+        if col not in st.session_state.proyectos.columns:
+            st.session_state.proyectos[col] = "General" if col == 'Division' else ""
+
+    st.session_state.proyectos['Division'] = st.session_state.proyectos['Division'].fillna("General").replace("", "General")
+
+    exist_divs = sorted(list(set([d for d in st.session_state.proyectos['Division'].dropna().unique().tolist() if d])))
+    if not exist_divs:
+        exist_divs = ["General"]
+    elif "General" not in exist_divs:
+        exist_divs.insert(0, "General")
+
+    exist_ubis = sorted(list(set([u for u in st.session_state.proyectos['Ubicación'].dropna().unique().tolist() if u])))
+    if not exist_ubis:
+        exist_ubis = ["Lima", "Miraflores", "San Isidro", "Barranco", "Surco"]
+
+    # Tabs principales
+    t_proy, t_con, t_fin, t_ope, t_cal, t_arc = st.tabs([
+        "[ PROYECTOS & DISEÑO ]",
+        "[ BASE CONTRATISTAS ]",
+        "[ FINANZAS DEL ESTUDIO ]",
+        "[ CONTROL OPERATIVO ]",
+        "[ CALENDARIO ]",
+        "[ ARCHIVO ]"
+    ])
+
+    # ----------------------------------------------------
+    # TAB 1: PORTAFOLIO DE PROYECTOS
+    # ----------------------------------------------------
+    with t_proy:
+        _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy)
+
+    # ----------------------------------------------------
+    # TAB 2: BASE DE CONTRATISTAS
+    # ----------------------------------------------------
+    with t_con:
+        _render_tab_contratistas(fecha_hoy, df_hoy)
+
+    # ----------------------------------------------------
+    # TAB 3: FINANZAS DEL ESTUDIO
+    # ----------------------------------------------------
+    with t_fin:
+        _render_tab_finanzas_estudio(fecha_hoy)
+
+    # ----------------------------------------------------
+    # TAB 4: CONTROL OPERATIVO DIARIO
+    # ----------------------------------------------------
+    with t_ope:
+        _render_tab_operativo_diario(lista_socios, fecha_hoy, conn, sheet_url, nube_ok)
+
+    # ----------------------------------------------------
+    # TAB 5: CALENDARIO TÉCNICO
+    # ----------------------------------------------------
+    with t_cal:
+        _render_tab_calendario(fecha_hoy)
+
+    # ----------------------------------------------------
+    # TAB 6: ARCHIVO HISTÓRICO
+    # ----------------------------------------------------
+    with t_arc:
+        _render_tab_archivo()
+
+
+# ====================================================
+# SUB-RENDERERS PARA CADA SECCIÓN PRINCIPAL
+# ====================================================
+
+def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
+    """Portafolio de proyectos activos organizados por carpetas y estados."""
+    col_new, _ = st.columns([3, 7])
+
+    with col_new:
+        with st.popover("➕ NUEVO PROYECTO DE DISEÑO", use_container_width=True):
+            with st.form("form_nuevo_proy", clear_on_submit=True):
+                pn = st.text_input("Nombre / Código del Proyecto (Único)", placeholder="ej. Casa Las Casuarinas").strip()
+                sel_div = st.selectbox("Carpeta / Cliente", exist_divs + ["+ Crear Nueva Carpeta"])
+                p_div = st.text_input("Nombre de Nueva Carpeta") if sel_div == "+ Crear Nueva Carpeta" else sel_div
+                sel_ubi = st.selectbox("Ubicación", exist_ubis + ["+ Agregar Ubicación"])
+                p_ubi = st.text_input("Nueva Ubicación") if sel_ubi == "+ Agregar Ubicación" else sel_ubi
+                pe = st.selectbox("Líder de Proyecto", lista_socios)
+                ps = st.selectbox("Estado Inicial", STATUS_PROYECTOS)
+                p_tipo = st.selectbox("Tipo de Proyecto", TIPOS_PROYECTO)
+                p_cliente = st.text_input("Nombre del Cliente", placeholder="ej. Familia Gómez")
+                p_color = st.color_picker("Color Identificador", value="#00E5FF")
+
+                st.markdown("##### Presupuestos Iniciales (Opcional)")
+                col_m1, col_m2 = st.columns(2)
+                p_presupuesto = col_m1.number_input("Ppto Total Venta (S/)", value=0.0)
+                p_hon = col_m2.number_input("Honorarios Diseño (S/)", value=0.0)
+                col_m3, col_m4 = st.columns(2)
+                p_ffe = col_m3.number_input("Ppto FF&E / Muebles (S/)", value=0.0)
+                p_gg = col_m4.number_input("Ppto Caja Chica (S/)", value=0.0)
+
+                if st.form_submit_button("CREAR PROYECTO", type="primary", use_container_width=True):
+                    if not pn:
+                        st.error("El nombre del proyecto es obligatorio.")
+                    elif pn in st.session_state.proyectos['Nombre'].tolist():
+                        st.error(f"Ya existe un proyecto con el nombre '{pn}'. Elige un nombre único.")
+                    else:
+                        n_p = pd.DataFrame([{
+                            'Nombre': pn,
+                            'Encargado': pe,
+                            'Ubicación': p_ubi,
+                            'Estado': ps,
+                            'Inicio': fecha_hoy.strftime('%Y-%m-%d'),
+                            'Fin': (fecha_hoy + datetime.timedelta(days=90)).strftime('%Y-%m-%d'),
+                            'Color': p_color,
+                            'Presupuesto': p_presupuesto,
+                            'Utilidades': p_presupuesto * 0.20,
+                            'GG_Presupuesto': p_gg,
+                            'Archivado': False,
+                            'Metodologia': 'Diseño Interior',
+                            'Division': p_div,
+                            'Tipo_Proyecto': p_tipo,
+                            'Num_Pisos': 0,
+                            'Num_Sotanos': 0,
+                            'Presupuesto_FFE': p_ffe,
+                            'Honorarios_Diseno': p_hon,
+                            'Cliente': p_cliente
+                        }])
+                        st.session_state.proyectos = pd.concat([st.session_state.proyectos, n_p[COLS_PROY]], ignore_index=True)
+
+                        # Sembrar las 8 fases estándar
+                        if 'fases' not in st.session_state:
+                            st.session_state.fases = sembrar_fases_default(pn, fecha_hoy)
+                        else:
+                            nuevas_fases = sembrar_fases_default(pn, fecha_hoy)
+                            st.session_state.fases = pd.concat([st.session_state.fases, nuevas_fases], ignore_index=True)
+
+                        clear_base_dfs()
+                        st.success(f"Proyecto '{pn}' creado exitosamente con sus fases de diseño.")
+                        st.rerun()
+
+    st.divider()
+
+    # Buscador de proyectos
+    search_q = st.text_input("🔍 Buscar proyecto o cliente:", placeholder="Filtrar por nombre, cliente o ubicación...")
+
+    p_vis = get_proyectos_activos(st.session_state.proyectos)
+
+    if search_q:
+        sq = search_q.lower()
+        p_vis = p_vis[
+            p_vis['Nombre'].astype(str).str.lower().str.contains(sq, na=False) |
+            p_vis['Cliente'].astype(str).str.lower().str.contains(sq, na=False) |
+            p_vis['Ubicación'].astype(str).str.lower().str.contains(sq, na=False)
+        ]
+
+    divisiones = sorted(list(set([d for d in p_vis['Division'].dropna().unique().tolist() if d])))
+    if not divisiones:
+        divisiones = ["General"]
+
+    tabs_div = st.tabs([f"[ CARPETA: {d.upper()} ]" for d in divisiones])
+
+    for t_div, d_name in zip(tabs_div, divisiones):
+        with t_div:
+            p_div = p_vis[p_vis['Division'] == d_name]
+            if p_div.empty:
+                st.info(f"No hay proyectos activos en la carpeta '{d_name}'.")
+                continue
+
+            for est in STATUS_PROYECTOS:
+                est_clean = est.split(" ", 1)[-1] if " " in est else est
+                p_est = p_div[p_div['Estado'].astype(str).str.contains(est_clean, case=False, na=False)]
+
+                if p_est.empty:
+                    continue
+
+                show_state = st.toggle(f"{est.upper()} ({len(p_est)})", value=True, key=f"tgl_main_{d_name}_{est}")
+                if show_state:
+                    col_st = "#eab308" if "Planificación" in est else ("#10b981" if "Completado" in est else "#00E5FF")
+                    st.markdown(f"""
+                        <h4 class='cota-status-header' style='color: {col_st};'>
+                            <span class='cota-status-header-bar' style='background-color: {col_st};'></span>
+                            ESTADO: {est.upper()}
+                        </h4>
+                    """, unsafe_allow_html=True)
+
+                    for idx_p, proy in p_est.iterrows():
+                        p_nom = proy['Nombre']
+
+                        # Calcular avance
+                        pct_avance = 0
+                        if 'fases' in st.session_state and not st.session_state.fases.empty:
+                            f_p = st.session_state.fases[st.session_state.fases['Proyecto'] == p_nom]
+                            if not f_p.empty:
+                                ok_cnt = len(f_p[f_p['Aprobado_Cliente'].apply(to_bool) | (f_p['Estado'].astype(str).str.contains('Aprobada', case=False))])
+                                pct_avance = int(ok_cnt / len(f_p) * 100)
+
+                        cli_str = f" | CLIENTE: {proy.get('Cliente', '')}" if proy.get('Cliente') else ""
+                        tit_expander = f"> {p_nom.upper()}{cli_str} | LÍDER: {proy.get('Encargado', 'N/A')} | AVANCE FASES: {pct_avance}%"
+
+                        with st.expander(tit_expander, expanded=False):
+                            st.markdown(f"<div style='border-left: 3px solid {col_st}; background: {col_st}06; border-radius: 0 4px 4px 0; padding: 10px 14px; margin-bottom: 12px;'>", unsafe_allow_html=True)
+                            c_btn1, c_btn2, c_btn3, c_btn4, _ = st.columns([2.5, 2, 2, 2.5, 3])
+
+                            with c_btn1:
+                                if st.button("🚀 ABRIR PROYECTO", key=f"open_proy_{idx_p}", type="primary", use_container_width=True):
+                                    st.session_state.proy_activo = p_nom
+                                    st.session_state.vista_actual = 'proyecto'
+                                    clear_base_dfs()
+                                    st.rerun()
+
+                            with c_btn2:
+                                with st.popover("⚙️ EDITAR", use_container_width=True):
+                                    with st.form(f"edit_params_{idx_p}"):
+                                        n_nom = st.text_input("Nombre", value=p_nom)
+                                        n_cli = st.text_input("Cliente", value=safe_str(proy.get('Cliente', '')))
+                                        n_div = st.selectbox("Carpeta", exist_divs, index=exist_divs.index(proy.get('Division', 'General')) if proy.get('Division', 'General') in exist_divs else 0)
+                                        n_ubi = st.selectbox("Ubicación", exist_ubis, index=exist_ubis.index(proy.get('Ubicación', 'Lima')) if proy.get('Ubicación', 'Lima') in exist_ubis else 0)
+                                        n_est = st.selectbox("Estado", STATUS_PROYECTOS, index=STATUS_PROYECTOS.index(proy.get('Estado')) if proy.get('Estado') in STATUS_PROYECTOS else 0)
+                                        n_tipo = st.selectbox("Tipo", TIPOS_PROYECTO, index=TIPOS_PROYECTO.index(proy.get('Tipo_Proyecto')) if proy.get('Tipo_Proyecto') in TIPOS_PROYECTO else 0)
+                                        col_d1, col_d2 = st.columns(2)
+                                        d_i = col_d1.date_input("Inicio", value=parse_date(proy.get('Inicio')) or fecha_hoy)
+                                        d_f = col_d2.date_input("Fin", value=parse_date(proy.get('Fin')) or fecha_hoy)
+                                        v_p = st.number_input("Ppto Total (S/)", value=safe_float(proy.get('Presupuesto', 0)))
+                                        v_hon = st.number_input("Honorarios Diseño (S/)", value=safe_float(proy.get('Honorarios_Diseno', 0)))
+                                        v_ffe = st.number_input("Ppto FF&E (S/)", value=safe_float(proy.get('Presupuesto_FFE', 0)))
+                                        v_gg = st.number_input("Ppto Caja Chica (S/)", value=safe_float(proy.get('GG_Presupuesto', 0)))
+
+                                        if st.form_submit_button("ACTUALIZAR DATOS"):
+                                            # Si cambia de nombre, cascada limpia
+                                            if n_nom != p_nom:
+                                                renombrar_proyecto(p_nom, n_nom)
+
+                                            st.session_state.proyectos.at[idx_p, 'Nombre'] = n_nom
+                                            st.session_state.proyectos.at[idx_p, 'Cliente'] = n_cli
+                                            st.session_state.proyectos.at[idx_p, 'Division'] = n_div
+                                            st.session_state.proyectos.at[idx_p, 'Ubicación'] = n_ubi
+                                            st.session_state.proyectos.at[idx_p, 'Estado'] = n_est
+                                            st.session_state.proyectos.at[idx_p, 'Tipo_Proyecto'] = n_tipo
+                                            st.session_state.proyectos.at[idx_p, 'Inicio'] = d_i.strftime('%Y-%m-%d')
+                                            st.session_state.proyectos.at[idx_p, 'Fin'] = d_f.strftime('%Y-%m-%d')
+                                            st.session_state.proyectos.at[idx_p, 'Presupuesto'] = v_p
+                                            st.session_state.proyectos.at[idx_p, 'Honorarios_Diseno'] = v_hon
+                                            st.session_state.proyectos.at[idx_p, 'Presupuesto_FFE'] = v_ffe
+                                            st.session_state.proyectos.at[idx_p, 'GG_Presupuesto'] = v_gg
+                                            clear_base_dfs()
+                                            st.success("Datos actualizados correctamente.")
+                                            st.rerun()
+
+                            with c_btn3:
+                                if st.button("📦 ARCHIVAR", key=f"arch_{idx_p}", use_container_width=True):
+                                    st.session_state.proyectos.at[idx_p, 'Archivado'] = True
+                                    clear_base_dfs()
+                                    st.rerun()
+
+                            with c_btn4:
+                                with st.popover("📝 NOTAS", use_container_width=True):
+                                    with st.form(f"f_notes_m_{idx_p}"):
+                                        c_notas = st.text_area("Notas / Brief", value=safe_str(proy.get('Notas', '')), height=140)
+                                        if st.form_submit_button("GUARDAR"):
+                                            st.session_state.proyectos.at[idx_p, 'Notas'] = c_notas
+                                            st.success("Notas guardadas.")
+                                            st.rerun()
+
+                            st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_tab_contratistas(fecha_hoy, df_hoy):
+    """Directorio de contratistas y especialistas con rating y disponibilidad en tiempo real."""
+    st.markdown("### 🛠️ BASE DE DATOS DE CONTRATISTAS Y ESPECIALISTAS")
+
+    df_tasks_act = st.session_state.tasks.copy()
+    df_tasks_act['Inicio_DT'] = df_tasks_act['Inicio'].apply(lambda x: pd.to_datetime(parse_date(x)))
+    df_tasks_act['Fin_DT'] = df_tasks_act['Fin'].apply(lambda x: pd.to_datetime(parse_date(x)))
+    df_tasks_act = df_tasks_act.dropna(subset=['Inicio_DT', 'Fin_DT'])
+
+    estado_din = {}
+    carga_din = {}
+
+    for _, m_row in st.session_state.maestro.iterrows():
+        n_c = m_row['ID_Contratista']
+        t_c = df_tasks_act[df_tasks_act['Contratista'] == n_c]
+        en_obra = t_c[(t_c['Inicio_DT'].dt.date <= fecha_hoy) & (t_c['Fin_DT'].dt.date >= fecha_hoy)]
+        estado_din[n_c] = "En Ejecución" if not en_obra.empty else "Disponible"
+
+        t_7d = t_c[(t_c['Inicio_DT'].dt.date <= fecha_hoy + datetime.timedelta(days=7)) & (t_c['Fin_DT'].dt.date >= fecha_hoy)]
+        frentes = t_7d['Proyecto'].nunique()
+        carga_din[n_c] = "Libre" if frentes == 0 else ("Carga Óptima (1 Obra)" if frentes == 1 else f"Saturado ({frentes} Obras)")
+
+    df_m = st.session_state.maestro.copy()
+    df_m['Estatus'] = df_m['ID_Contratista'].map(estado_din).fillna("Disponible")
+    df_m['Carga_Trabajo'] = df_m['ID_Contratista'].map(carga_din).fillna("Libre")
+    df_m['Rating'] = [calcular_rating(n, st.session_state.df_historial, st.session_state.tasks, st.session_state.maestro) for n in df_m['ID_Contratista']]
+
+    st.dataframe(
+        df_m[['ID_Contratista', 'Especialidad', 'Ubicación_Base', 'Estatus', 'Carga_Trabajo', 'Rating', 'Notas']],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "ID_Contratista": st.column_config.TextColumn("Nombre / Empresa", width="medium"),
+            "Especialidad": st.column_config.TextColumn("Especialidad"),
+            "Ubicación_Base": st.column_config.TextColumn("Ubicación Base"),
+            "Estatus": st.column_config.TextColumn("Estatus Hoy"),
+            "Carga_Trabajo": st.column_config.TextColumn("Disponibilidad (7 Días)"),
+            "Rating": st.column_config.NumberColumn("Rating (1-5 ⭐)", format="%d ⭐"),
+            "Notas": st.column_config.TextColumn("Observaciones")
+        }
+    )
+
+    st.divider()
+
+    # Bitácora de incidencias y reportes
+    st.markdown("#### BITÁCORA TÉCNICA DE CONTRATISTAS")
+    if not df_m.empty:
+        c_sel = st.selectbox("Seleccionar Contratista:", df_m['ID_Contratista'].tolist(), key="sb_bitacora_m")
+        idx_c = st.session_state.maestro[st.session_state.maestro['ID_Contratista'] == c_sel].index[0]
+        notas_c = st.session_state.maestro.at[idx_c, 'Notas']
+
+        with st.container(border=True):
+            if notas_c and str(notas_c).strip():
+                html_n = str(notas_c).replace("[+]", "<span style='color:#10b981; font-weight:bold;'>[+]</span>").replace("[-]", "<span style='color:#ef4444; font-weight:bold;'>[-]</span>")
+                st.markdown(f"<div style='font-family:monospace; font-size:12px;'>{html_n}</div>", unsafe_allow_html=True)
+            else:
+                st.info("Sin reportes en la bitácora.")
+
+        n_rep = st.text_input(f"Añadir reporte sobre {c_sel}:", key="txt_rep_c")
+        col_r1, col_r2, _ = st.columns([2.5, 2.5, 5])
+
+        if col_r1.button("REPORTE POSITIVO (+)") and n_rep:
+            n_line = f"**[{fecha_hoy.strftime('%d/%m')}]** [+] {n_rep}"
+            st.session_state.maestro.at[idx_c, 'Notas'] = f"{notas_c}\n<br>{n_line}" if notas_c and str(notas_c).strip() else n_line
+            st.rerun()
+
+        if col_r2.button("REPORTE NEGATIVO (-)") and n_rep:
+            n_line = f"**[{fecha_hoy.strftime('%d/%m')}]** [-] {n_rep}"
+            st.session_state.maestro.at[idx_c, 'Notas'] = f"{notas_c}\n<br>{n_line}" if notas_c and str(notas_c).strip() else n_line
+            st.rerun()
+
+
+def _render_tab_finanzas_estudio(fecha_hoy):
+    """Consolidado de finanzas y caja a nivel de todo el estudio."""
+    st.markdown("### 📊 FINANZAS CONSOLIDADAS DEL ESTUDIO")
+
+    df_p_act = get_proyectos_activos(st.session_state.proyectos)
+    nombres_activos = df_p_act['Nombre'].tolist()
+
+    tot_ventas = sum(safe_float(v) for v in df_p_act['Presupuesto'])
+    tot_hon = sum(safe_float(h) for h in df_p_act.get('Honorarios_Diseno', []))
+
+    # Cobrado a clientes
+    df_cob = st.session_state.cobros if 'cobros' in st.session_state else pd.DataFrame()
+    tot_cobrado = pd.to_numeric(df_cob['Monto_Cobrado'], errors='coerce').sum() if not df_cob.empty and 'Monto_Cobrado' in df_cob.columns else 0.0
+
+    # Salidas a contratistas
+    df_pag = st.session_state.pagos if 'pagos' in st.session_state else pd.DataFrame(columns=['Proyecto', 'Monto'])
+    if not df_pag.empty and 'Proyecto' in df_pag.columns:
+        df_pag = df_pag[df_pag['Proyecto'].isin(nombres_activos)]
+    tot_pagado_maestros = pd.to_numeric(df_pag['Monto'], errors='coerce').sum() if not df_pag.empty and 'Monto' in df_pag.columns else 0.0
+
+    # Caja chica total gastada
+    df_gg = st.session_state.gg_log if 'gg_log' in st.session_state else pd.DataFrame(columns=['Proyecto', 'Monto'])
+    if not df_gg.empty and 'Proyecto' in df_gg.columns:
+        df_gg = df_gg[df_gg['Proyecto'].isin(nombres_activos)]
+    tot_caja_gastada = pd.to_numeric(df_gg['Monto'], errors='coerce').sum() if not df_gg.empty and 'Monto' in df_gg.columns else 0.0
+
+    f1, f2, f3, f4, f5 = st.columns(5)
+    with f1:
+        render_metric_card("Total Contratos", format_currency(tot_ventas), "Portafolio activo")
+    with f2:
+        render_metric_card("Total Cobrado", format_currency(tot_cobrado), f"Saldo por cobrar: {format_currency(tot_ventas - tot_cobrado)}", border_color="#10b981", text_color="#10b981")
+    with f3:
+        render_metric_card("Honorarios Diseño", format_currency(tot_hon), "Margen del estudio")
+    with f4:
+        render_metric_card("Pagos a Contratistas", format_currency(tot_pagado_maestros), "Salidas de obra")
+    with f5:
+        render_metric_card("Caja Chica Gastada", format_currency(tot_caja_gastada), "Gastos operativos")
+
+    st.divider()
+
+    # Tabla resumen por proyecto
+    st.markdown("#### DETALLE FINANCIERO POR PROYECTO")
+    if df_p_act.empty:
+        st.info("No hay proyectos activos registrados.")
+        return
+
+    rows_fin = []
+    for _, pr in df_p_act.iterrows():
+        p_name = pr['Nombre']
+        ppto_p = safe_float(pr.get('Presupuesto', 0))
+        cob_p = pd.to_numeric(df_cob[df_cob['Proyecto'] == p_name]['Monto_Cobrado'], errors='coerce').sum() if not df_cob.empty and 'Proyecto' in df_cob.columns and 'Monto_Cobrado' in df_cob.columns else 0.0
+        pag_p = pd.to_numeric(df_pag[df_pag['Proyecto'] == p_name]['Monto'], errors='coerce').sum() if not df_pag.empty and 'Proyecto' in df_pag.columns and 'Monto' in df_pag.columns else 0.0
+        caja_p = pd.to_numeric(df_gg[df_gg['Proyecto'] == p_name]['Monto'], errors='coerce').sum() if not df_gg.empty and 'Proyecto' in df_gg.columns and 'Monto' in df_gg.columns else 0.0
+
+        rows_fin.append({
+            "Proyecto": p_name,
+            "Cliente": safe_str(pr.get('Cliente', '')),
+            "Ppto. Total": format_currency(ppto_p),
+            "Cobrado Cliente": format_currency(cob_p),
+            "Por Cobrar": format_currency(ppto_p - cob_p),
+            "Pagos Contratistas": format_currency(pag_p),
+            "Caja Chica": format_currency(caja_p)
+        })
+
+    if rows_fin:
+        df_fin_disp = pd.DataFrame(rows_fin)
+        st.dataframe(df_fin_disp, use_container_width=True, hide_index=True)
+
+        csv_bytes = df_fin_disp.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            "📥 EXPORTAR REPORTE FINANCIERO A CSV",
+            data=csv_bytes,
+            file_name=f"finanzas_cota_{datetime.date.today().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+
+def _render_tab_operativo_diario(lista_socios, fecha_hoy, conn, sheet_url, nube_ok):
+    """Pestaña 4: Requerimientos diarios, obras activas hoy y próximos arranques."""
+    co1, co2, co3 = st.columns([1.2, 1, 1])
+
+    with co1:
+        st.markdown("#### LOGÍSTICA DIARIA Y TAREAS")
+        with st.popover("➕ NUEVO REQUERIMIENTO", use_container_width=True):
+            with st.form("form_nuevo_todo", clear_on_submit=True):
+                p_act = get_proyectos_activos(st.session_state.proyectos)['Nombre'].tolist()
+                t_p = st.selectbox("Asignar a Proyecto", ["General"] + p_act)
+                t_r = st.selectbox("Responsable", lista_socios)
+                t_cat = st.selectbox("Clasificación", ["Compras / FF&E", "Pagos", "Proveedores", "Coordinación Cliente", "Supervisión Obra"])
+                t_txt = st.text_input("Detalle de Actividad")
+                if st.form_submit_button("REGISTRAR ACTIVIDAD") and t_txt:
+                    n_i = pd.DataFrame([{
+                        'ID': datetime.datetime.now().timestamp(),
+                        'Proyecto': t_p,
+                        'Categoria': t_cat,
+                        'Tarea': t_txt,
+                        'Responsable': t_r,
+                        'Check': False
+                    }])
+                    st.session_state.todo_list = pd.concat([st.session_state.todo_list, n_i], ignore_index=True)
+                    clear_base_dfs()
+                    st.rerun()
+
+        for i, row in st.session_state.todo_list.iterrows():
+            if not to_bool(row.get('Check', False)):
+                ci, cb = st.columns([8, 2])
+                ci.markdown(
+                    f"<div style='background:var(--card-bg); padding:8px 10px; border:1px solid var(--border-color); border-radius:4px; margin-bottom:5px;'>"
+                    f"<b style='color:var(--text-muted);'>[{row.get('Categoria', 'Tarea')}]</b> {row.get('Tarea', '')}<br>"
+                    f"<small style='color:#00E5FF;'>RESP: {row.get('Responsable', '').upper()}  |  PRY: {row.get('Proyecto', '')}</small></div>",
+                    unsafe_allow_html=True
+                )
+                if cb.button("LISTO", key=f"todo_done_{row.get('ID', i)}", use_container_width=True):
+                    st.session_state.todo_list = st.session_state.todo_list.drop(i).reset_index(drop=True)
+                    guardar_tabla(conn, sheet_url, nube_ok, st.session_state.todo_list, 'logistica')
+                    st.rerun()
+
+    with co2:
+        st.markdown("#### EN EJECUCIÓN (HOY)")
+        df_tasks_act = st.session_state.tasks.copy()
+        df_tasks_act['Inicio_DT'] = df_tasks_act['Inicio'].apply(lambda x: pd.to_datetime(parse_date(x)))
+        df_tasks_act['Fin_DT'] = df_tasks_act['Fin'].apply(lambda x: pd.to_datetime(parse_date(x)))
+        df_tasks_act = df_tasks_act.dropna(subset=['Inicio_DT', 'Fin_DT'])
+
+        if not df_tasks_act.empty:
+            t_hoy = df_tasks_act[(df_tasks_act['Inicio_DT'].dt.date <= fecha_hoy) & (df_tasks_act['Fin_DT'].dt.date >= fecha_hoy)]
+            if not t_hoy.empty:
+                for p_n in t_hoy['Proyecto'].unique():
+                    st.markdown(f"<div style='color:#00E5FF; font-weight:bold; font-size:11px; margin-top:8px;'>{p_n}</div>", unsafe_allow_html=True)
+                    for _, t in t_hoy[t_hoy['Proyecto'] == p_n].iterrows():
+                        st.markdown(
+                            f"<div style='border-left: 2px solid #00E5FF; background:var(--card-bg); padding:6px 8px; margin-bottom:6px;'>"
+                            f"<b>{t.get('Tarea', '')}</b><br><small style='color:#94a3b8;'>CTR: {t.get('Contratista', 'Sin asignar')}</small></div>",
+                            unsafe_allow_html=True
+                        )
+            else:
+                st.info("No hay tareas programadas para hoy.")
+        else:
+            st.info("Sin tareas registradas.")
+
+    with co3:
+        st.markdown("#### PRÓXIMOS ARRANQUES (7 DÍAS)")
+        if not df_tasks_act.empty:
+            lim_7d = fecha_hoy + datetime.timedelta(days=7)
+            t_7 = df_tasks_act[(df_tasks_act['Inicio_DT'].dt.date > fecha_hoy) & (df_tasks_act['Inicio_DT'].dt.date <= lim_7d)].sort_values('Inicio_DT')
+            if not t_7.empty:
+                for p_n in t_7['Proyecto'].unique():
+                    st.markdown(f"<div style='color:#eab308; font-weight:bold; font-size:11px; margin-top:8px;'>{p_n}</div>", unsafe_allow_html=True)
+                    for _, t in t_7[t_7['Proyecto'] == p_n].iterrows():
+                        st.markdown(
+                            f"<div style='border-left: 2px solid #eab308; background:var(--card-bg); padding:6px 8px; margin-bottom:6px;'>"
+                            f"<b>{t.get('Tarea', '')}</b><br><small style='color:#94a3b8;'>ARRANCA: {t['Inicio_DT'].strftime('%d %b')}  |  CTR: {t.get('Contratista', 'Sin asignar')}</small></div>",
+                            unsafe_allow_html=True
+                        )
+            else:
+                st.info("Sin arranques en los próximos 7 días.")
+
+
+def _render_tab_calendario(fecha_hoy):
+    """Pestaña 5: Calendario técnico mensual con tooltips."""
+    if 'cal_month_offset' not in st.session_state:
+        st.session_state.cal_month_offset = 0
+
+    c_n1, c_n2, c_n3 = st.columns([1, 2, 1])
+    if c_n1.button("◀ MES ANTERIOR", use_container_width=True):
+        st.session_state.cal_month_offset -= 1
+        st.rerun()
+    if c_n3.button("SIGUIENTE MES ▶", use_container_width=True):
+        st.session_state.cal_month_offset += 1
+        st.rerun()
+
+    t_d = pd.to_datetime(fecha_hoy) + pd.DateOffset(months=st.session_state.cal_month_offset)
+    meses_es = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+    c_n2.markdown(f"<h3 style='text-align:center; color:#00E5FF; font-family:monospace; margin:0;'>{meses_es[t_d.month].upper()} {t_d.year}</h3>", unsafe_allow_html=True)
+
+    cal = calendar.monthcalendar(t_d.year, t_d.month)
+    p_c = dict(zip(st.session_state.proyectos['Nombre'], st.session_state.proyectos['Color']))
+
+    df_tasks_act = st.session_state.tasks.copy()
+    df_tasks_act['Inicio_Date'] = df_tasks_act['Inicio'].apply(lambda x: parse_date(x))
+    df_tasks_act['Fin_Date'] = df_tasks_act['Fin'].apply(lambda x: parse_date(x))
+    df_tasks_act = df_tasks_act.dropna(subset=['Inicio_Date', 'Fin_Date'])
+
+    h_c = "<div class='calendar-container'>"
+    for d in ["LUN", "MAR", "MIE", "JUE", "VIE", "SAB", "DOM"]:
+        h_c += f"<div class='calendar-header-day'>{d}</div>"
+
+    for w in cal:
+        for d in w:
+            if d == 0:
+                h_c += "<div class='calendar-cell' style='background:transparent; border:none;'></div>"
+            else:
+                c_dt = datetime.date(t_d.year, t_d.month, d)
+                cls = "today" if c_dt == fecha_hoy else ""
+                h_c += f"<div class='calendar-cell {cls}'><div class='calendar-cell-date'>{d}</div>"
+
+                if not df_tasks_act.empty:
+                    t_day = df_tasks_act[(df_tasks_act['Inicio_Date'] <= c_dt) & (df_tasks_act['Fin_Date'] >= c_dt)]
+                    for _, t in t_day.iterrows():
+                        prj = t.get('Proyecto', 'General')
+                        col_p = p_c.get(prj, '#00E5FF')
+                        tarea_txt = t.get('Tarea', '')[:16]
+                        h_c += f"<div class='cal-task-item' style='background:{col_p}22; border-left: 2px solid {col_p}; color:{col_p};'>{tarea_txt}</div>"
+
+                h_c += "</div>"
+
+    h_c += "</div>"
+    st.markdown(h_c, unsafe_allow_html=True)
+
+
+def _render_tab_archivo():
+    """Pestaña 6: Archivo histórico con confirmación de purga."""
+    st.markdown("### 🗄️ ARCHIVO HISTÓRICO DE PROYECTOS")
+    st.caption("Proyectos completados o pausados. Puedes restaurarlos en cualquier momento o purgarlos con confirmación.")
+
+    df_a = get_proyectos_archivados(st.session_state.proyectos)
+    if df_a.empty:
+        st.info("El archivo histórico está vacío.")
+        return
+
+    for idx, r in df_a.iterrows():
+        p_name = r['Nombre']
+        with st.container(border=True):
+            ca1, ca2, ca3 = st.columns([6, 2, 2])
+            ca1.markdown(f"**PROYECTO: {p_name}**  <small style='color:#94a3b8;'>({r.get('Tipo_Proyecto', '')})</small>", unsafe_allow_html=True)
+
+            if ca2.button("RESTAURAR", key=f"rest_{idx}", use_container_width=True):
+                st.session_state.proyectos.at[idx, 'Archivado'] = False
+                clear_base_dfs()
+                st.rerun()
+
+            with ca3:
+                with st.popover("PURGAR DEFINITIVAMENTE", use_container_width=True):
+                    st.warning(f"¿Estás seguro de eliminar '{p_name}'? Se eliminarán todas sus tareas, pagos y entregables asociados.")
+                    if st.button("CONFIRMAR PURGA", key=f"conf_purge_{idx}", type="primary", use_container_width=True):
+                        purgar_proyecto_cascada(p_name)
+                        clear_base_dfs()
+                        st.success(f"Proyecto '{p_name}' purgado del sistema.")
+                        st.rerun()
