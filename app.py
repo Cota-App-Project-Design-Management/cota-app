@@ -468,13 +468,13 @@ status_tasks = ["🟡 Planificado", "🔵 En Proceso", "⚪ En espera", "🟢 Co
 # ==========================================
 # 1.5. SISTEMA DE AUTENTICACIÓN (MARCA BLANCA SEGURA)
 # ==========================================
-password_configurado = st.secrets.get("APP_PASSWORD", "")
+password_configurado = st.secrets.get("APP_PASSWORD", "alvaro123")
 if not password_configurado:
     # Soporte por si se pegó al final del TOML bajo la sección [connections.gsheets]
     try:
-        password_configurado = st.secrets.get("connections", {}).get("gsheets", {}).get("APP_PASSWORD", "")
+        password_configurado = st.secrets.get("connections", {}).get("gsheets", {}).get("APP_PASSWORD", "alvaro123")
     except:
-        pass
+        password_configurado = "alvaro123"
 
 if password_configurado:
     if 'authenticated' not in st.session_state:
@@ -2566,6 +2566,10 @@ with st.sidebar:
                         st.success("Sincronización exitosa.")
                 else:
                     st.error("❌ Fallo en sincronización de datos críticos (proyectos, tareas o contratistas).")
+        st.divider()
+        if st.button("🚪 CERRAR SESIÓN", use_container_width=True):
+            st.session_state.authenticated = False
+            st.rerun()
 app_title = st.secrets.get("APP_TITLE", "COTA APP")
 logo_src = get_image_base64(st.secrets.get("LOGO_IMAGE", "Logo2.png"))
 logo_html = f'<img src="{logo_src}" class="header-logo">' if logo_src else ""
