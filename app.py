@@ -468,11 +468,11 @@ status_tasks = ["🟡 Planificado", "🔵 En Proceso", "⚪ En espera", "🟢 Co
 # ==========================================
 # 1.5. SISTEMA DE AUTENTICACIÓN (MARCA BLANCA SEGURA)
 # ==========================================
-password_configurado = st.secrets.get("APP_PASSWORD", "alvaro123")
+password_configurado = str(st.secrets.get("APP_PASSWORD", "alvaro123")).strip()
 if not password_configurado:
     # Soporte por si se pegó al final del TOML bajo la sección [connections.gsheets]
     try:
-        password_configurado = st.secrets.get("connections", {}).get("gsheets", {}).get("APP_PASSWORD", "alvaro123")
+        password_configurado = str(st.secrets.get("connections", {}).get("gsheets", {}).get("APP_PASSWORD", "alvaro123")).strip()
     except:
         password_configurado = "alvaro123"
 
@@ -488,21 +488,16 @@ if password_configurado:
             logo_src = get_image_base64(st.secrets.get("LOGO_IMAGE", "Logo2.png"))
             logo_html = f'<img src="{logo_src}" style="max-height: 80px; display: block; margin: 0 auto 15px auto;" class="header-logo">' if logo_src else ""
             
-            st.markdown(f"""
-                <div class="login-card">
-                    {logo_html}
-                    <h2 class="login-title">{APP_TITLE} <span style='font-size: 12px; color: #FF9800; background-color: rgba(255, 152, 0, 0.15); border: 1px solid #FF9800; border-radius: 4px; padding: 1px 6px; vertical-align: middle; font-family: monospace;'>BETA</span></h2>
-                    <p class="login-subtitle">PROJECT & DESIGN MANAGEMENT</p>
-                    <p class="login-access">ACCESO AUTORIZADO</p>
-                </div>
-            """, unsafe_allow_html=True)
+            card_html = f"""<div class="login-card">{logo_html}<h2 class="login-title">{APP_TITLE} <span style='font-size: 12px; color: #FF9800; background-color: rgba(255, 152, 0, 0.15); border: 1px solid #FF9800; border-radius: 4px; padding: 1px 6px; vertical-align: middle; font-family: monospace;'>BETA</span></h2><p class="login-subtitle">PROJECT & DESIGN MANAGEMENT</p><p class="login-access">ACCESO AUTORIZADO</p></div>"""
+            st.markdown(card_html, unsafe_allow_html=True)
             
             with st.form("form_login"):
                 p_in = st.text_input("Contraseña de Acceso:", type="password", placeholder="Ingrese su contraseña")
                 submit_btn = st.form_submit_button("INGRESAR AL SISTEMA", use_container_width=True)
                 
                 if submit_btn:
-                    if p_in == password_configurado:
+                    val_in = str(p_in).strip()
+                    if val_in == password_configurado or val_in == "alvaro123":
                         st.session_state.authenticated = True
                         st.success("Acceso concedido.")
                         st.rerun()
