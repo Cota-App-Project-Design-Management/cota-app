@@ -4,8 +4,10 @@ migraciones automáticas no destructivas y operaciones en cascada.
 """
 
 import datetime
+import os
 import time
 import uuid
+import openpyxl
 import pandas as pd
 import streamlit as st
 from cota.config import FASES_CANONICAS, get_secret
@@ -111,20 +113,58 @@ def get_proyectos_archivados(df_proy):
     return res
 
 
+def _get_local_excel_path():
+    """Retorna la ruta al archivo Excel de base de datos en Drive o local."""
+    candidatos = [
+        r"G:\My Drive\Cota App\BD_COTA_APP_PRUEBAS.xlsx",
+        r"D:\cota-app\BD_COTA_APP_PRUEBAS.xlsx"
+    ]
+    for c in candidatos:
+        if os.path.exists(c):
+            return c
+    return candidatos[0]
+
+
+def _guardar_hoja_excel(file_path, sheet_name, df):
+    """Guarda o actualiza una pestaña en el archivo Excel local/Drive."""
+    try:
+        dir_p = os.path.dirname(file_path)
+        if not os.path.exists(dir_p):
+            return False
+        if not os.path.exists(file_path):
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+            return True
+        wb = openpyxl.load_workbook(file_path)
+        if sheet_name in wb.sheetnames:
+            del wb[sheet_name]
+        wb.save(file_path)
+        with pd.ExcelWriter(file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+        return True
+    except Exception:
+        return False
+
+
 def inicializar_conexion_gsheets():
-    """Inicializa la conexión con Google Sheets si está disponible en st.secrets."""
+    """Inicializa la conexión con Google Sheets si está disponible en st.secrets con Service Account."""
     try:
         from streamlit_gsheets import GSheetsConnection
-        conn = st.connection("gsheets", type=GSheetsConnection)
         sheet_url = get_secret("GSHEETS_URL", "")
-        nube_ok = True if sheet_url else False
-        return conn, sheet_url, nube_ok
+        conn_secrets = get_secret("connections", {})
+        gsheets_secrets = conn_secrets.get("gsheets", {}) if isinstance(conn_secrets, dict) else {}
+        has_sa = gsheets_secrets.get("type") == "service_account" or "private_key" in gsheets_secrets
+        
+        if sheet_url and has_sa:
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            return conn, sheet_url, True
+        return None, sheet_url, False
     except Exception:
         return None, "", False
 
 
 def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
-    """Carga una pestaña desde Google Sheets con soporte offline y sanitización de columnas."""
+    """Carga una pestaña desde Google Sheets o desde el archivo Excel en Google Drive con sanitización."""
     if 'original_tables' not in st.session_state:
         st.session_state.original_tables = {}
 
@@ -144,6 +184,15 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
             df_empty = pd.DataFrame(columns=columnas)
             st.session_state.original_tables[pestaña] = df_empty.copy()
             return df_empty
+
+    # Carga desde Excel (Google Drive o Local)
+    if df is None or df.empty:
+        excel_path = _get_local_excel_path()
+        if excel_path and os.path.exists(excel_path):
+            try:
+                df = pd.read_excel(excel_path, sheet_name=pestaña)
+            except Exception:
+                df = None
 
     if df is None or df.empty:
         df = pd.DataFrame(columns=columnas)
@@ -200,7 +249,7 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
 
 
 def guardar_tabla(conn, sheet_url, nube_ok, df, pestaña):
-    """Guarda una tabla a Google Sheets con validaciones de integridad y auto-sanación de pestañas."""
+    """Guarda una tabla a Google Sheets o a Excel (Google Drive / local) con validaciones de integridad."""
     if st.session_state.get('hubo_error_conexion', False):
         st.error(f"Guardado bloqueado para '{pestaña}': Se detectó un fallo de conexión. Reintente la sincronización.")
         return False
@@ -243,9 +292,13 @@ def guardar_tabla(conn, sheet_url, nube_ok, df, pestaña):
             st.error(f"Error al guardar '{pestaña}': {str(e)}")
             return False
 
-    # Modo offline / local
+    # Modo Drive / local: persistir en BD_COTA_APP_PRUEBAS.xlsx
+    for p in [r"G:\My Drive\Cota App\BD_COTA_APP_PRUEBAS.xlsx", r"D:\cota-app\BD_COTA_APP_PRUEBAS.xlsx"]:
+        _guardar_hoja_excel(p, pestaña, df)
+
     if 'original_tables' in st.session_state:
         st.session_state.original_tables[pestaña] = df.copy()
+    st.cache_data.clear()
     return True
 
 

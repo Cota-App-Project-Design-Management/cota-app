@@ -435,6 +435,9 @@ def _render_tab_ffe(proy_name, proy_data):
     display_df['Precio_Unit_Estimado'] = pd.to_numeric(display_df['Precio_Unit_Estimado'], errors='coerce').fillna(0.0)
     display_df['Costo_Estimado'] = pd.to_numeric(display_df['Costo_Estimado'], errors='coerce').fillna(0.0)
     display_df['Costo_Real'] = pd.to_numeric(display_df['Costo_Real'], errors='coerce').fillna(0.0)
+    for c in ['Link_Ref', 'Material', 'Codigo_Ref', 'Proveedor', 'Notas', 'Estado', 'Ambiente', 'Categoria', 'Unidad']:
+        if c in display_df.columns:
+            display_df[c] = display_df[c].fillna("").astype(str).replace('nan', '').replace('None', '')
 
     if base_ffe_key not in st.session_state:
         st.session_state[base_ffe_key] = display_df.copy()
