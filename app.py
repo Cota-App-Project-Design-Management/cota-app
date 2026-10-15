@@ -52,9 +52,15 @@ from cota.utils import get_image_base64, to_bool
 # ==========================================
 # 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
 # ==========================================
-ACCENT_COLOR = "#D96B43"  # Rojo tipo arcilla - Identidad Cota App
+CLAY_COLOR = "#C85A32"  # Rojo Arcilla / Terracota Arquitectónico
+CHARCOAL_COLOR = "#262320"  # Carbón Cálido
 
-APP_TITLE = get_secret("APP_TITLE", DEFAULT_APP_TITLE)
+raw_title = get_secret("APP_TITLE", DEFAULT_APP_TITLE)
+APP_TITLE = (
+    DEFAULT_APP_TITLE
+    if raw_title in ["Binda Constructores", "Found Operating Systems", "Found OS"]
+    else raw_title
+)
 APP_SUBTITLE = get_secret("APP_SUBTITLE", DEFAULT_SUBTITLE)
 PAGE_ICON = get_secret("PAGE_ICON", DEFAULT_ICON_PATH)
 LOGO_PATH = get_secret("LOGO_IMAGE", DEFAULT_LOGO_PATH)
@@ -66,37 +72,46 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Inyectar estilos Warm Atelier (Blanco Hueso + Rojo Arcilla)
 st.markdown(get_app_css(), unsafe_allow_html=True)
 
 
 # ==========================================
-# 2. AUTENTICACIÓN SEGURA (SIN BACKDOORS)
+# 2. AUTENTICACIÓN ROBUSTA
 # ==========================================
-def obtener_password_secreto() -> str:
-    """Obtiene la contraseña configurada en Secrets (raíz o bloque gsheets)."""
-    pwd = str(get_secret("APP_PASSWORD", "")).strip().strip("\"'")
-    if not pwd:
-        try:
-            conn_secrets = get_secret("connections", {})
-            pwd = str(conn_secrets.get("gsheets", {}).get("APP_PASSWORD", "")).strip().strip("\"'")
-        except Exception:
-            pwd = ""
-    return pwd
+def obtener_claves_validas() -> list[str]:
+    """Busca APP_PASSWORD en st.secrets (raíz o bloque gsheets) y limpia comillas."""
+    claves = set()
+    try:
+        if "APP_PASSWORD" in st.secrets:
+            claves.add(str(st.secrets["APP_PASSWORD"]).strip().strip("\"'"))
+        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+            pwd_gs = st.secrets["connections"]["gsheets"].get("APP_PASSWORD", "")
+            if pwd_gs:
+                claves.add(str(pwd_gs).strip().strip("\"'"))
+    except Exception:
+        pass
+
+    pwd_cfg = str(get_secret("APP_PASSWORD", "")).strip().strip("\"'")
+    if pwd_cfg:
+        claves.add(pwd_cfg)
+
+    return [c for c in claves if c]
 
 
-password_configurado = obtener_password_secreto()
+claves_autorizadas = obtener_claves_validas()
 
-if password_configurado:
+if claves_autorizadas:
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
 
     if not st.session_state.authenticated:
-        _, c_login, _ = st.columns([1.5, 2, 1.5])
+        _, c_login, _ = st.columns([1.4, 2, 1.4])
         with c_login:
             st.markdown("<br><br><br>", unsafe_allow_html=True)
             logo_src = get_image_base64(LOGO_PATH)
             logo_html = (
-                f'<img src="{logo_src}" style="max-height: 70px; display: block; margin: 0 auto 15px auto;" class="header-logo">'
+                f'<img src="{logo_src}" style="max-height: 68px; display: block; margin: 0 auto 16px auto;" class="header-logo">'
                 if logo_src
                 else ""
             )
@@ -104,42 +119,45 @@ if password_configurado:
             card_html = (
                 f'<div class="login-card">{logo_html}'
                 f'<h2 class="login-title">{APP_TITLE} '
-                f'<span style="font-size: 11px; color: {ACCENT_COLOR}; background-color: rgba(217, 107, 67, 0.15); '
-                f'border: 1px solid {ACCENT_COLOR}; border-radius: 4px; padding: 1px 6px; vertical-align: middle; font-family: monospace;">BETA</span></h2>'
+                f'<span style="font-size: 11px; color: {CLAY_COLOR}; background-color: rgba(200, 90, 50, 0.12); '
+                f'border: 1px solid {CLAY_COLOR}; border-radius: 4px; padding: 2px 7px; vertical-align: middle; '
+                f'font-family: \'JetBrains Mono\', monospace; font-weight: 600;">STUDIO</span></h2>'
                 f'<p class="login-subtitle">{APP_SUBTITLE}</p>'
-                f'<p class="login-access">ACCESO PRIVADO</p></div>'
+                f'<p class="login-access">PORTAL DE ARQUITECTURA E INTERIORISMO</p></div>'
             )
             st.markdown(card_html, unsafe_allow_html=True)
 
             with st.form("form_login"):
                 p_in = st.text_input(
-                    "Contraseña de Acceso:",
+                    "Credencial de Acceso:",
                     type="password",
-                    placeholder="Ingresa la clave del estudio",
+                    placeholder="Ingresa la contraseña del estudio",
                 )
-                submit_btn = st.form_submit_button("INGRESAR AL SISTEMA", use_container_width=True)
+                submit_btn = st.form_submit_button("INGRESAR AL ESTUDIO", use_container_width=True)
 
                 if submit_btn:
                     val_in = str(p_in).strip().strip("\"'")
-                    if hmac.compare_digest(val_in.encode("utf-8"), password_configurado.encode("utf-8")):
+                    acceso_ok = any(
+                        hmac.compare_digest(val_in.encode("utf-8"), clave.encode("utf-8"))
+                        for clave in claves_autorizadas
+                    )
+                    if acceso_ok:
                         st.session_state.authenticated = True
                         st.rerun()
                     else:
-                        st.error("Contraseña incorrecta. Verifica con la dirección del estudio.")
+                        st.error("Contraseña incorrecta. Verifica mayúsculas y minúsculas en tu clave.")
 
         st.stop()
 
 
 # ==========================================
-# 3. ESQUEMA DE BASE DE DATOS Y SINCRONIZACIÓN
+# 3. BASE DE DATOS Y SINCRONIZACIÓN INTELIGENTE
 # ==========================================
 conn, sheet_url, nube_ok = inicializar_conexion_gsheets()
 
 if "hubo_error_conexion" not in st.session_state:
     st.session_state.hubo_error_conexion = False
 
-# Tablas activas propias de Cota App (Estudio de Arquitectura e Interiorismo)
-# Formato: clave_session_state: (nombre_hoja_gsheets, columnas, columna_booleana_opcional)
 TABLAS_ESTUDIO = {
     "proyectos": ("proyectos", COLS_PROY, "Archivado"),
     "tasks": ("tasks", COLS_TASKS, None),
@@ -158,7 +176,6 @@ TABLAS_ESTUDIO = {
     "observaciones_municipales": ("observaciones_municipales", COLS_OBSERVACIONES, None),
 }
 
-# Tablas deprecadas (se mantienen vacías en RAM para compatibilidad hasta limpiar vistas)
 TABLAS_DEPRECADAS = {
     "ice_sesiones": COLS_ICE_SESIONES,
     "ice_invitados": COLS_ICE_INVITADOS,
@@ -169,14 +186,12 @@ TABLAS_DEPRECADAS = {
 
 
 def calcular_hash_df(df: pd.DataFrame) -> str:
-    """Genera un hash rápido del contenido del DataFrame para detectar cambios."""
     if df is None or df.empty:
         return "empty"
     return hashlib.md5(df.to_csv(index=False).encode("utf-8")).hexdigest()
 
 
 def recalcular_partidas():
-    """Actualiza el catálogo consolidado de partidas a partir de tasks y p_info."""
     partidas_list = []
     if "tasks" in st.session_state and not st.session_state.tasks.empty and "Partida" in st.session_state.tasks.columns:
         df_tasks_p = st.session_state.tasks[["Proyecto", "Partida"]].rename(columns={"Partida": "Nombre_Partida"})
@@ -194,7 +209,6 @@ def recalcular_partidas():
 
 
 def cargar_todas_las_tablas(forzar: bool = False):
-    """Carga las tablas de Cota App en session_state y guarda su huella inicial."""
     if "hashes_tablas" not in st.session_state:
         st.session_state.hashes_tablas = {}
 
@@ -214,17 +228,12 @@ def cargar_todas_las_tablas(forzar: bool = False):
 
 
 def forzar_importacion():
-    """Recarga todas las tablas desde Google Sheets y limpia cachés."""
     st.session_state.hubo_error_conexion = False
     cargar_todas_las_tablas(forzar=True)
     clear_base_dfs()
 
 
 def sincronizar_cambios() -> tuple[bool, int]:
-    """
-    Guarda en Google Sheets únicamente las tablas que fueron modificadas en la sesión.
-    Evita exceder la cuota de peticiones de Google API.
-    """
     if "hashes_tablas" not in st.session_state:
         st.session_state.hashes_tablas = {}
 
@@ -249,7 +258,6 @@ def sincronizar_cambios() -> tuple[bool, int]:
     return (len(errores) == 0, tablas_guardadas)
 
 
-# Inicialización de datos y navegación
 cargar_todas_las_tablas(forzar=False)
 
 if "vista_actual" not in st.session_state:
@@ -263,13 +271,16 @@ if "proy_activo" not in st.session_state:
 # ==========================================
 with st.sidebar:
     st.markdown(
-        f"<h2 style='color:{ACCENT_COLOR}; font-family:monospace; text-align:center;'>{APP_TITLE} "
-        f"<span style='font-size: 11px; color: {ACCENT_COLOR}; background-color: rgba(217, 107, 67, 0.15); "
-        f"border: 1px solid {ACCENT_COLOR}; border-radius: 4px; padding: 1px 6px; vertical-align: middle; font-family: monospace;'>BETA</span></h2>",
+        f"<div style='text-align:center; padding: 10px 0 6px 0;'>"
+        f"<span style='color:{CHARCOAL_COLOR}; font-size:22px; font-weight:700; letter-spacing:0.04em;'>{APP_TITLE}</span> "
+        f"<span style='font-size:10px; color:{CLAY_COLOR}; background-color:rgba(200, 90, 50, 0.12); "
+        f"border:1px solid {CLAY_COLOR}; border-radius:4px; padding:2px 6px; vertical-align:middle; "
+        f"font-family:monospace; font-weight:600;'>v2.0</span>"
+        f"<p style='color:#6E665E; font-size:10px; letter-spacing:0.12em; text-transform:uppercase; margin-top:4px;'>Architecture & Interior</p>"
+        f"</div>",
         unsafe_allow_html=True,
     )
 
-    # Configuración dinámica del equipo de diseño
     equipo_default = get_secret("EQUIPO", "Socio 1, Socio 2")
     socios_input = st.text_input("Directores / Equipo de Diseño", value=equipo_default)
     lista_socios = [s.strip() for s in socios_input.split(",") if s.strip()]
@@ -279,25 +290,25 @@ with st.sidebar:
     st.divider()
 
     if st.session_state.get("hubo_error_conexion", False):
-        st.warning("Conexión Bloqueada")
-        st.info("Fallo de conexión o pestañas faltantes en Google Sheets. Sincronización en pausa.")
+        st.warning("Conexión en Pausa")
+        st.info("Verifica las pestañas de Google Sheets antes de sincronizar.")
         if st.button("REINTENTAR CONEXIÓN", type="primary", use_container_width=True):
             with st.spinner("Reconectando con Google Sheets..."):
                 forzar_importacion()
                 st.rerun()
     else:
-        if st.button("SINCRONIZAR DATOS", type="primary", use_container_width=True):
-            with st.spinner("Sincronizando cambios con Google Sheets..."):
+        if st.button("GUARDAR CAMBIOS", type="primary", use_container_width=True):
+            with st.spinner("Sincronizando con la nube..."):
                 exito, cantidad = sincronizar_cambios()
                 if exito and cantidad > 0:
-                    st.success(f"Sincronización completada ({cantidad} tabla(s) actualizada(s)).")
+                    st.success(f"Guardado exitoso ({cantidad} tabla(s) actualizada(s)).")
                 elif exito and cantidad == 0:
-                    st.info("No hay cambios pendientes por guardar.")
+                    st.info("Todo está al día. Sin cambios pendientes.")
                 else:
-                    st.error("Error al sincronizar una o más tablas con Google Sheets.")
+                    st.error("Error al sincronizar una o más tablas.")
 
-        if st.button("RECARGAR DESDE NUBE", use_container_width=True):
-            with st.spinner("Actualizando datos desde Google Sheets..."):
+        if st.button("ACTUALIZAR DATOS", use_container_width=True):
+            with st.spinner("Cargando datos recientes..."):
                 forzar_importacion()
                 st.rerun()
 
