@@ -98,52 +98,163 @@ def render_main_view(conn, sheet_url, nube_ok, lista_socios):
 # ====================================================
 
 def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
-    """Portafolio de proyectos activos con KPIs ejecutivos, carpetas y estados."""
+    """Portafolio de proyectos activos con KPIs ejecutivos filtrables por proyecto, carpetas y estados."""
     p_vis_all = get_proyectos_activos(st.session_state.proyectos)
     nombres_act = p_vis_all['Nombre'].tolist()
 
-    # 1. KPIs Ejecutivos del Estudio
-    n_activos = len(p_vis_all)
-    n_en_proc = len(p_vis_all[p_vis_all['Estado'].astype(str).str.contains('Proceso', case=False, na=False)])
-    tot_cartera = sum(safe_float(v) for v in p_vis_all.get('Presupuesto', []))
+    # 1. Selector de Filtro por Proyecto para los Widgets de Resumen Ejecutivo
+    OPCION_TODOS = "🌐 Todos los Proyectos Activos (Resumen Estudio)"
+    opciones_filtro_proy = [OPCION_TODOS] + nombres_act
 
-    # Avance promedio de fases
+    col_f_kpi, col_f_action = st.columns([7, 3])
+    with col_f_kpi:
+        proy_kpi_sel = st.selectbox(
+            "🎯 Filtrar Resumen Ejecutivo por Proyecto:",
+            options=opciones_filtro_proy,
+            index=0,
+            key="filtro_kpi_proyecto"
+        )
+    es_proy_unico = (proy_kpi_sel != OPCION_TODOS) and (proy_kpi_sel in nombres_act)
+
+    with col_f_action:
+        if es_proy_unico:
+            st.markdown("<div style='padding-top: 26px;'></div>", unsafe_allow_html=True)
+            if st.button(f"📂 ABRIR {proy_kpi_sel.upper()} →", key="btn_open_kpi_proy", type="primary", use_container_width=True):
+                st.session_state.proy_activo = proy_kpi_sel
+                st.session_state.vista_actual = 'proyecto'
+                clear_base_dfs()
+                st.rerun()
+
+    # Subconjunto de proyectos sobre el cual se calculan los KPIs
+    p_kpi_df = p_vis_all[p_vis_all['Nombre'] == proy_kpi_sel].copy() if es_proy_unico else p_vis_all.copy()
+    nombres_kpi = [proy_kpi_sel] if es_proy_unico else nombres_act
+
+    # 1.A Cartera y Gastos
+    n_activos = len(p_kpi_df)
+    n_en_proc = len(p_kpi_df[p_kpi_df['Estado'].astype(str).str.contains('Proceso', case=False, na=False)])
+    tot_cartera = sum(safe_float(v) for v in p_kpi_df.get('Presupuesto', []))
+
+    gastado_pagos = 0.0
+    if 'pagos' in st.session_state and not st.session_state.pagos.empty and 'Proyecto' in st.session_state.pagos.columns:
+        df_pag_k = st.session_state.pagos[st.session_state.pagos['Proyecto'].isin(nombres_kpi)]
+        gastado_pagos = pd.to_numeric(df_pag_k.get('Monto', 0), errors='coerce').sum()
+    gastado_gg = 0.0
+    if 'gg_log' in st.session_state and not st.session_state.gg_log.empty and 'Proyecto' in st.session_state.gg_log.columns:
+        df_gg_k = st.session_state.gg_log[st.session_state.gg_log['Proyecto'].isin(nombres_kpi)]
+        gastado_gg = pd.to_numeric(df_gg_k.get('Monto', 0), errors='coerce').sum()
+    tot_ejecutado = gastado_pagos + gastado_gg
+
+    # 1.B Avance del Diseño (Fases)
     avances = []
+    fases_ok_tot = 0
+    fases_len_tot = 0
+    fase_actual_kpi = "En curso"
     if 'fases' in st.session_state and not st.session_state.fases.empty:
-        for p_n in nombres_act:
-            fp = st.session_state.fases[st.session_state.fases['Proyecto'] == p_n]
+        for p_n in nombres_kpi:
+            fp = st.session_state.fases[st.session_state.fases['Proyecto'] == p_n].sort_values(by='Orden')
             if not fp.empty:
-                ok_c = len(fp[fp['Aprobado_Cliente'].apply(to_bool) | (fp['Estado'].astype(str).str.contains('Aprobada', case=False, na=False))])
+                mask_ok = fp['Aprobado_Cliente'].apply(to_bool) | (fp['Estado'].astype(str).str.contains('Aprobada', case=False, na=False))
+                ok_c = int(mask_ok.sum())
+                fases_ok_tot += ok_c
+                fases_len_tot += len(fp)
                 avances.append(ok_c / len(fp) * 100.0)
+                if es_proy_unico:
+                    pend_fp = fp[~mask_ok]
+                    fase_actual_kpi = pend_fp.iloc[0]['Fase'] if not pend_fp.empty else "08. Cierre & Entrega Final"
     prom_avance = sum(avances) / len(avances) if avances else 0.0
 
-    # FF&E pendientes de aprobación
+    # 1.C FF&E (Por aprobar / Presupuesto FF&E)
     ffe_propuestos = 0
+    ffe_total_items = 0
+    monto_ffe_pend = 0.0
+    monto_ffe_total = 0.0
     if 'materiales' in st.session_state and not st.session_state.materiales.empty and 'Proyecto' in st.session_state.materiales.columns:
-        df_m_act = st.session_state.materiales[st.session_state.materiales['Proyecto'].isin(nombres_act)]
-        if 'Estado' in df_m_act.columns:
-            ffe_propuestos = len(df_m_act[df_m_act['Estado'].astype(str).str.contains('Propuesto|Cotizado', case=False, na=False)])
+        df_m_act = st.session_state.materiales[st.session_state.materiales['Proyecto'].isin(nombres_kpi)].copy()
+        ffe_total_items = len(df_m_act)
+        if not df_m_act.empty:
+            df_m_act['Costo_Estimado'] = pd.to_numeric(df_m_act.get('Costo_Estimado', 0), errors='coerce').fillna(0.0)
+            monto_ffe_total = float(df_m_act['Costo_Estimado'].sum())
+            if 'Estado' in df_m_act.columns:
+                mask_ffe_pend = df_m_act['Estado'].astype(str).str.contains('Propuesto|Cotizado', case=False, na=False)
+                ffe_propuestos = int(mask_ffe_pend.sum())
+                monto_ffe_pend = float(df_m_act.loc[mask_ffe_pend, 'Costo_Estimado'].sum())
 
-    # Hitos de cobro pendientes
+    # 1.D Hitos por Cobrar
     cobros_pend = 0
+    cobros_tot_items = 0
+    monto_pactado_cobros = 0.0
+    monto_cobrado_cobros = 0.0
     if 'cobros' in st.session_state and not st.session_state.cobros.empty and 'Proyecto' in st.session_state.cobros.columns:
-        df_c_act = st.session_state.cobros[st.session_state.cobros['Proyecto'].isin(nombres_act)]
-        if 'Estado' in df_c_act.columns:
-            cobros_pend = len(df_c_act[~df_c_act['Estado'].astype(str).str.contains('Cobrado', case=False, na=False)])
+        df_c_act = st.session_state.cobros[st.session_state.cobros['Proyecto'].isin(nombres_kpi)].copy()
+        cobros_tot_items = len(df_c_act)
+        if not df_c_act.empty:
+            monto_pactado_cobros = float(pd.to_numeric(df_c_act.get('Monto_Pactado', 0), errors='coerce').fillna(0.0).sum())
+            monto_cobrado_cobros = float(pd.to_numeric(df_c_act.get('Monto_Cobrado', 0), errors='coerce').fillna(0.0).sum())
+            if 'Estado' in df_c_act.columns:
+                cobros_pend = int((~df_c_act['Estado'].astype(str).str.contains('Cobrado', case=False, na=False)).sum())
+    saldo_hitos_cobrar = max(0.0, monto_pactado_cobros - monto_cobrado_cobros)
 
+    # Renderizado de los 5 Widgets Ejecutivos
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
-        render_metric_card("Proyectos Activos", str(n_activos), f"{n_en_proc} en ejecución actual")
+        if es_proy_unico and not p_kpi_df.empty:
+            r_p = p_kpi_df.iloc[0]
+            est_str = safe_str(r_p.get('Estado', 'En Proceso')).split(" ", 1)[-1]
+            cli_k = safe_str(r_p.get('Cliente', 'Sin cliente'))
+            render_metric_card("Proyecto / Estado", est_str, f"{cli_k} · {safe_str(r_p.get('Tipo_Proyecto', 'Diseño'))}")
+        else:
+            render_metric_card("Proyectos Activos", str(n_activos), f"{n_en_proc} en ejecución actual")
     with k2:
-        render_metric_card("Cartera Activa", format_currency(tot_cartera), "Presupuesto total contratado")
+        sub_cartera = (
+            f"Ejecutado: {format_currency(tot_ejecutado)}"
+            if tot_ejecutado > 0
+            else "Presupuesto total contratado"
+        )
+        render_metric_card("Resumen Cartera", format_currency(tot_cartera), sub_cartera)
     with k3:
-        render_metric_card("Avance Diseño", f"{prom_avance:.0f}%", "Promedio de fases aprobadas", border_color="#4A7C59", text_color="#4A7C59")
+        sub_avance = (
+            f"{fases_ok_tot}/{fases_len_tot} fases · {fase_actual_kpi}"
+            if es_proy_unico and fases_len_tot > 0
+            else f"{fases_ok_tot}/{fases_len_tot} fases aprobadas" if fases_len_tot > 0 else "Promedio de fases aprobadas"
+        )
+        render_metric_card("Avance Diseño", f"{prom_avance:.0f}%", sub_avance, border_color="#4A7C59", text_color="#4A7C59")
     with k4:
         col_ffe = "#D98A2B" if ffe_propuestos > 0 else "#4A7C59"
-        render_metric_card("FF&E por Aprobar", str(ffe_propuestos), "Ítems esperando visto bueno", border_color=col_ffe, text_color=col_ffe)
+        val_ffe = format_currency(monto_ffe_pend) if monto_ffe_pend > 0 else f"{ffe_propuestos} ítems"
+        sub_ffe = f"{ffe_propuestos}/{ffe_total_items} por aprobar · Total: {format_currency(monto_ffe_total)}"
+        render_metric_card("FF&E por Aprobar", val_ffe, sub_ffe, border_color=col_ffe, text_color=col_ffe)
     with k5:
-        col_cob = "#C85A32" if cobros_pend > 0 else "#4A7C59"
-        render_metric_card("Hitos por Cobrar", str(cobros_pend), "Cobros programados pendientes", border_color=col_cob, text_color=col_cob)
+        col_cob = "#C85A32" if (cobros_pend > 0 or saldo_hitos_cobrar > 0) else "#4A7C59"
+        val_cob = format_currency(saldo_hitos_cobrar) if monto_pactado_cobros > 0 else str(cobros_pend)
+        sub_cob = f"{cobros_pend}/{cobros_tot_items} hitos pend. · Cobrado: {format_currency(monto_cobrado_cobros)}"
+        render_metric_card("Hitos por Cobrar", val_cob, sub_cob, border_color=col_cob, text_color=col_cob)
+
+    # Detalle rápido desplegable cuando se filtra un proyecto específico
+    if es_proy_unico:
+        with st.expander(f"📋 Ver detalle de Hitos de Cobro y FF&E de '{proy_kpi_sel}'", expanded=False):
+            cd1, cd2 = st.columns(2)
+            with cd1:
+                st.markdown("##### 💰 Hitos de Cobro del Proyecto")
+                df_c_det = st.session_state.cobros[st.session_state.cobros['Proyecto'] == proy_kpi_sel] if 'cobros' in st.session_state else pd.DataFrame()
+                if not df_c_det.empty:
+                    st.dataframe(
+                        df_c_det[['Hito', 'Monto_Pactado', 'Monto_Cobrado', 'Fecha_Vencimiento', 'Estado']],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.caption("Sin hitos de cobro registrados para este proyecto.")
+            with cd2:
+                st.markdown("##### 🛋️ Especificaciones FF&E del Proyecto")
+                df_m_det = st.session_state.materiales[st.session_state.materiales['Proyecto'] == proy_kpi_sel] if 'materiales' in st.session_state else pd.DataFrame()
+                if not df_m_det.empty:
+                    st.dataframe(
+                        df_m_det[['Ambiente', 'Material', 'Costo_Estimado', 'Estado']],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.caption("Sin elementos FF&E registrados para este proyecto.")
 
     st.divider()
 
@@ -220,7 +331,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
             label_visibility="collapsed"
         )
 
-    p_vis = p_vis_all.copy()
+    p_vis = p_kpi_df.copy()
 
     if search_q:
         sq = search_q.lower()
@@ -281,7 +392,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                         tipo_val = safe_str(proy.get('Tipo_Proyecto', 'Diseño'))
                         tit_expander = f"🏛️ {p_nom.upper()}{cli_str}  |  {tipo_val}  |  Líder: {proy.get('Encargado', 'N/A')}  |  Avance: {pct_avance}%"
 
-                        with st.expander(tit_expander, expanded=False):
+                        with st.expander(tit_expander, expanded=es_proy_unico):
                             ppto_p = safe_float(proy.get('Presupuesto', 0))
                             hon_p = safe_float(proy.get('Honorarios_Diseno', 0))
                             ffe_p = safe_float(proy.get('Presupuesto_FFE', 0))

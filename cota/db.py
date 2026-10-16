@@ -178,20 +178,10 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
     if nube_ok and sheet_url and conn is not None:
         try:
             df = conn.read(spreadsheet=sheet_url, worksheet=pestaña, ttl=300)
-            if df is None or df.empty:
-                if pestaña in ['proyectos', 'tasks', 'maestro']:
-                    st.session_state.hubo_error_conexion = True
-                df_empty = pd.DataFrame(columns=columnas)
-                st.session_state.original_tables[pestaña] = df_empty.copy()
-                return df_empty
         except Exception:
-            if pestaña in ['proyectos', 'tasks', 'maestro']:
-                st.session_state.hubo_error_conexion = True
-            df_empty = pd.DataFrame(columns=columnas)
-            st.session_state.original_tables[pestaña] = df_empty.copy()
-            return df_empty
+            df = None
 
-    # Carga desde Excel (Google Drive o Local)
+    # Carga desde Excel (Google Drive o Local / Respaldo en Repositorio)
     if df is None or df.empty:
         excel_path = _get_local_excel_path()
         if excel_path and os.path.exists(excel_path):
