@@ -156,7 +156,16 @@ def get_app_css() -> str:
             margin-bottom: 0 !important;
         }
 
-        /* 5. TARJETAS DE MÉTRICAS Y KPIs (.metric-card y stMetric) */
+        /* 5. TARJETAS DE MÉTRICAS Y KPIs (.metric-card, .cota-kpi-grid y stMetric) */
+        .cota-kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 14px;
+            width: 100%;
+            align-items: stretch;
+            margin-bottom: 12px;
+        }
+
         .metric-card {
             background-color: var(--bg-white);
             border: 1px solid var(--border-sand);
@@ -165,7 +174,19 @@ def get_app_css() -> str:
             padding: 14px 16px;
             box-shadow: 0 3px 12px rgba(38, 35, 32, 0.03);
             margin-bottom: 10px;
+            height: 118px;
+            min-height: 118px;
+            max-height: 118px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            box-sizing: border-box;
+            overflow: hidden;
             transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .cota-kpi-grid .metric-card {
+            margin-bottom: 0;
         }
 
         .metric-card:hover {
@@ -173,30 +194,49 @@ def get_app_css() -> str:
             box-shadow: 0 6px 16px rgba(38, 35, 32, 0.06);
         }
 
+        .metric-card .metric-label,
         .metric-card h4 {
             font-family: 'Plus Jakarta Sans', sans-serif !important;
             font-size: 11px !important;
-            font-weight: 600 !important;
+            font-weight: 700 !important;
             text-transform: uppercase !important;
             letter-spacing: 0.06em !important;
             color: var(--text-taupe) !important;
-            margin: 0 0 6px 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            line-height: 1.2 !important;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
+        .metric-card .metric-value,
         .metric-card h2 {
             font-family: 'JetBrains Mono', monospace !important;
-            font-size: 20px !important;
-            font-weight: 600 !important;
+            font-size: clamp(14.5px, 1.28vw, 19.5px) !important;
+            font-weight: 700 !important;
             color: var(--text-charcoal) !important;
-            margin: 0 0 4px 0 !important;
-            line-height: 1.2 !important;
+            margin: 4px 0 !important;
+            padding: 0 !important;
+            line-height: 1.25 !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
         }
 
+        .metric-card .metric-sub,
         .metric-card small {
             font-family: 'Plus Jakarta Sans', sans-serif !important;
             font-size: 11px !important;
             color: var(--text-muted) !important;
-            display: block;
+            line-height: 1.28 !important;
+            min-height: 28px;
+            max-height: 28px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            margin: 0 !important;
         }
 
         div[data-testid="stMetric"] {
@@ -206,6 +246,7 @@ def get_app_css() -> str:
             border-radius: 10px !important;
             padding: 16px 20px !important;
             box-shadow: 0 4px 14px rgba(38, 35, 32, 0.03) !important;
+            min-height: 108px !important;
         }
 
         div[data-testid="stMetricLabel"] p {
@@ -219,8 +260,9 @@ def get_app_css() -> str:
         div[data-testid="stMetricValue"] div {
             color: var(--text-charcoal) !important;
             font-family: 'JetBrains Mono', monospace !important;
-            font-size: 24px !important;
+            font-size: clamp(16px, 1.4vw, 22px) !important;
             font-weight: 600 !important;
+            white-space: nowrap !important;
         }
 
         /* 6. CABECERAS DE SECCIÓN Y BADGES DE OBRA */
@@ -317,6 +359,7 @@ def get_app_css() -> str:
             border: 1px solid var(--border-sand) !important;
             border-radius: 8px !important;
             font-family: 'Plus Jakarta Sans', sans-serif !important;
+            min-height: 40px !important;
             transition: all 0.2s ease;
         }
 
@@ -331,23 +374,28 @@ def get_app_css() -> str:
             color: var(--text-charcoal) !important;
             border: 1px solid var(--border-sand) !important;
             border-radius: 8px !important;
+            min-height: 40px !important;
         }
 
-        /* 8. BOTONES (ROJO ARCILLA Y SECUNDARIOS PIEDRA) */
-        .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
+        /* 8. BOTONES Y POPOVERS (ROJO ARCILLA Y SECUNDARIOS PIEDRA) */
+        .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button, div[data-testid="stPopover"] button {
             border-radius: 8px !important;
             font-family: 'Plus Jakarta Sans', sans-serif !important;
             font-weight: 600 !important;
             font-size: 13px !important;
             letter-spacing: 0.02em !important;
-            padding: 0.5rem 1rem !important;
+            padding: 0.45rem 0.9rem !important;
+            min-height: 40px !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
             transition: all 0.2s ease !important;
             border: 1px solid var(--border-sand) !important;
             background-color: var(--bg-white) !important;
             color: var(--text-charcoal) !important;
         }
 
-        .stButton > button:hover, .stDownloadButton > button:hover {
+        .stButton > button:hover, .stDownloadButton > button:hover, div[data-testid="stPopover"] button:hover {
             border-color: var(--clay-primary) !important;
             color: var(--clay-primary) !important;
             background-color: var(--bg-card) !important;
@@ -373,6 +421,7 @@ def get_app_css() -> str:
         /* 9. PESTAÑAS (TABS ARQUITECTÓNICOS) */
         .stTabs [data-baseweb="tab-list"] {
             gap: 6px;
+            flex-wrap: wrap;
             background-color: var(--bg-stone);
             padding: 6px;
             border-radius: 10px;
@@ -380,12 +429,13 @@ def get_app_css() -> str:
         }
 
         .stTabs [data-baseweb="tab"] {
-            height: 38px;
+            height: 36px;
             border-radius: 7px;
-            padding: 0 14px;
+            padding: 0 12px;
             font-family: 'Plus Jakarta Sans', sans-serif !important;
             font-weight: 600;
-            font-size: 12.5px;
+            font-size: 12px;
+            white-space: nowrap;
             color: var(--text-taupe) !important;
             background-color: transparent;
             border: none !important;

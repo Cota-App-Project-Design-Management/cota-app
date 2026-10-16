@@ -28,7 +28,7 @@ from cota.db import (
     renombrar_proyecto,
     sembrar_fases_default,
 )
-from cota.ui.components import render_metric_card
+from cota.ui.components import render_metric_card, render_metric_row
 from cota.utils import (
     calcular_rating,
     format_currency,
@@ -194,40 +194,48 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 cobros_pend = int((~df_c_act['Estado'].astype(str).str.contains('Cobrado', case=False, na=False)).sum())
     saldo_hitos_cobrar = max(0.0, monto_pactado_cobros - monto_cobrado_cobros)
 
-    # Renderizado de los 5 Widgets Ejecutivos
-    k1, k2, k3, k4, k5 = st.columns(5)
-    with k1:
-        if es_proy_unico and not p_kpi_df.empty:
-            r_p = p_kpi_df.iloc[0]
-            est_str = safe_str(r_p.get('Estado', 'En Proceso')).split(" ", 1)[-1]
-            cli_k = safe_str(r_p.get('Cliente', 'Sin cliente'))
-            render_metric_card("Proyecto / Estado", est_str, f"{cli_k} · {safe_str(r_p.get('Tipo_Proyecto', 'Diseño'))}")
-        else:
-            render_metric_card("Proyectos Activos", str(n_activos), f"{n_en_proc} en ejecución actual")
-    with k2:
-        sub_cartera = (
-            f"Ejecutado: {format_currency(tot_ejecutado)}"
-            if tot_ejecutado > 0
-            else "Presupuesto total contratado"
-        )
-        render_metric_card("Resumen Cartera", format_currency(tot_cartera), sub_cartera)
-    with k3:
-        sub_avance = (
-            f"{fases_ok_tot}/{fases_len_tot} fases · {fase_actual_kpi}"
-            if es_proy_unico and fases_len_tot > 0
-            else f"{fases_ok_tot}/{fases_len_tot} fases aprobadas" if fases_len_tot > 0 else "Promedio de fases aprobadas"
-        )
-        render_metric_card("Avance Diseño", f"{prom_avance:.0f}%", sub_avance, border_color="#4A7C59", text_color="#4A7C59")
-    with k4:
-        col_ffe = "#D98A2B" if ffe_propuestos > 0 else "#4A7C59"
-        val_ffe = format_currency(monto_ffe_pend) if monto_ffe_pend > 0 else f"{ffe_propuestos} ítems"
-        sub_ffe = f"{ffe_propuestos}/{ffe_total_items} por aprobar · Total: {format_currency(monto_ffe_total)}"
-        render_metric_card("FF&E por Aprobar", val_ffe, sub_ffe, border_color=col_ffe, text_color=col_ffe)
-    with k5:
-        col_cob = "#C85A32" if (cobros_pend > 0 or saldo_hitos_cobrar > 0) else "#4A7C59"
-        val_cob = format_currency(saldo_hitos_cobrar) if monto_pactado_cobros > 0 else str(cobros_pend)
-        sub_cob = f"{cobros_pend}/{cobros_tot_items} hitos pend. · Cobrado: {format_currency(monto_cobrado_cobros)}"
-        render_metric_card("Hitos por Cobrar", val_cob, sub_cob, border_color=col_cob, text_color=col_cob)
+    # Renderizado simétrico de los 5 Widgets Ejecutivos mediante CSS Grid (.cota-kpi-grid)
+    if es_proy_unico and not p_kpi_df.empty:
+        r_p = p_kpi_df.iloc[0]
+        est_str = safe_str(r_p.get('Estado', 'En Proceso')).split(" ", 1)[-1]
+        cli_k = safe_str(r_p.get('Cliente', 'Sin cliente'))
+        card_1 = {
+            "title": "Proyecto / Estado",
+            "value": est_str,
+            "subtitle": f"{cli_k} · {safe_str(r_p.get('Tipo_Proyecto', 'Diseño'))}",
+        }
+    else:
+        card_1 = {
+            "title": "Proyectos Activos",
+            "value": str(n_activos),
+            "subtitle": f"{n_en_proc} en ejecución actual",
+        }
+
+    sub_cartera = (
+        f"Ejecutado: {format_currency(tot_ejecutado)}"
+        if tot_ejecutado > 0
+        else "Presupuesto total contratado"
+    )
+    sub_avance = (
+        f"{fases_ok_tot}/{fases_len_tot} fases · {fase_actual_kpi}"
+        if es_proy_unico and fases_len_tot > 0
+        else f"{fases_ok_tot}/{fases_len_tot} fases aprobadas" if fases_len_tot > 0 else "Promedio de fases aprobadas"
+    )
+    col_ffe = "#D98A2B" if ffe_propuestos > 0 else "#4A7C59"
+    val_ffe = format_currency(monto_ffe_pend) if monto_ffe_pend > 0 else f"{ffe_propuestos} ítems"
+    sub_ffe = f"{ffe_propuestos}/{ffe_total_items} por aprobar · Total: {format_currency(monto_ffe_total)}"
+
+    col_cob = "#C85A32" if (cobros_pend > 0 or saldo_hitos_cobrar > 0) else "#4A7C59"
+    val_cob = format_currency(saldo_hitos_cobrar) if monto_pactado_cobros > 0 else str(cobros_pend)
+    sub_cob = f"{cobros_pend}/{cobros_tot_items} hitos pend. · Cobrado: {format_currency(monto_cobrado_cobros)}"
+
+    render_metric_row([
+        card_1,
+        {"title": "Resumen Cartera", "value": format_currency(tot_cartera), "subtitle": sub_cartera},
+        {"title": "Avance Diseño", "value": f"{prom_avance:.0f}%", "subtitle": sub_avance, "border_color": "#4A7C59", "text_color": "#4A7C59"},
+        {"title": "FF&E por Aprobar", "value": val_ffe, "subtitle": sub_ffe, "border_color": col_ffe, "text_color": col_ffe},
+        {"title": "Hitos por Cobrar", "value": val_cob, "subtitle": sub_cob, "border_color": col_cob, "text_color": col_cob},
+    ])
 
     # Detalle rápido desplegable cuando se filtra un proyecto específico
     if es_proy_unico:
@@ -258,11 +266,10 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
 
     st.divider()
 
-    # 2. Barra de herramientas: Nuevo Proyecto + Buscador
+    # 2. Barra de herramientas: Nuevo Proyecto + Buscador (alineados simétricamente)
     col_new, col_search = st.columns([3, 7])
 
     with col_new:
-        st.markdown("<div style='padding-top: 2px;'></div>", unsafe_allow_html=True)
         with st.popover("➕ NUEVO PROYECTO DE DISEÑO", use_container_width=True):
             with st.form("form_nuevo_proy", clear_on_submit=True):
                 pn = st.text_input("Nombre / Código del Proyecto (Único)", placeholder="ej. Casa Las Casuarinas").strip()
@@ -343,17 +350,22 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
         ]
 
     divisiones = sorted(list(set([d for d in p_vis['Division'].dropna().unique().tolist() if d])))
-    if not divisiones:
-        divisiones = ["General"]
 
-    tabs_div = st.tabs([f"📁 CARPETA: {d.upper()}" for d in divisiones])
+    # Pestañas de carpetas: la primera muestra TODOS los proyectos activos juntos
+    tab_labels = [f"🗂️ TODOS LOS PROYECTOS ({len(p_vis)})"] + [
+        f"📁 {d.upper()} ({len(p_vis[p_vis['Division'] == d])})" for d in divisiones
+    ]
+    tab_keys = ["__ALL__"] + divisiones
+    tabs_div = st.tabs(tab_labels)
 
-    for t_div, d_name in zip(tabs_div, divisiones):
+    for t_div, d_key in zip(tabs_div, tab_keys):
         with t_div:
-            p_div = p_vis[p_vis['Division'] == d_name]
+            p_div = p_vis if d_key == "__ALL__" else p_vis[p_vis['Division'] == d_key]
             if p_div.empty:
-                st.info(f"No hay proyectos activos en la carpeta '{d_name}'.")
+                st.info("No hay proyectos activos que coincidan con este filtro.")
                 continue
+
+            indices_mostrados = set()
 
             for est in STATUS_PROYECTOS:
                 est_clean = est.split(" ", 1)[-1] if " " in est else est
@@ -362,121 +374,122 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 if p_est.empty:
                     continue
 
-                show_state = st.toggle(f"{est.upper()} ({len(p_est)})", value=True, key=f"tgl_main_{d_name}_{est}")
-                if show_state:
-                    col_st = "#D98A2B" if "Planificación" in est else ("#4A7C59" if "Completado" in est else "#C85A32")
-                    st.markdown(
-                        f"<h4 class='cota-status-header' style='color: {col_st} !important;'>"
-                        f"<span class='cota-status-header-bar' style='background-color: {col_st};'></span>"
-                        f"ESTADO: {est.upper()}"
-                        f"</h4>",
-                        unsafe_allow_html=True
-                    )
+                indices_mostrados.update(p_est.index.tolist())
+                col_st = "#D98A2B" if "Planificación" in est else ("#4A7C59" if "Completado" in est else "#C85A32")
+                st.markdown(
+                    f"<h4 class='cota-status-header' style='color: {col_st} !important;'>"
+                    f"<span class='cota-status-header-bar' style='background-color: {col_st};'></span>"
+                    f"ESTADO: {est.upper()} ({len(p_est)})"
+                    f"</h4>",
+                    unsafe_allow_html=True
+                )
 
-                    for idx_p, proy in p_est.iterrows():
-                        p_nom = proy['Nombre']
+                for idx_p, proy in p_est.iterrows():
+                    p_nom = proy['Nombre']
+                    ukey = f"{d_key}_{idx_p}"
 
-                        # Calcular avance de fases
-                        pct_avance = 0
-                        fase_actual_str = "01. Levantamiento & Brief"
-                        if 'fases' in st.session_state and not st.session_state.fases.empty:
-                            f_p = st.session_state.fases[st.session_state.fases['Proyecto'] == p_nom].sort_values(by='Orden')
-                            if not f_p.empty:
-                                ok_cnt = len(f_p[f_p['Aprobado_Cliente'].apply(to_bool) | (f_p['Estado'].astype(str).str.contains('Aprobada', case=False))])
-                                pct_avance = int(ok_cnt / len(f_p) * 100)
-                                en_curso = f_p[~(f_p['Aprobado_Cliente'].apply(to_bool) | (f_p['Estado'].astype(str).str.contains('Aprobada', case=False)))]
-                                fase_actual_str = en_curso.iloc[0]['Fase'] if not en_curso.empty else "08. Cierre & Entrega Final"
+                    # Calcular avance de fases
+                    pct_avance = 0
+                    fase_actual_str = "01. Levantamiento & Brief"
+                    if 'fases' in st.session_state and not st.session_state.fases.empty:
+                        f_p = st.session_state.fases[st.session_state.fases['Proyecto'] == p_nom].sort_values(by='Orden')
+                        if not f_p.empty:
+                            ok_cnt = len(f_p[f_p['Aprobado_Cliente'].apply(to_bool) | (f_p['Estado'].astype(str).str.contains('Aprobada', case=False))])
+                            pct_avance = int(ok_cnt / len(f_p) * 100)
+                            en_curso = f_p[~(f_p['Aprobado_Cliente'].apply(to_bool) | (f_p['Estado'].astype(str).str.contains('Aprobada', case=False)))]
+                            fase_actual_str = en_curso.iloc[0]['Fase'] if not en_curso.empty else "08. Cierre & Entrega Final"
 
-                        cli_val = safe_str(proy.get('Cliente', ''))
-                        cli_str = f" · Cliente: {cli_val}" if cli_val else ""
-                        tipo_val = safe_str(proy.get('Tipo_Proyecto', 'Diseño'))
-                        tit_expander = f"🏛️ {p_nom.upper()}{cli_str}  |  {tipo_val}  |  Líder: {proy.get('Encargado', 'N/A')}  |  Avance: {pct_avance}%"
+                    cli_val = safe_str(proy.get('Cliente', ''))
+                    cli_str = f" · Cliente: {cli_val}" if cli_val else ""
+                    div_val = safe_str(proy.get('Division', 'General'))
+                    tipo_val = safe_str(proy.get('Tipo_Proyecto', 'Diseño'))
+                    tit_expander = f"🏛️ {p_nom.upper()}{cli_str}  |  📁 {div_val} · {tipo_val}  |  Líder: {proy.get('Encargado', 'N/A')}  |  Avance: {pct_avance}%"
 
-                        with st.expander(tit_expander, expanded=es_proy_unico):
-                            ppto_p = safe_float(proy.get('Presupuesto', 0))
-                            hon_p = safe_float(proy.get('Honorarios_Diseno', 0))
-                            ffe_p = safe_float(proy.get('Presupuesto_FFE', 0))
-                            ubi_p = safe_str(proy.get('Ubicación', 'Lima'))
-                            ini_p = format_date(proy.get('Inicio'))
-                            fin_p = format_date(proy.get('Fin'))
+                    with st.expander(tit_expander, expanded=es_proy_unico):
+                        ppto_p = safe_float(proy.get('Presupuesto', 0))
+                        hon_p = safe_float(proy.get('Honorarios_Diseno', 0))
+                        ffe_p = safe_float(proy.get('Presupuesto_FFE', 0))
+                        ubi_p = safe_str(proy.get('Ubicación', 'Lima'))
+                        ini_p = format_date(proy.get('Inicio'))
+                        fin_p = format_date(proy.get('Fin'))
 
-                            # Ficha resumen ejecutiva del proyecto
-                            summary_html = (
-                                f"<div style='border-left: 4px solid {col_st}; background: #FAF8F5; border: 1px solid #DFD9CE; border-left-width: 4px; border-left-color: {col_st}; border-radius: 8px; padding: 14px 16px; margin-bottom: 14px;'>"
-                                f"<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; font-size: 12.5px;'>"
-                                f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Ubicación</span><br><b style='color:#262320;'>{ubi_p}</b></div>"
-                                f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Cronograma</span><br><b style='color:#262320;'>{ini_p} → {fin_p}</b></div>"
-                                f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Fase Actual</span><br><b style='color:#C85A32;'>{fase_actual_str}</b></div>"
-                                f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Ppto. Contrato</span><br><b style='color:#262320; font-family:monospace;'>{format_currency(ppto_p)}</b></div>"
-                                f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Honorarios / FF&E</span><br><b style='color:#4A7C59; font-family:monospace;'>{format_currency(hon_p)} / {format_currency(ffe_p)}</b></div>"
-                                f"</div>"
-                                f"<div style='margin-top: 10px; background: #EFECE6; border-radius: 4px; height: 6px; overflow: hidden;'>"
-                                f"<div style='background: {col_st}; width: {pct_avance}%; height: 100%;'></div>"
-                                f"</div>"
-                                f"</div>"
-                            )
-                            st.markdown(summary_html, unsafe_allow_html=True)
+                        # Ficha resumen ejecutiva del proyecto
+                        summary_html = (
+                            f"<div style='border-left: 4px solid {col_st}; background: #FAF8F5; border: 1px solid #DFD9CE; border-left-width: 4px; border-left-color: {col_st}; border-radius: 8px; padding: 14px 16px; margin-bottom: 14px;'>"
+                            f"<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; font-size: 12.5px;'>"
+                            f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Ubicación</span><br><b style='color:#262320;'>{ubi_p}</b></div>"
+                            f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Cronograma</span><br><b style='color:#262320;'>{ini_p} → {fin_p}</b></div>"
+                            f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Fase Actual</span><br><b style='color:#C85A32;'>{fase_actual_str}</b></div>"
+                            f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Ppto. Contrato</span><br><b style='color:#262320; font-family:monospace;'>{format_currency(ppto_p)}</b></div>"
+                            f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Honorarios / FF&E</span><br><b style='color:#4A7C59; font-family:monospace;'>{format_currency(hon_p)} / {format_currency(ffe_p)}</b></div>"
+                            f"</div>"
+                            f"<div style='margin-top: 10px; background: #EFECE6; border-radius: 4px; height: 6px; overflow: hidden;'>"
+                            f"<div style='background: {col_st}; width: {pct_avance}%; height: 100%;'></div>"
+                            f"</div>"
+                            f"</div>"
+                        )
+                        st.markdown(summary_html, unsafe_allow_html=True)
 
-                            c_btn1, c_btn2, c_btn3, c_btn4, _ = st.columns([2.6, 2, 2, 2.2, 3.2])
+                        c_btn1, c_btn2, c_btn3, c_btn4, _ = st.columns([2.6, 2, 2, 2.2, 3.2])
 
-                            with c_btn1:
-                                if st.button("ABRIR EXPEDIENTE →", key=f"open_proy_{idx_p}", type="primary", use_container_width=True):
-                                    st.session_state.proy_activo = p_nom
-                                    st.session_state.vista_actual = 'proyecto'
-                                    clear_base_dfs()
-                                    st.rerun()
+                        with c_btn1:
+                            if st.button("ABRIR EXPEDIENTE →", key=f"open_proy_{ukey}", type="primary", use_container_width=True):
+                                st.session_state.proy_activo = p_nom
+                                st.session_state.vista_actual = 'proyecto'
+                                clear_base_dfs()
+                                st.rerun()
 
-                            with c_btn2:
-                                with st.popover("⚙️ EDITAR FICHA", use_container_width=True):
-                                    with st.form(f"edit_params_{idx_p}"):
-                                        n_nom = st.text_input("Nombre", value=p_nom)
-                                        n_cli = st.text_input("Cliente", value=safe_str(proy.get('Cliente', '')))
-                                        n_div = st.selectbox("Carpeta", exist_divs, index=exist_divs.index(proy.get('Division', 'General')) if proy.get('Division', 'General') in exist_divs else 0)
-                                        n_ubi = st.selectbox("Ubicación", exist_ubis, index=exist_ubis.index(proy.get('Ubicación', 'Lima')) if proy.get('Ubicación', 'Lima') in exist_ubis else 0)
-                                        n_est = st.selectbox("Estado", STATUS_PROYECTOS, index=STATUS_PROYECTOS.index(proy.get('Estado')) if proy.get('Estado') in STATUS_PROYECTOS else 0)
-                                        n_tipo = st.selectbox("Tipo", TIPOS_PROYECTO, index=TIPOS_PROYECTO.index(proy.get('Tipo_Proyecto')) if proy.get('Tipo_Proyecto') in TIPOS_PROYECTO else 0)
-                                        col_d1, col_d2 = st.columns(2)
-                                        d_i = col_d1.date_input("Inicio", value=parse_date(proy.get('Inicio')) or fecha_hoy)
-                                        d_f = col_d2.date_input("Fin", value=parse_date(proy.get('Fin')) or fecha_hoy)
-                                        v_p = st.number_input("Ppto Total (S/)", value=safe_float(proy.get('Presupuesto', 0)))
-                                        v_hon = st.number_input("Honorarios Diseño (S/)", value=safe_float(proy.get('Honorarios_Diseno', 0)))
-                                        v_ffe = st.number_input("Ppto FF&E (S/)", value=safe_float(proy.get('Presupuesto_FFE', 0)))
-                                        v_gg = st.number_input("Ppto Caja Chica (S/)", value=safe_float(proy.get('GG_Presupuesto', 0)))
+                        with c_btn2:
+                            with st.popover("⚙️ EDITAR FICHA", use_container_width=True):
+                                with st.form(f"edit_params_{ukey}"):
+                                    n_nom = st.text_input("Nombre", value=p_nom)
+                                    n_cli = st.text_input("Cliente", value=safe_str(proy.get('Cliente', '')))
+                                    n_div = st.selectbox("Carpeta", exist_divs, index=exist_divs.index(proy.get('Division', 'General')) if proy.get('Division', 'General') in exist_divs else 0)
+                                    n_ubi = st.selectbox("Ubicación", exist_ubis, index=exist_ubis.index(proy.get('Ubicación', 'Lima')) if proy.get('Ubicación', 'Lima') in exist_ubis else 0)
+                                    n_est = st.selectbox("Estado", STATUS_PROYECTOS, index=STATUS_PROYECTOS.index(proy.get('Estado')) if proy.get('Estado') in STATUS_PROYECTOS else 0)
+                                    n_tipo = st.selectbox("Tipo", TIPOS_PROYECTO, index=TIPOS_PROYECTO.index(proy.get('Tipo_Proyecto')) if proy.get('Tipo_Proyecto') in TIPOS_PROYECTO else 0)
+                                    col_d1, col_d2 = st.columns(2)
+                                    d_i = col_d1.date_input("Inicio", value=parse_date(proy.get('Inicio')) or fecha_hoy)
+                                    d_f = col_d2.date_input("Fin", value=parse_date(proy.get('Fin')) or fecha_hoy)
+                                    v_p = st.number_input("Ppto Total (S/)", value=safe_float(proy.get('Presupuesto', 0)))
+                                    v_hon = st.number_input("Honorarios Diseño (S/)", value=safe_float(proy.get('Honorarios_Diseno', 0)))
+                                    v_ffe = st.number_input("Ppto FF&E (S/)", value=safe_float(proy.get('Presupuesto_FFE', 0)))
+                                    v_gg = st.number_input("Ppto Caja Chica (S/)", value=safe_float(proy.get('GG_Presupuesto', 0)))
 
-                                        if st.form_submit_button("ACTUALIZAR DATOS"):
-                                            if n_nom != p_nom:
-                                                renombrar_proyecto(p_nom, n_nom)
+                                    if st.form_submit_button("ACTUALIZAR DATOS"):
+                                        if n_nom != p_nom:
+                                            renombrar_proyecto(p_nom, n_nom)
 
-                                            st.session_state.proyectos.at[idx_p, 'Nombre'] = n_nom
-                                            st.session_state.proyectos.at[idx_p, 'Cliente'] = n_cli
-                                            st.session_state.proyectos.at[idx_p, 'Division'] = n_div
-                                            st.session_state.proyectos.at[idx_p, 'Ubicación'] = n_ubi
-                                            st.session_state.proyectos.at[idx_p, 'Estado'] = n_est
-                                            st.session_state.proyectos.at[idx_p, 'Tipo_Proyecto'] = n_tipo
-                                            st.session_state.proyectos.at[idx_p, 'Inicio'] = d_i.strftime('%Y-%m-%d')
-                                            st.session_state.proyectos.at[idx_p, 'Fin'] = d_f.strftime('%Y-%m-%d')
-                                            st.session_state.proyectos.at[idx_p, 'Presupuesto'] = v_p
-                                            st.session_state.proyectos.at[idx_p, 'Honorarios_Diseno'] = v_hon
-                                            st.session_state.proyectos.at[idx_p, 'Presupuesto_FFE'] = v_ffe
-                                            st.session_state.proyectos.at[idx_p, 'GG_Presupuesto'] = v_gg
-                                            clear_base_dfs()
-                                            st.success("Datos actualizados correctamente.")
-                                            st.rerun()
+                                        st.session_state.proyectos.at[idx_p, 'Nombre'] = n_nom
+                                        st.session_state.proyectos.at[idx_p, 'Cliente'] = n_cli
+                                        st.session_state.proyectos.at[idx_p, 'Division'] = n_div
+                                        st.session_state.proyectos.at[idx_p, 'Ubicación'] = n_ubi
+                                        st.session_state.proyectos.at[idx_p, 'Estado'] = n_est
+                                        st.session_state.proyectos.at[idx_p, 'Tipo_Proyecto'] = n_tipo
+                                        st.session_state.proyectos.at[idx_p, 'Inicio'] = d_i.strftime('%Y-%m-%d')
+                                        st.session_state.proyectos.at[idx_p, 'Fin'] = d_f.strftime('%Y-%m-%d')
+                                        st.session_state.proyectos.at[idx_p, 'Presupuesto'] = v_p
+                                        st.session_state.proyectos.at[idx_p, 'Honorarios_Diseno'] = v_hon
+                                        st.session_state.proyectos.at[idx_p, 'Presupuesto_FFE'] = v_ffe
+                                        st.session_state.proyectos.at[idx_p, 'GG_Presupuesto'] = v_gg
+                                        clear_base_dfs()
+                                        st.success("Datos actualizados correctamente.")
+                                        st.rerun()
 
-                            with c_btn3:
-                                with st.popover("📝 BRIEF / NOTAS", use_container_width=True):
-                                    with st.form(f"f_notes_m_{idx_p}"):
-                                        c_notas = st.text_area("Notas / Brief del Cliente", value=safe_str(proy.get('Notas', '')), height=140)
-                                        if st.form_submit_button("GUARDAR BRIEF"):
-                                            st.session_state.proyectos.at[idx_p, 'Notas'] = c_notas
-                                            st.success("Notas guardadas.")
-                                            st.rerun()
+                        with c_btn3:
+                            with st.popover("📝 BRIEF / NOTAS", use_container_width=True):
+                                with st.form(f"f_notes_m_{ukey}"):
+                                    c_notas = st.text_area("Notas / Brief del Cliente", value=safe_str(proy.get('Notas', '')), height=140)
+                                    if st.form_submit_button("GUARDAR BRIEF"):
+                                        st.session_state.proyectos.at[idx_p, 'Notas'] = c_notas
+                                        st.success("Notas guardadas.")
+                                        st.rerun()
 
-                            with c_btn4:
-                                if st.button("📦 ARCHIVAR", key=f"arch_{idx_p}", use_container_width=True):
-                                    st.session_state.proyectos.at[idx_p, 'Archivado'] = True
-                                    clear_base_dfs()
-                                    st.rerun()
+                        with c_btn4:
+                            if st.button("📦 ARCHIVAR", key=f"arch_{ukey}", use_container_width=True):
+                                st.session_state.proyectos.at[idx_p, 'Archivado'] = True
+                                clear_base_dfs()
+                                st.rerun()
 
 
 def _render_tab_contratistas(fecha_hoy, df_hoy):
@@ -618,18 +631,14 @@ def _render_tab_finanzas_estudio(fecha_hoy):
 
     flujo_neto = tot_cobrado - (tot_pagado_maestros + tot_caja_gastada + tot_ffe_real)
 
-    f1, f2, f3, f4, f5 = st.columns(5)
-    with f1:
-        render_metric_card("Total Contratos", format_currency(tot_ventas), f"Honorarios: {format_currency(tot_hon)}")
-    with f2:
-        render_metric_card("Total Cobrado", format_currency(tot_cobrado), f"Por cobrar: {format_currency(max(0.0, tot_ventas - tot_cobrado))}", border_color="#4A7C59", text_color="#4A7C59")
-    with f3:
-        render_metric_card("Pagos Contratistas", format_currency(tot_pagado_maestros), "Ejecución de partidas")
-    with f4:
-        render_metric_card("Compras FF&E + Caja", format_currency(tot_ffe_real + tot_caja_gastada), f"FF&E: {format_currency(tot_ffe_real)}")
-    with f5:
-        col_flujo = "#4A7C59" if flujo_neto >= 0 else "#C93B2B"
-        render_metric_card("Flujo de Caja Neto", format_currency(flujo_neto), "Ingresos percibidos vs Egresos", border_color=col_flujo, text_color=col_flujo)
+    col_flujo = "#4A7C59" if flujo_neto >= 0 else "#C93B2B"
+    render_metric_row([
+        {"title": "Total Contratos", "value": format_currency(tot_ventas), "subtitle": f"Honorarios: {format_currency(tot_hon)}"},
+        {"title": "Total Cobrado", "value": format_currency(tot_cobrado), "subtitle": f"Por cobrar: {format_currency(max(0.0, tot_ventas - tot_cobrado))}", "border_color": "#4A7C59", "text_color": "#4A7C59"},
+        {"title": "Pagos Contratistas", "value": format_currency(tot_pagado_maestros), "subtitle": "Ejecución de partidas"},
+        {"title": "Compras FF&E + Caja", "value": format_currency(tot_ffe_real + tot_caja_gastada), "subtitle": f"FF&E: {format_currency(tot_ffe_real)}"},
+        {"title": "Flujo de Caja Neto", "value": format_currency(flujo_neto), "subtitle": "Ingresos percibidos vs Egresos", "border_color": col_flujo, "text_color": col_flujo},
+    ])
 
     st.divider()
 

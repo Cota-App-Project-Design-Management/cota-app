@@ -31,19 +31,44 @@ def render_header(title="COTA APP", subtitle="PROJECT & DESIGN MANAGEMENT", logo
     st.markdown(html, unsafe_allow_html=True)
 
 
-def render_metric_card(title, value, subtitle="", border_color=None, text_color=None):
-    """Renderiza una tarjeta ejecutiva de métrica con estilo editorial cálido."""
+def _build_metric_card_html(title, value, subtitle="", border_color=None, text_color=None) -> str:
+    """Construye el HTML de una tarjeta métrica simétrica sin etiquetas h2/h4 que distorsionen con el CSS de Streamlit."""
     b_style = f"border-top-color: {border_color} !important;" if border_color else ""
     t_style = f"color: {text_color} !important;" if text_color else ""
-    sub_html = f"<small>{subtitle}</small>" if subtitle else ""
-    card_html = (
+    sub_text = subtitle if subtitle else "&nbsp;"
+    return (
         f"<div class='metric-card' style='{b_style}'>"
-        f"<h4>{title}</h4>"
-        f"<h2 style='{t_style}'>{value}</h2>"
-        f"{sub_html}"
+        f"<div class='metric-label' title='{title}'>{title}</div>"
+        f"<div class='metric-value' style='{t_style}' title='{value}'>{value}</div>"
+        f"<div class='metric-sub' title='{subtitle}'>{sub_text}</div>"
         f"</div>"
     )
-    st.markdown(card_html, unsafe_allow_html=True)
+
+
+def render_metric_card(title, value, subtitle="", border_color=None, text_color=None):
+    """Renderiza una tarjeta ejecutiva de métrica con altura fija y estilo editorial cálido."""
+    st.markdown(
+        _build_metric_card_html(title, value, subtitle, border_color, text_color),
+        unsafe_allow_html=True,
+    )
+
+
+def render_metric_row(cards: list[dict]):
+    """
+    Renderiza una fila de tarjetas KPI dentro de una cuadrícula CSS Grid simétrica y adaptable al zoom.
+    Cada elemento de `cards` acepta: title, value, subtitle, border_color, text_color.
+    """
+    inner_html = "".join(
+        _build_metric_card_html(
+            c.get("title", ""),
+            c.get("value", ""),
+            c.get("subtitle", ""),
+            c.get("border_color"),
+            c.get("text_color"),
+        )
+        for c in cards
+    )
+    st.markdown(f"<div class='cota-kpi-grid'>{inner_html}</div>", unsafe_allow_html=True)
 
 
 def render_status_header(label, color="#C85A32"):
@@ -55,3 +80,4 @@ def render_status_header(label, color="#C85A32"):
         f"</h4>"
     )
     st.markdown(html, unsafe_allow_html=True)
+
