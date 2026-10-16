@@ -190,6 +190,20 @@ def cargar_todas_las_tablas(forzar: bool = False):
     if "hashes_tablas" not in st.session_state:
         st.session_state.hashes_tablas = {}
 
+    if (
+        "proyectos" not in st.session_state
+        or st.session_state.proyectos is None
+        or st.session_state.proyectos.empty
+    ) and not st.session_state.get("_initial_load_done", False):
+        forzar = True
+        st.session_state._initial_load_done = True
+
+    if forzar:
+        st.session_state.hubo_error_conexion = False
+        st.session_state.pop("_cloud_xlsx_bytes", None)
+        st.session_state.pop("_cloud_xlsx_tried", None)
+        st.session_state.pop("_gsheets_direct_failed", None)
+
     for key, (sheet_name, cols, bool_col) in TABLAS_ESTUDIO.items():
         if forzar or key not in st.session_state:
             df = cargar_tabla(conn, sheet_url, nube_ok, sheet_name, cols)
@@ -202,11 +216,15 @@ def cargar_todas_las_tablas(forzar: bool = False):
         if key not in st.session_state:
             st.session_state[key] = pd.DataFrame(columns=cols)
 
+    if "proyectos" in st.session_state and not st.session_state.proyectos.empty:
+        st.session_state.hubo_error_conexion = False
+
     recalcular_partidas()
 
 
 def forzar_importacion():
     st.session_state.hubo_error_conexion = False
+    st.session_state._initial_load_done = False
     cargar_todas_las_tablas(forzar=True)
     clear_base_dfs()
 

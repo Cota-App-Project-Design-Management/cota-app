@@ -113,6 +113,10 @@ def get_proyectos_archivados(df_proy):
     return res
 
 
+import io
+import re
+
+
 def _get_local_excel_path():
     """Retorna la ruta al archivo Excel de base de datos en Drive, directorio del proyecto o nube."""
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -125,6 +129,79 @@ def _get_local_excel_path():
         if os.path.exists(c):
             return c
     return candidatos[1]
+
+
+def _extraer_file_id(sheet_url: str) -> str:
+    """Extrae el ID del documento de un enlace de Google Sheets o Google Drive."""
+    if not sheet_url:
+        return ""
+    m = re.search(r"/d/([a-zA-Z0-9-_]+)", str(sheet_url))
+    if m:
+        return m.group(1)
+    m2 = re.search(r"[?&]id=([a-zA-Z0-9-_]+)", str(sheet_url))
+    return m2.group(1) if m2 else ""
+
+
+def _obtener_sesion_google():
+    """Construye una sesión autenticada de Google (Drive + Sheets) usando la Service Account de st.secrets."""
+    try:
+        from google.oauth2.service_account import Credentials
+        from google.auth.transport.requests import AuthorizedSession
+
+        conn_secrets = get_secret("connections", {})
+        gsheets_secrets = conn_secrets.get("gsheets", {}) if hasattr(conn_secrets, "get") else {}
+        if not hasattr(gsheets_secrets, "get"):
+            return None
+
+        sa_info = dict(gsheets_secrets)
+        if "private_key" not in sa_info:
+            return None
+
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
+        return AuthorizedSession(creds)
+    except Exception:
+        return None
+
+
+def _descargar_workbook_nube(sheet_url: str):
+    """
+    Descarga el archivo completo desde Google Drive/Sheets en una sola petición.
+    Soporta tanto archivos .XLSX subidos a Google Drive como Hojas de Cálculo nativas de Google.
+    """
+    if "_cloud_xlsx_bytes" in st.session_state and st.session_state._cloud_xlsx_bytes:
+        return st.session_state._cloud_xlsx_bytes
+    if st.session_state.get("_cloud_xlsx_tried", False):
+        return None
+
+    st.session_state._cloud_xlsx_tried = True
+    file_id = _extraer_file_id(sheet_url)
+    if not file_id:
+        return None
+
+    session = _obtener_sesion_google()
+    if session is None:
+        return None
+
+    urls_intento = [
+        f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true",
+        f"https://www.googleapis.com/drive/v3/files/{file_id}/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx",
+    ]
+
+    for url in urls_intento:
+        try:
+            resp = session.get(url, timeout=12)
+            if resp.status_code == 200 and resp.content and resp.content[:2] == b"PK":
+                st.session_state._cloud_xlsx_bytes = resp.content
+                return resp.content
+        except Exception:
+            continue
+
+    return None
 
 
 def _guardar_hoja_excel(file_path, sheet_name, df):
@@ -157,6 +234,8 @@ def inicializar_conexion_gsheets():
         gsheets_secrets = conn_secrets.get("gsheets", {}) if hasattr(conn_secrets, "get") else {}
         if not sheet_url and hasattr(gsheets_secrets, "get"):
             sheet_url = str(gsheets_secrets.get("spreadsheet", "")).strip()
+        if not sheet_url and hasattr(gsheets_secrets, "get"):
+            sheet_url = str(gsheets_secrets.get("url", "")).strip()
         has_sa = hasattr(gsheets_secrets, "get") and (
             gsheets_secrets.get("type") == "service_account" or "private_key" in gsheets_secrets
         )
@@ -170,18 +249,30 @@ def inicializar_conexion_gsheets():
 
 
 def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
-    """Carga una pestaña desde Google Sheets o desde el archivo Excel en Google Drive con sanitización."""
+    """Carga una pestaña desde Google Drive (.XLSX o Google Sheet) o desde el respaldo local con sanitización."""
     if 'original_tables' not in st.session_state:
         st.session_state.original_tables = {}
 
     df = None
-    if nube_ok and sheet_url and conn is not None:
+
+    # 1. Intentar desde workbook descargado de Google Drive / Sheets (soporta .XLSX nativo en Drive y Google Sheets)
+    if nube_ok and sheet_url:
+        cloud_bytes = _descargar_workbook_nube(sheet_url)
+        if cloud_bytes:
+            try:
+                df = pd.read_excel(io.BytesIO(cloud_bytes), sheet_name=pestaña)
+            except Exception:
+                df = None
+
+    # 2. Si no hubo bytes de Drive, intentar conector directo de Google Sheets
+    if (df is None or df.empty) and nube_ok and sheet_url and conn is not None and not st.session_state.get("_gsheets_direct_failed", False):
         try:
             df = conn.read(spreadsheet=sheet_url, worksheet=pestaña, ttl=300)
         except Exception:
+            st.session_state._gsheets_direct_failed = True
             df = None
 
-    # Carga desde Excel (Google Drive o Local / Respaldo en Repositorio)
+    # 3. Carga desde Excel (Google Drive montado o Respaldo en Repositorio BD_COTA_APP_PRUEBAS.xlsx)
     if df is None or df.empty:
         excel_path = _get_local_excel_path()
         if excel_path and os.path.exists(excel_path):
@@ -245,11 +336,7 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
 
 
 def guardar_tabla(conn, sheet_url, nube_ok, df, pestaña):
-    """Guarda una tabla a Google Sheets o a Excel (Google Drive / local) con validaciones de integridad."""
-    if st.session_state.get('hubo_error_conexion', False):
-        st.error(f"Guardado bloqueado para '{pestaña}': Se detectó un fallo de conexión. Reintente la sincronización.")
-        return False
-
+    """Guarda una tabla a Google Sheets / Google Drive (.XLSX) y a Excel local con validaciones de integridad."""
     # Protección contra borrado accidental de tablas críticas
     if pestaña in ['proyectos', 'tasks', 'maestro'] and (df is None or len(df) == 0):
         st.error(f"Guardado cancelado para '{pestaña}': Intento de sobreescribir con 0 filas.")
@@ -259,16 +346,26 @@ def guardar_tabla(conn, sheet_url, nube_ok, df, pestaña):
     if original_df is not None and original_df.equals(df):
         return True
 
-    if nube_ok and sheet_url and conn is not None:
-        try:
+    # 1. Actualizar siempre el archivo Excel local / respaldo
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rutas_excel = list(dict.fromkeys([
+        r"G:\My Drive\Cota App\BD_COTA_APP_PRUEBAS.xlsx",
+        os.path.join(repo_root, "BD_COTA_APP_PRUEBAS.xlsx"),
+        r"D:\cota-app\BD_COTA_APP_PRUEBAS.xlsx",
+    ]))
+    local_saved_path = None
+    for p in rutas_excel:
+        if _guardar_hoja_excel(p, pestaña, df) and local_saved_path is None:
+            local_saved_path = p
+
+    # 2. Si hay conexión en nube (Google Sheets nativo o archivo .XLSX en Google Drive)
+    if nube_ok and sheet_url:
+        guardado_nube = False
+        if conn is not None:
             try:
                 conn.update(spreadsheet=sheet_url, worksheet=pestaña, data=df)
-                if 'original_tables' in st.session_state:
-                    st.session_state.original_tables[pestaña] = df.copy()
-                st.cache_data.clear()
-                return True
-            except Exception as e_update:
-                # Auto-creación de pestaña faltante con gspread
+                guardado_nube = True
+            except Exception:
                 try:
                     import gspread
                     client = conn.client._client
@@ -278,25 +375,30 @@ def guardar_tabla(conn, sheet_url, nube_ok, df, pestaña):
                     except gspread.exceptions.WorksheetNotFound:
                         spreadsheet.add_worksheet(title=pestaña, rows="100", cols="25")
                     conn.update(spreadsheet=sheet_url, worksheet=pestaña, data=df)
-                    if 'original_tables' in st.session_state:
-                        st.session_state.original_tables[pestaña] = df.copy()
-                    st.cache_data.clear()
-                    return True
+                    guardado_nube = True
                 except Exception:
-                    raise e_update
-        except Exception as e:
-            st.error(f"Error al guardar '{pestaña}': {str(e)}")
-            return False
+                    guardado_nube = False
 
-    # Modo Drive / local: persistir en BD_COTA_APP_PRUEBAS.xlsx
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    rutas_excel = list(dict.fromkeys([
-        r"G:\My Drive\Cota App\BD_COTA_APP_PRUEBAS.xlsx",
-        os.path.join(repo_root, "BD_COTA_APP_PRUEBAS.xlsx"),
-        r"D:\cota-app\BD_COTA_APP_PRUEBAS.xlsx",
-    ]))
-    for p in rutas_excel:
-        _guardar_hoja_excel(p, pestaña, df)
+        # Si el archivo en Google Drive es un .XLSX (con etiqueta .XLSX), actualizar vía Google Drive API
+        if not guardado_nube and local_saved_path and os.path.exists(local_saved_path):
+            file_id = _extraer_file_id(sheet_url)
+            session = _obtener_sesion_google()
+            if file_id and session is not None:
+                try:
+                    with open(local_saved_path, "rb") as f_xlsx:
+                        xlsx_bytes = f_xlsx.read()
+                    up_url = f"https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=media&supportsAllDrives=true"
+                    resp = session.patch(
+                        up_url,
+                        data=xlsx_bytes,
+                        headers={"Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                        timeout=20,
+                    )
+                    if resp.status_code in (200, 201):
+                        st.session_state._cloud_xlsx_bytes = xlsx_bytes
+                        guardado_nube = True
+                except Exception:
+                    pass
 
     if 'original_tables' in st.session_state:
         st.session_state.original_tables[pestaña] = df.copy()
