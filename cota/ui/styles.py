@@ -15,13 +15,15 @@ def get_app_css() -> str:
             --bg-stone: #EFECE6;
             --bg-card: #FAF8F5;
             --bg-white: #FFFFFF;
+            --card-bg: #FFFFFF;
+            --border-color: #DFD9CE;
             --clay-primary: #C85A32;
             --clay-hover: #A94622;
             --clay-soft: rgba(200, 90, 50, 0.10);
             --clay-border: rgba(200, 90, 50, 0.30);
             --text-charcoal: #262320;
             --text-taupe: #6E665E;
-            --text-muted: #9A9187;
+            --text-muted: #8C8277;
             --border-sand: #DFD9CE;
             --status-ok: #4A7C59;
             --status-warn: #D98A2B;
@@ -59,7 +61,59 @@ def get_app_css() -> str:
             font-weight: 700 !important;
         }
 
-        /* 3. TARJETA DE LOGIN EDITORIAL */
+        /* 3. ENCABEZADO CORPORATIVO DEL ESTUDIO */
+        .header-container {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            background-color: var(--bg-white);
+            border: 1px solid var(--border-sand);
+            border-left: 5px solid var(--clay-primary);
+            border-radius: 12px;
+            padding: 16px 24px;
+            margin-bottom: 22px;
+            box-shadow: 0 4px 16px rgba(38, 35, 32, 0.04);
+        }
+
+        .header-logo {
+            max-height: 46px;
+            width: auto;
+            object-fit: contain;
+        }
+
+        .header-divider {
+            width: 1px;
+            height: 36px;
+            background-color: var(--border-sand);
+        }
+
+        .header-title-box {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .header-title {
+            font-size: 21px !important;
+            font-weight: 700 !important;
+            color: var(--text-charcoal) !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            line-height: 1.2 !important;
+            letter-spacing: 0.02em !important;
+        }
+
+        .header-subtitle {
+            font-family: 'JetBrains Mono', monospace !important;
+            font-size: 11px !important;
+            font-weight: 500 !important;
+            color: var(--text-taupe) !important;
+            letter-spacing: 0.14em !important;
+            text-transform: uppercase;
+            margin-top: 3px;
+        }
+
+        /* 4. TARJETA DE LOGIN EDITORIAL */
         .login-card {
             background-color: var(--bg-white);
             border: 1px solid var(--border-sand);
@@ -102,12 +156,158 @@ def get_app_css() -> str:
             margin-bottom: 0 !important;
         }
 
-        /* 4. FORMULARIOS E INPUTS */
+        /* 5. TARJETAS DE MÉTRICAS Y KPIs (.metric-card y stMetric) */
+        .metric-card {
+            background-color: var(--bg-white);
+            border: 1px solid var(--border-sand);
+            border-top: 3px solid var(--clay-primary);
+            border-radius: 10px;
+            padding: 14px 16px;
+            box-shadow: 0 3px 12px rgba(38, 35, 32, 0.03);
+            margin-bottom: 10px;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(38, 35, 32, 0.06);
+        }
+
+        .metric-card h4 {
+            font-family: 'Plus Jakarta Sans', sans-serif !important;
+            font-size: 11px !important;
+            font-weight: 600 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.06em !important;
+            color: var(--text-taupe) !important;
+            margin: 0 0 6px 0 !important;
+        }
+
+        .metric-card h2 {
+            font-family: 'JetBrains Mono', monospace !important;
+            font-size: 20px !important;
+            font-weight: 600 !important;
+            color: var(--text-charcoal) !important;
+            margin: 0 0 4px 0 !important;
+            line-height: 1.2 !important;
+        }
+
+        .metric-card small {
+            font-family: 'Plus Jakarta Sans', sans-serif !important;
+            font-size: 11px !important;
+            color: var(--text-muted) !important;
+            display: block;
+        }
+
+        div[data-testid="stMetric"] {
+            background-color: var(--bg-white) !important;
+            border: 1px solid var(--border-sand) !important;
+            border-left: 4px solid var(--clay-primary) !important;
+            border-radius: 10px !important;
+            padding: 16px 20px !important;
+            box-shadow: 0 4px 14px rgba(38, 35, 32, 0.03) !important;
+        }
+
+        div[data-testid="stMetricLabel"] p {
+            color: var(--text-taupe) !important;
+            font-size: 12px !important;
+            font-weight: 600 !important;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        div[data-testid="stMetricValue"] div {
+            color: var(--text-charcoal) !important;
+            font-family: 'JetBrains Mono', monospace !important;
+            font-size: 24px !important;
+            font-weight: 600 !important;
+        }
+
+        /* 6. CABECERAS DE SECCIÓN Y BADGES DE OBRA */
+        .cota-status-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 13px !important;
+            font-weight: 700 !important;
+            letter-spacing: 0.06em !important;
+            text-transform: uppercase;
+            margin: 14px 0 10px 0 !important;
+        }
+
+        .cota-status-header-bar {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+        }
+
+        .cota-section-header {
+            background-color: var(--bg-stone);
+            border: 1px solid var(--border-sand);
+            border-left: 4px solid var(--clay-primary);
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-charcoal);
+            margin: 18px 0 10px 0;
+        }
+
+        .cota-section-header span {
+            color: var(--clay-primary);
+            margin-right: 6px;
+        }
+
+        .cota-badge-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            justify-content: flex-end;
+            padding-top: 4px;
+        }
+
+        .cota-badge {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 5px 10px;
+            border-radius: 6px;
+            border: 1px solid var(--border-sand);
+            background-color: var(--bg-white);
+        }
+
+        .cota-badge-pactado {
+            color: var(--text-charcoal);
+            background-color: var(--bg-stone);
+        }
+
+        .cota-badge-pagado {
+            color: var(--clay-primary);
+            border-color: var(--clay-border);
+            background-color: var(--clay-soft);
+        }
+
+        .cota-badge-saldo-ok {
+            color: var(--status-ok);
+            border-color: rgba(74, 124, 89, 0.35);
+            background-color: rgba(74, 124, 89, 0.10);
+        }
+
+        .cota-badge-saldo-error {
+            color: var(--status-err);
+            border-color: rgba(201, 59, 43, 0.35);
+            background-color: rgba(201, 59, 43, 0.10);
+        }
+
+        /* 7. FORMULARIOS E INPUTS */
         div[data-testid="stForm"] {
             background-color: var(--bg-white) !important;
             border: 1px solid var(--border-sand) !important;
             border-radius: 12px !important;
-            padding: 24px !important;
+            padding: 20px !important;
             box-shadow: 0 6px 20px rgba(38, 35, 32, 0.04) !important;
         }
 
@@ -133,32 +333,31 @@ def get_app_css() -> str:
             border-radius: 8px !important;
         }
 
-        /* 5. BOTONES (ROJO ARCILLA Y SECUNDARIOS PIEDRA) */
-        .stButton > button, .stFormSubmitButton > button {
+        /* 8. BOTONES (ROJO ARCILLA Y SECUNDARIOS PIEDRA) */
+        .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
             border-radius: 8px !important;
             font-family: 'Plus Jakarta Sans', sans-serif !important;
             font-weight: 600 !important;
             font-size: 13px !important;
-            letter-spacing: 0.03em !important;
-            padding: 0.55rem 1.1rem !important;
+            letter-spacing: 0.02em !important;
+            padding: 0.5rem 1rem !important;
             transition: all 0.2s ease !important;
             border: 1px solid var(--border-sand) !important;
             background-color: var(--bg-white) !important;
             color: var(--text-charcoal) !important;
         }
 
-        .stButton > button:hover {
+        .stButton > button:hover, .stDownloadButton > button:hover {
             border-color: var(--clay-primary) !important;
             color: var(--clay-primary) !important;
             background-color: var(--bg-card) !important;
         }
 
-        /* Botones Primarios e Ingreso */
         .stButton > button[kind="primary"], .stFormSubmitButton > button {
             background-color: var(--clay-primary) !important;
             color: #FFFFFF !important;
             border: 1px solid var(--clay-primary) !important;
-            box-shadow: 0 4px 12px rgba(200, 90, 50, 0.20) !important;
+            box-shadow: 0 4px 12px rgba(200, 90, 50, 0.18) !important;
         }
 
         .stButton > button[kind="primary"] *, .stFormSubmitButton > button * {
@@ -168,12 +367,12 @@ def get_app_css() -> str:
         .stButton > button[kind="primary"]:hover, .stFormSubmitButton > button:hover {
             background-color: var(--clay-hover) !important;
             border-color: var(--clay-hover) !important;
-            box-shadow: 0 6px 16px rgba(169, 70, 34, 0.28) !important;
+            box-shadow: 0 6px 16px rgba(169, 70, 34, 0.25) !important;
         }
 
-        /* 6. PESTAÑAS (TABS ARQUITECTÓNICOS) */
+        /* 9. PESTAÑAS (TABS ARQUITECTÓNICOS) */
         .stTabs [data-baseweb="tab-list"] {
-            gap: 8px;
+            gap: 6px;
             background-color: var(--bg-stone);
             padding: 6px;
             border-radius: 10px;
@@ -183,10 +382,10 @@ def get_app_css() -> str:
         .stTabs [data-baseweb="tab"] {
             height: 38px;
             border-radius: 7px;
-            padding: 0 16px;
+            padding: 0 14px;
             font-family: 'Plus Jakarta Sans', sans-serif !important;
-            font-weight: 500;
-            font-size: 13px;
+            font-weight: 600;
+            font-size: 12.5px;
             color: var(--text-taupe) !important;
             background-color: transparent;
             border: none !important;
@@ -195,41 +394,17 @@ def get_app_css() -> str:
         .stTabs [aria-selected="true"] {
             background-color: var(--bg-white) !important;
             color: var(--clay-primary) !important;
-            font-weight: 600 !important;
+            font-weight: 700 !important;
             box-shadow: 0 2px 6px rgba(38, 35, 32, 0.08);
         }
 
-        /* 7. MÉTRICAS Y KPIs DE PROYECTO */
-        div[data-testid="stMetric"] {
-            background-color: var(--bg-white) !important;
-            border: 1px solid var(--border-sand) !important;
-            border-left: 4px solid var(--clay-primary) !important;
-            border-radius: 10px !important;
-            padding: 16px 20px !important;
-            box-shadow: 0 4px 14px rgba(38, 35, 32, 0.03) !important;
-        }
-
-        div[data-testid="stMetricLabel"] p {
-            color: var(--text-taupe) !important;
-            font-size: 12px !important;
-            font-weight: 600 !important;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        div[data-testid="stMetricValue"] div {
-            color: var(--text-charcoal) !important;
-            font-family: 'JetBrains Mono', monospace !important;
-            font-size: 24px !important;
-            font-weight: 600 !important;
-        }
-
-        /* 8. EXPANDERS, TABLAS Y CONTENEDORES */
+        /* 10. EXPANDERS, TABLAS Y CONTENEDORES */
         div[data-testid="stExpander"] {
             background-color: var(--bg-white) !important;
             border: 1px solid var(--border-sand) !important;
             border-radius: 10px !important;
             box-shadow: 0 2px 8px rgba(38, 35, 32, 0.02) !important;
+            margin-bottom: 8px !important;
         }
 
         div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
@@ -237,6 +412,66 @@ def get_app_css() -> str:
             border-radius: 10px !important;
             overflow: hidden !important;
             background-color: var(--bg-white) !important;
+        }
+
+        /* 11. CALENDARIO TÉCNICO MENSUAL */
+        .calendar-container {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 8px;
+            margin-top: 14px;
+        }
+
+        .calendar-header-day {
+            background-color: var(--bg-stone);
+            border: 1px solid var(--border-sand);
+            border-radius: 6px;
+            padding: 8px;
+            text-align: center;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-taupe);
+            letter-spacing: 0.08em;
+        }
+
+        .calendar-cell {
+            background-color: var(--bg-white);
+            border: 1px solid var(--border-sand);
+            border-radius: 8px;
+            min-height: 92px;
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .calendar-cell.today {
+            border: 2px solid var(--clay-primary);
+            background-color: var(--bg-card);
+        }
+
+        .calendar-cell-date {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-taupe);
+            margin-bottom: 2px;
+        }
+
+        .calendar-cell.today .calendar-cell-date {
+            color: var(--clay-primary);
+            font-weight: 700;
+        }
+
+        .cal-task-item {
+            font-size: 10.5px;
+            font-weight: 500;
+            padding: 3px 6px;
+            border-radius: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         hr {

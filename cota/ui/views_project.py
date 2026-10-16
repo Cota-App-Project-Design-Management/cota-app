@@ -65,12 +65,12 @@ def render_proyecto_view(proy_name):
         return
 
     proy_data = proy_matches.iloc[0]
-    p_color = proy_data.get('Color', '#00E5FF')
-    if pd.isna(p_color) or not str(p_color).startswith('#'):
-        p_color = '#00E5FF'
+    p_color = proy_data.get('Color', '#C85A32')
+    if pd.isna(p_color) or not str(p_color).startswith('#') or str(p_color).upper() == '#00E5FF':
+        p_color = '#C85A32'
 
     # Barra superior de navegación del proyecto
-    col_back, col_title, col_stat = st.columns([1.5, 6, 2.5])
+    col_back, col_title, col_stat = st.columns([1.6, 6, 2.4])
     with col_back:
         if st.button("⬅ PORTAFOLIO", use_container_width=True):
             st.session_state.vista_actual = 'main'
@@ -83,15 +83,15 @@ def render_proyecto_view(proy_name):
         cliente_p = proy_data.get('Cliente', '')
         cliente_txt = f"  //  CLIENTE: {cliente_p.upper()}" if cliente_p else ""
         st.markdown(
-            f"<h3 style='color: {p_color}; margin: 0; font-family: monospace; font-size: 20px;'>"
-            f"PROYECTO: {str(proy_name).upper()} <span style='font-size: 13px; color: #94a3b8;'>({tipo_p}){cliente_txt}</span></h3>",
+            f"<h3 style='color: {p_color} !important; margin: 0; font-size: 20px;'>"
+            f"PROYECTO: {str(proy_name).upper()} <span style='font-size: 13px; color: #6E665E; font-weight: 500;'>({tipo_p}){cliente_txt}</span></h3>",
             unsafe_allow_html=True
         )
 
     with col_stat:
         est_curr = proy_data.get('Estado', '🟡 Planificación')
         st.markdown(
-            f"<div style='text-align: right; font-family: monospace; font-weight: bold; font-size: 13px; padding-top: 6px; color: #cbd5e1;'>"
+            f"<div style='text-align: right; font-family: monospace; font-weight: 600; font-size: 13px; padding-top: 6px; color: #262320;'>"
             f"ESTADO: {est_curr}</div>",
             unsafe_allow_html=True
         )
@@ -109,61 +109,37 @@ def render_proyecto_view(proy_name):
 
     # Tabs especializadas para diseño y arquitectura
     t_resumen, t_fases, t_ffe, t_planos, t_obra, t_finanzas, t_actas, t_punch = st.tabs([
-        "[ 01. RESUMEN ]",
-        "[ 02. FASES DE DISEÑO ]",
-        "[ 03. ESPECIFICACIONES FF&E ]",
-        "[ 04. ENTREGABLES & PLANOS ]",
-        "[ 05. EJECUCIÓN & PARTIDAS ]",
-        "[ 06. COBROS & FINANZAS ]",
-        "[ 07. REUNIONES & ACTAS ]",
-        "[ 08. PUNCH LIST ]"
+        "01. RESUMEN",
+        "02. FASES DE DISEÑO",
+        "03. ESPECIFICACIONES FF&E",
+        "04. ENTREGABLES & PLANOS",
+        "05. EJECUCIÓN & PARTIDAS",
+        "06. COBROS & FINANZAS",
+        "07. REUNIONES & ACTAS",
+        "08. PUNCH LIST"
     ])
 
-    # ----------------------------------------------------
-    # TAB 1: RESUMEN EJECUTIVO
-    # ----------------------------------------------------
     with t_resumen:
         _render_tab_resumen(proy_name, proy_data)
 
-    # ----------------------------------------------------
-    # TAB 2: FASES DE DISEÑO
-    # ----------------------------------------------------
     with t_fases:
         _render_tab_fases(proy_name, proy_data)
 
-    # ----------------------------------------------------
-    # TAB 3: ESPECIFICACIONES FF&E
-    # ----------------------------------------------------
     with t_ffe:
         _render_tab_ffe(proy_name, proy_data)
 
-    # ----------------------------------------------------
-    # TAB 4: ENTREGABLES Y PLANOS
-    # ----------------------------------------------------
     with t_planos:
         _render_tab_entregables(proy_name, proy_data)
 
-    # ----------------------------------------------------
-    # TAB 5: EJECUCIÓN Y PARTIDAS
-    # ----------------------------------------------------
     with t_obra:
         _render_tab_obra(proy_name, proy_data)
 
-    # ----------------------------------------------------
-    # TAB 6: COBROS Y FINANZAS
-    # ----------------------------------------------------
     with t_finanzas:
         _render_tab_finanzas(proy_name, proy_data)
 
-    # ----------------------------------------------------
-    # TAB 7: REUNIONES Y ACTAS
-    # ----------------------------------------------------
     with t_actas:
         _render_tab_actas(proy_name, proy_data)
 
-    # ----------------------------------------------------
-    # TAB 8: PUNCH LIST
-    # ----------------------------------------------------
     with t_punch:
         _render_tab_punch(proy_name, proy_data)
 
@@ -173,8 +149,7 @@ def render_proyecto_view(proy_name):
 # ====================================================
 
 def _render_tab_resumen(proy_name, proy_data):
-    """Pestaña 1: Resumen y métricas globales del proyecto."""
-    # Cálculos financieros
+    """Pestaña 1: Resumen ejecutivo y métricas globales del proyecto."""
     ppto_venta = safe_float(proy_data.get('Presupuesto', 0.0))
     hon_diseno = safe_float(proy_data.get('Honorarios_Diseno', 0.0))
     ppto_ffe = safe_float(proy_data.get('Presupuesto_FFE', 0.0))
@@ -198,7 +173,7 @@ def _render_tab_resumen(proy_name, proy_data):
     total_cobrado_cliente = pd.to_numeric(df_cobros_p['Monto_Cobrado'], errors='coerce').sum() if not df_cobros_p.empty else 0.0
 
     # Avance en fases
-    fases_p = st.session_state.fases[st.session_state.fases['Proyecto'] == proy_name]
+    fases_p = st.session_state.fases[st.session_state.fases['Proyecto'] == proy_name].sort_values(by='Orden')
     n_fases = len(fases_p)
     n_fases_ok = len(fases_p[fases_p['Aprobado_Cliente'].apply(to_bool) | (fases_p['Estado'].astype(str).str.contains('Aprobada', case=False))])
     pct_fases = (n_fases_ok / n_fases * 100) if n_fases > 0 else 0.0
@@ -207,41 +182,77 @@ def _render_tab_resumen(proy_name, proy_data):
     with c1:
         render_metric_card("Ppto. Total", format_currency(ppto_venta), f"Honorarios: {format_currency(hon_diseno)}")
     with c2:
-        render_metric_card("Cobrado a Cliente", format_currency(total_cobrado_cliente), f"Saldo: {format_currency(ppto_venta - total_cobrado_cliente)}", border_color="#10b981", text_color="#10b981")
+        render_metric_card("Cobrado a Cliente", format_currency(total_cobrado_cliente), f"Saldo: {format_currency(max(0.0, ppto_venta - total_cobrado_cliente))}", border_color="#4A7C59", text_color="#4A7C59")
     with c3:
-        render_metric_card("Pagos a Contratistas", format_currency(total_pagado_maestros), "Ejecución de obra")
+        render_metric_card("Pagos Contratistas", format_currency(total_pagado_maestros), "Ejecución de obra")
     with c4:
         render_metric_card("Compras FF&E", format_currency(costo_real_ffe), f"Meta: {format_currency(ppto_ffe)}")
     with c5:
-        col_caja = "#10b981" if caja_restante >= 0 else "#ef4444"
+        col_caja = "#4A7C59" if caja_restante >= 0 else "#C93B2B"
         render_metric_card("Caja Chica Saldo", format_currency(caja_restante), f"Gastado: {format_currency(caja_gastada)}", border_color=col_caja, text_color=col_caja)
     with c6:
-        render_metric_card("Fases Aprobadas", f"{pct_fases:.0f}%", f"{n_fases_ok} de {n_fases} fases completadas", border_color="#00E5FF", text_color="#00E5FF")
+        render_metric_card("Fases Aprobadas", f"{pct_fases:.0f}%", f"{n_fases_ok} de {n_fases} fases completadas", border_color="#C85A32", text_color="#C85A32")
 
     st.divider()
 
-    # Datos descriptivos y notas
-    col_d1, col_d2 = st.columns([1, 1])
+    # Datos descriptivos y estado de fases
+    col_d1, col_d2 = st.columns([1, 1.1])
     with col_d1:
         st.markdown("#### FICHA TÉCNICA DEL PROYECTO")
         info_items = [
-            ("Líder Asignado", proy_data.get('Encargado', 'N/A')),
+            ("Líder de Diseño", proy_data.get('Encargado', 'N/A')),
             ("Cliente", proy_data.get('Cliente', 'N/A')),
+            ("Tipología", proy_data.get('Tipo_Proyecto', 'Diseño Interior')),
             ("Ubicación", proy_data.get('Ubicación', 'N/A')),
             ("Carpeta / División", proy_data.get('Division', 'General')),
             ("Fecha Inicio", format_date(proy_data.get('Inicio'))),
-            ("Fecha Estimada Fin", format_date(proy_data.get('Fin'))),
+            ("Fecha Estimada Entrega", format_date(proy_data.get('Fin'))),
         ]
-        for k, v in info_items:
-            st.markdown(f"<div style='display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #1e293b;'><span style='color:#94a3b8;'>{k}:</span><span style='color:#ffffff; font-weight:600;'>{v}</span></div>", unsafe_allow_html=True)
+        rows_html = "".join(
+            f"<div style='display:flex; justify-content:space-between; padding:8px 12px; border-bottom:1px solid #DFD9CE;'>"
+            f"<span style='color:#6E665E; font-weight:500;'>{k}:</span>"
+            f"<span style='color:#262320; font-weight:600;'>{v}</span></div>"
+            for k, v in info_items
+        )
+        st.markdown(
+            f"<div style='background:#FFFFFF; border:1px solid #DFD9CE; border-radius:10px; overflow:hidden; margin-bottom:14px;'>{rows_html}</div>",
+            unsafe_allow_html=True
+        )
 
-    with col_d2:
-        st.markdown("#### NOTAS Y OBJETIVOS DE DISEÑO")
+        st.markdown("#### BRIEF Y OBJETIVOS DE DISEÑO")
         notas_p = str(proy_data.get('Notas', '')).strip()
         if notas_p and notas_p.lower() not in ['nan', 'none']:
-            st.info(notas_p)
+            st.markdown(
+                f"<div style='background:#FAF8F5; border:1px solid #DFD9CE; border-left:4px solid #C85A32; border-radius:8px; padding:12px 16px; color:#262320; font-size:13.5px; line-height:1.6;'>{notas_p}</div>",
+                unsafe_allow_html=True
+            )
         else:
-            st.markdown("<p style='color:#64748b; font-style:italic;'>Sin notas registradas para este proyecto.</p>", unsafe_allow_html=True)
+            st.markdown("<p style='color:#8C8277; font-style:italic;'>Sin notas registradas en el brief de este proyecto.</p>", unsafe_allow_html=True)
+
+    with col_d2:
+        st.markdown("#### ESTADO DE LAS 8 FASES DE DISEÑO")
+        if not fases_p.empty:
+            fases_items = []
+            for _, fr in fases_p.iterrows():
+                est_f = str(fr.get('Estado', '⚪ No iniciada'))
+                aprob = to_bool(fr.get('Aprobado_Cliente', False)) or ('Aprobada' in est_f)
+                av_pct = int(safe_float(fr.get('Avance_Pct', 100 if aprob else 0)))
+                col_bar = "#4A7C59" if aprob else ("#C85A32" if av_pct > 0 else "#DFD9CE")
+                badge_txt = "✓ Aprobada" if aprob else est_f
+                fases_items.append(
+                    f"<div style='padding:7px 12px; border-bottom:1px solid #EFECE6;'>"
+                    f"<div style='display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:4px;'>"
+                    f"<span style='color:#262320; font-weight:600;'>{fr.get('Fase', '')}</span>"
+                    f"<span style='color:#6E665E; font-family:monospace; font-size:11.5px;'>{badge_txt} ({av_pct}%)</span>"
+                    f"</div>"
+                    f"<div style='background:#EFECE6; border-radius:4px; height:5px; overflow:hidden;'>"
+                    f"<div style='background:{col_bar}; width:{max(0, min(100, av_pct))}%; height:100%;'></div>"
+                    f"</div></div>"
+                )
+            st.markdown(
+                f"<div style='background:#FFFFFF; border:1px solid #DFD9CE; border-radius:10px; overflow:hidden;'>{''.join(fases_items)}</div>",
+                unsafe_allow_html=True
+            )
 
 
 def _render_tab_fases(proy_name, proy_data):
@@ -263,22 +274,21 @@ def _render_tab_fases(proy_name, proy_data):
     df_chart = df_chart.dropna(subset=['Inicio_DT', 'Fin_DT'])
 
     if not df_chart.empty:
-        # Extender 1 día si inicio == fin
         mask_same = df_chart['Inicio_DT'].dt.date == df_chart['Fin_DT'].dt.date
         df_chart.loc[mask_same, 'Fin_DT'] = df_chart['Fin_DT'] + datetime.timedelta(days=1)
 
         color_scale = alt.Scale(
             domain=STATUS_FASES,
-            range=['#475569', '#eab308', '#00E5FF', '#10b981']
+            range=['#9A9187', '#D98A2B', '#C85A32', '#4A7C59']
         )
 
-        chart_fases = alt.Chart(df_chart).mark_bar(cornerRadius=3).encode(
-            x=alt.X('Inicio_DT:T', title='Cronograma de Diseño', axis=alt.Axis(gridColor='#1e293b', domainColor='#1e293b', format='%d %b')),
+        chart_fases = alt.Chart(df_chart).mark_bar(cornerRadius=4, height=18).encode(
+            x=alt.X('Inicio_DT:T', title='Cronograma de Diseño', axis=alt.Axis(gridColor='#DFD9CE', domainColor='#DFD9CE', labelColor='#6E665E', titleColor='#262320', format='%d %b')),
             x2='Fin_DT:T',
-            y=alt.Y('Fase:N', sort=alt.SortField(field='Orden', order='ascending'), title='', axis=alt.Axis(labelColor='#cbd5e1')),
-            color=alt.Color('Estado:N', scale=color_scale, legend=alt.Legend(title="Estado", labelColor='#cbd5e1')),
+            y=alt.Y('Fase:N', sort=alt.SortField(field='Orden', order='ascending'), title='', axis=alt.Axis(labelColor='#262320', labelFontWeight='bold', labelLimit=240)),
+            color=alt.Color('Estado:N', scale=color_scale, legend=alt.Legend(title="Estado de Fase", orient="top", labelColor='#262320', titleColor='#6E665E')),
             tooltip=['Fase', 'Etapa', 'Estado', 'Responsable', alt.Tooltip('Avance_Pct:Q', title='Avance %')]
-        ).properties(height=280).configure_view(strokeOpacity=0).configure_axis(grid=True)
+        ).properties(height=290).configure_view(strokeOpacity=0).configure_axis(grid=True)
 
         st.altair_chart(chart_fases, use_container_width=True)
 
@@ -396,10 +406,16 @@ def _render_tab_ffe(proy_name, proy_data):
 
     # Métricas del subconjunto de FF&E
     df_filtrado = df_mat_p.copy()
+    ffe_group_cols = ['Proyecto']
+    ffe_group_vals = [proy_name]
     if filtro_amb != "Todos":
         df_filtrado = df_filtrado[df_filtrado['Ambiente'] == filtro_amb]
+        ffe_group_cols.append('Ambiente')
+        ffe_group_vals.append(filtro_amb)
     if filtro_cat != "Todas":
         df_filtrado = df_filtrado[df_filtrado['Categoria'] == filtro_cat]
+        ffe_group_cols.append('Categoria')
+        ffe_group_vals.append(filtro_cat)
 
     tot_est = pd.to_numeric(df_filtrado['Costo_Estimado'], errors='coerce').sum() if not df_filtrado.empty else 0.0
     tot_real = pd.to_numeric(df_filtrado['Costo_Real'], errors='coerce').sum() if not df_filtrado.empty else 0.0
@@ -410,12 +426,36 @@ def _render_tab_ffe(proy_name, proy_data):
     with m1:
         render_metric_card("Total Estimado", format_currency(tot_est), f"{n_items} elementos especificados")
     with m2:
-        render_metric_card("Total Compra / Real", format_currency(tot_real), f"Diferencia: {format_currency(tot_est - tot_real)}")
+        render_metric_card("Total Compra / Real", format_currency(tot_real), f"Diferencia: {format_currency(tot_est - tot_real)}", border_color="#C85A32")
     with m3:
-        render_metric_card("Aprobados por Cliente", f"{n_aprobados} / {n_items}", f"{(n_aprobados/n_items*100 if n_items>0 else 0):.0f}% del catálogo", border_color="#10b981")
+        render_metric_card("Aprobados por Cliente", f"{n_aprobados} / {n_items}", f"{(n_aprobados/n_items*100 if n_items>0 else 0):.0f}% del catálogo", border_color="#4A7C59", text_color="#4A7C59")
     with m4:
-        # Desglose en tabla
-        render_metric_card("Ambientes", str(df_mat_p['Ambiente'].nunique()), "Distribuidos en el proyecto")
+        render_metric_card("Ambientes", str(df_mat_p['Ambiente'].nunique()), "Distribuidos en el proyecto", border_color="#6E665E")
+
+    # Resumen por Ambiente si hay datos
+    if not df_mat_p.empty:
+        with st.expander("📊 Ver desglose de presupuesto FF&E por Ambiente", expanded=False):
+            df_amb_sum = df_mat_p.copy()
+            df_amb_sum['Costo_Estimado'] = pd.to_numeric(df_amb_sum['Costo_Estimado'], errors='coerce').fillna(0.0)
+            df_amb_sum['Costo_Real'] = pd.to_numeric(df_amb_sum['Costo_Real'], errors='coerce').fillna(0.0)
+            res_amb = df_amb_sum.groupby('Ambiente', as_index=False).agg(
+                Items=('ID', 'count'),
+                Presupuesto_Estimado=('Costo_Estimado', 'sum'),
+                Costo_Real=('Costo_Real', 'sum')
+            ).sort_values('Presupuesto_Estimado', ascending=False)
+            res_amb['Diferencia'] = res_amb['Presupuesto_Estimado'] - res_amb['Costo_Real']
+            st.dataframe(
+                res_amb,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Ambiente": st.column_config.TextColumn("Ambiente"),
+                    "Items": st.column_config.NumberColumn("Ítems", format="%d"),
+                    "Presupuesto_Estimado": st.column_config.NumberColumn("Estimado", format="S/ %.2f"),
+                    "Costo_Real": st.column_config.NumberColumn("Compra / Real", format="S/ %.2f"),
+                    "Diferencia": st.column_config.NumberColumn("Saldo / Ahorro", format="S/ %.2f"),
+                }
+            )
 
     st.divider()
 
@@ -423,7 +463,7 @@ def _render_tab_ffe(proy_name, proy_data):
     base_ffe_key = f"base_df_ffe_{proy_name}_{filtro_amb}_{filtro_cat}"
     counter_key = f"c_{base_ffe_key}"
     c_val = st.session_state.get(counter_key, 0)
-    w_key = f"ed_ffe_{proy_name}_{c_val}"
+    w_key = f"ed_ffe_{proy_name}_{filtro_amb}_{filtro_cat}_{c_val}"
 
     display_cols = ['ID', 'Ambiente', 'Categoria', 'Codigo_Ref', 'Material', 'Cantidad', 'Unidad', 'Precio_Unit_Estimado', 'Costo_Estimado', 'Costo_Real', 'Proveedor', 'Estado', 'Link_Ref', 'Notas']
     for c in display_cols:
@@ -469,8 +509,8 @@ def _render_tab_ffe(proy_name, proy_data):
             base_ffe_key,
             w_key,
             'materiales',
-            ['Proyecto'],
-            [proy_name],
+            ffe_group_cols,
+            ffe_group_vals,
             None,
             ['Ambiente', 'Categoria', 'Codigo_Ref', 'Material', 'Unidad', 'Proveedor', 'Estado', 'Link_Ref', 'Notas'],
             None,
@@ -517,6 +557,23 @@ def _render_tab_entregables(proy_name, proy_data):
                     st.rerun()
 
     df_ent = st.session_state.entregables_planos[st.session_state.entregables_planos['Proyecto'] == proy_name].copy()
+
+    tot_ent = len(df_ent)
+    n_aprob = len(df_ent[df_ent['Estado'] == 'Aprobado']) if not df_ent.empty else 0
+    n_rev = len(df_ent[df_ent['Estado'].isin(['En desarrollo', 'En revisión'])]) if not df_ent.empty else 0
+    n_obs = len(df_ent[df_ent['Estado'] == 'Observado']) if not df_ent.empty else 0
+
+    ek1, ek2, ek3, ek4 = st.columns(4)
+    with ek1:
+        render_metric_card("Total Entregables", str(tot_ent), "Expediente del proyecto")
+    with ek2:
+        render_metric_card("Aprobados", str(n_aprob), f"{(n_aprob/tot_ent*100 if tot_ent>0 else 0):.0f}% validado", border_color="#4A7C59", text_color="#4A7C59")
+    with ek3:
+        render_metric_card("En Desarrollo / Rev.", str(n_rev), "En producción técnica", border_color="#D98A2B", text_color="#D98A2B")
+    with ek4:
+        render_metric_card("Observados", str(n_obs), "Requieren levantamiento", border_color="#C93B2B", text_color="#C93B2B")
+
+    st.divider()
 
     base_ent_key = f"base_df_ent_{proy_name}"
     counter_key = f"c_{base_ent_key}"
@@ -595,7 +652,7 @@ def _render_tab_obra(proy_name, proy_data):
         df_pagos_part = st.session_state.pagos[(st.session_state.pagos['Proyecto'] == proy_name) & (st.session_state.pagos['Partida'] == p_nom)]
         monto_pagado = pd.to_numeric(df_pagos_part['Monto'], errors='coerce').sum() if not df_pagos_part.empty else 0.0
         saldo = monto_pactado - monto_pagado
-        col_s = '#10b981' if saldo >= 0 else '#ef4444'
+        col_s = '#4A7C59' if saldo >= 0 else '#C93B2B'
 
         col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns([1.5, 1.8, 1.8, 1.5, 5.4])
 
@@ -776,9 +833,9 @@ def _render_tab_finanzas(proy_name, proy_data):
     with m1:
         render_metric_card("Total Hitos Contractuales", format_currency(tot_pactado_cobro), "Facturación pactada")
     with m2:
-        render_metric_card("Total Cobrado", format_currency(tot_cobrado), f"Efectivo percibido ({(tot_cobrado/tot_pactado_cobro*100 if tot_pactado_cobro>0 else 0):.0f}%)", border_color="#10b981", text_color="#10b981")
+        render_metric_card("Total Cobrado", format_currency(tot_cobrado), f"Efectivo percibido ({(tot_cobrado/tot_pactado_cobro*100 if tot_pactado_cobro>0 else 0):.0f}%)", border_color="#4A7C59", text_color="#4A7C59")
     with m3:
-        render_metric_card("Saldo por Cobrar", format_currency(saldo_cobrar), "Pendiente de cobro", border_color="#00E5FF", text_color="#00E5FF")
+        render_metric_card("Saldo por Cobrar", format_currency(saldo_cobrar), "Pendiente de cobro", border_color="#C85A32", text_color="#C85A32")
 
     st.divider()
 
@@ -959,14 +1016,14 @@ def _render_tab_actas(proy_name, proy_data):
         if sel_id:
             r_ses = proj_sessions[proj_sessions['ID_Sesion'] == sel_id].iloc[0]
             st.markdown(f"""
-            <div style='background-color: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px;'>
-                <div style='color: #00E5FF; font-weight: bold; font-size: 15px; margin-bottom: 6px;'>{r_ses['Nombre_Sesion']}</div>
-                <div style='display: grid; grid-template-columns: repeat(3, 1fr); font-size: 12px; color: #cbd5e1; gap: 8px;'>
-                    <div><b>Fecha:</b> {r_ses['Fecha_Real']}</div>
-                    <div><b>Hora:</b> {r_ses['Hora']}</div>
-                    <div><b>Tipo:</b> {r_ses.get('Tipo_Reunion', 'Coordinación')}</div>
-                    <div><b>Organizador:</b> {r_ses['Organizador']}</div>
-                    <div><b>Fase:</b> {r_ses['Etapa']}</div>
+            <div style='background-color: #FFFFFF; border: 1px solid #DFD9CE; border-left: 4px solid #C85A32; border-radius: 6px; padding: 14px;'>
+                <div style='color: #C85A32; font-weight: 700; font-size: 15px; margin-bottom: 6px;'>{r_ses['Nombre_Sesion']}</div>
+                <div style='display: grid; grid-template-columns: repeat(3, 1fr); font-size: 12px; color: #262320; gap: 8px;'>
+                    <div><b style='color:#6E665E;'>Fecha:</b> {r_ses['Fecha_Real']}</div>
+                    <div><b style='color:#6E665E;'>Hora:</b> {r_ses['Hora']}</div>
+                    <div><b style='color:#6E665E;'>Tipo:</b> {r_ses.get('Tipo_Reunion', 'Coordinación')}</div>
+                    <div><b style='color:#6E665E;'>Organizador:</b> {r_ses['Organizador']}</div>
+                    <div><b style='color:#6E665E;'>Fase:</b> {r_ses['Etapa']}</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -1132,11 +1189,11 @@ def _render_tab_punch(proy_name, proy_data):
     with m1:
         render_metric_card("Total Observaciones", str(tot_punch), "Detalles detectados")
     with m2:
-        render_metric_card("Pendientes", str(tot_pend), "Por corregir", border_color="#ef4444", text_color="#ef4444")
+        render_metric_card("Pendientes", str(tot_pend), "Por corregir", border_color="#C93B2B", text_color="#C93B2B")
     with m3:
-        render_metric_card("En Corrección", str(tot_corr), "En atención", border_color="#eab308", text_color="#eab308")
+        render_metric_card("En Corrección", str(tot_corr), "En atención", border_color="#D98A2B", text_color="#D98A2B")
     with m4:
-        render_metric_card("Subsanados", str(tot_subs), f"{(tot_subs/tot_punch*100 if tot_punch>0 else 100):.0f}% resuelto", border_color="#10b981", text_color="#10b981")
+        render_metric_card("Subsanados", str(tot_subs), f"{(tot_subs/tot_punch*100 if tot_punch>0 else 100):.0f}% resuelto", border_color="#4A7C59", text_color="#4A7C59")
 
     st.divider()
 
@@ -1185,3 +1242,4 @@ def _render_tab_punch(proy_name, proy_data):
             'ID'
         )
     )
+

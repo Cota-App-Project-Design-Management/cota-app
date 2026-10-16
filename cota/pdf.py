@@ -26,18 +26,20 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
     """
     class MinutaPDF(FPDF):
         def header(self):
-            # Barra superior estética
-            self.set_fill_color(13, 20, 36)
+            # Barra superior estética Warm Atelier (Carbón Cálido + acento Terracota)
+            self.set_fill_color(38, 35, 32)
             self.rect(0, 0, 210, 26, 'F')
+            self.set_fill_color(200, 90, 50)
+            self.rect(0, 25, 210, 1.5, 'F')
 
             # Título del estudio y documento
-            self.set_text_color(0, 229, 255)
+            self.set_text_color(247, 244, 239)
             self.set_font('Helvetica', 'B', 13)
             self.set_xy(12, 8)
             self.cell(140, 6, safe_pdf_str(self.pdf_title).upper(), border=0, align='L')
 
-            self.set_text_color(148, 163, 184)
-            self.set_font('Helvetica', '', 8)
+            self.set_text_color(200, 90, 50)
+            self.set_font('Helvetica', 'B', 8)
             self.set_xy(12, 16)
             self.cell(140, 5, f"{safe_pdf_str(studio_title)} // ACTA DE COORDINACION", border=0, align='L')
 
@@ -53,30 +55,30 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
         def footer(self):
             self.set_y(-15)
             self.set_font('Helvetica', 'I', 8)
-            self.set_text_color(148, 163, 184)
+            self.set_text_color(110, 102, 94)
             self.cell(0, 10, f'Pagina {self.page_no()}/{{nb}}  -  Generado por {safe_pdf_str(studio_title)}', align='C')
 
     pdf = MinutaPDF()
-    pdf.pdf_title = r_ses.get('Nombre_Sesion', 'Acta de Reunión')
+    pdf.pdf_title = r_ses.get('Nombre_Sesion', r_ses.get('Titulo', 'Acta de Reunión'))
     pdf.alias_nb_pages()
     pdf.add_page()
     pdf.set_margins(15, 30, 15)
     pdf.set_y(32)
 
     # 1. Datos Generales
-    pdf.set_fill_color(17, 27, 48)
+    pdf.set_fill_color(38, 35, 32)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font('Helvetica', 'B', 9)
     pdf.cell(0, 7, '  1. DATOS DEL PROYECTO Y REUNION', fill=True, new_x="LMARGIN", new_y="NEXT")
     pdf.ln(2)
 
-    pdf.set_text_color(30, 41, 59)
+    pdf.set_text_color(38, 35, 32)
     info_fields = [
         ('Proyecto:', r_ses.get('Proyecto', '')),
-        ('Tipo de Reunión:', r_ses.get('Tipo_Reunion', 'Coordinación')),
+        ('Tipo de Reunión:', r_ses.get('Tipo_Reunion', r_ses.get('Tipo', 'Coordinación'))),
         ('Etapa / Fase:', r_ses.get('Etapa', 'Diseño')),
-        ('Fecha Programada:', r_ses.get('Fecha_Prog', '')),
-        ('Fecha Realizada:', r_ses.get('Fecha_Real', '')),
+        ('Fecha Programada:', r_ses.get('Fecha_Prog', r_ses.get('Fecha', ''))),
+        ('Fecha Realizada:', r_ses.get('Fecha_Real', r_ses.get('Fecha', ''))),
         ('Hora:', r_ses.get('Hora', '')),
         ('Organizador / Convocante:', r_ses.get('Organizador', '')),
         ('Líder de Proyecto:', r_ses.get('Lider', ''))
@@ -91,20 +93,20 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
     pdf.ln(5)
 
     # 2. Asistentes e Invitados
-    pdf.set_fill_color(17, 27, 48)
+    pdf.set_fill_color(38, 35, 32)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font('Helvetica', 'B', 9)
     pdf.cell(0, 7, '  2. ASISTENCIA Y PARTICIPANTES', fill=True, new_x="LMARGIN", new_y="NEXT")
     pdf.ln(2)
 
-    hs = FontFace(emphasis="B", fill_color=(241, 245, 249), color=(15, 23, 42))
+    hs = FontFace(emphasis="B", fill_color=(239, 236, 230), color=(38, 35, 32))
 
     if invitados_df is None or invitados_df.empty:
-        pdf.set_text_color(100, 116, 139)
+        pdf.set_text_color(110, 102, 94)
         pdf.set_font('Helvetica', 'I', 8)
         pdf.cell(0, 6, 'No hay participantes registrados.', border=1, new_x="LMARGIN", new_y="NEXT")
     else:
-        pdf.set_text_color(15, 23, 42)
+        pdf.set_text_color(38, 35, 32)
         with pdf.table(col_widths=(65, 45, 45, 25), line_height=5, headings_style=hs, borders_layout="HORIZONTAL_LINES") as table:
             headers = table.row()
             pdf.set_font('Helvetica', 'B', 8)
@@ -118,24 +120,24 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
                 r = table.row()
                 r.cell(safe_pdf_str(row.get('Nombre', '')))
                 r.cell(safe_pdf_str(row.get('Empresa', '')))
-                r.cell(safe_pdf_str(row.get('Cargo', '')))
+                r.cell(safe_pdf_str(row.get('Cargo', row.get('Rol', ''))))
                 r.cell(safe_pdf_str(row.get('Asistencia', 'Asistió')))
 
     pdf.ln(5)
 
     # 3. Acuerdos y Compromisos
-    pdf.set_fill_color(17, 27, 48)
+    pdf.set_fill_color(38, 35, 32)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font('Helvetica', 'B', 9)
     pdf.cell(0, 7, '  3. ACUERDOS, COMPROMISOS Y PROXIMOS PASOS', fill=True, new_x="LMARGIN", new_y="NEXT")
     pdf.ln(2)
 
     if acuerdos_df is None or acuerdos_df.empty:
-        pdf.set_text_color(100, 116, 139)
+        pdf.set_text_color(110, 102, 94)
         pdf.set_font('Helvetica', 'I', 8)
         pdf.cell(0, 6, 'No hay acuerdos registrados.', border=1, new_x="LMARGIN", new_y="NEXT")
     else:
-        pdf.set_text_color(15, 23, 42)
+        pdf.set_text_color(38, 35, 32)
         with pdf.table(col_widths=(65, 45, 70), line_height=5, headings_style=hs, borders_layout="HORIZONTAL_LINES") as table:
             headers = table.row()
             pdf.set_font('Helvetica', 'B', 8)
@@ -146,8 +148,9 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
             pdf.set_font('Helvetica', '', 8)
             for _, row in acuerdos_df.iterrows():
                 r = table.row()
-                r.cell(safe_pdf_str(row.get('Descripcion', '')))
+                r.cell(safe_pdf_str(row.get('Descripcion', row.get('Acuerdo', ''))))
                 r.cell(safe_pdf_str(row.get('Responsable', '')))
                 r.cell(safe_pdf_str(row.get('Acuerdo', '')))
 
     return bytes(pdf.output())
+

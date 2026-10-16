@@ -114,15 +114,17 @@ def get_proyectos_archivados(df_proy):
 
 
 def _get_local_excel_path():
-    """Retorna la ruta al archivo Excel de base de datos en Drive o local."""
+    """Retorna la ruta al archivo Excel de base de datos en Drive, directorio del proyecto o nube."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     candidatos = [
         r"G:\My Drive\Cota App\BD_COTA_APP_PRUEBAS.xlsx",
-        r"D:\cota-app\BD_COTA_APP_PRUEBAS.xlsx"
+        os.path.join(repo_root, "BD_COTA_APP_PRUEBAS.xlsx"),
+        r"D:\cota-app\BD_COTA_APP_PRUEBAS.xlsx",
     ]
     for c in candidatos:
         if os.path.exists(c):
             return c
-    return candidatos[0]
+    return candidatos[1]
 
 
 def _guardar_hoja_excel(file_path, sheet_name, df):
@@ -152,9 +154,13 @@ def inicializar_conexion_gsheets():
         from streamlit_gsheets import GSheetsConnection
         sheet_url = get_secret("GSHEETS_URL", "")
         conn_secrets = get_secret("connections", {})
-        gsheets_secrets = conn_secrets.get("gsheets", {}) if isinstance(conn_secrets, dict) else {}
-        has_sa = gsheets_secrets.get("type") == "service_account" or "private_key" in gsheets_secrets
-        
+        gsheets_secrets = conn_secrets.get("gsheets", {}) if hasattr(conn_secrets, "get") else {}
+        if not sheet_url and hasattr(gsheets_secrets, "get"):
+            sheet_url = str(gsheets_secrets.get("spreadsheet", "")).strip()
+        has_sa = hasattr(gsheets_secrets, "get") and (
+            gsheets_secrets.get("type") == "service_account" or "private_key" in gsheets_secrets
+        )
+
         if sheet_url and has_sa:
             conn = st.connection("gsheets", type=GSheetsConnection)
             return conn, sheet_url, True
@@ -293,7 +299,13 @@ def guardar_tabla(conn, sheet_url, nube_ok, df, pestaña):
             return False
 
     # Modo Drive / local: persistir en BD_COTA_APP_PRUEBAS.xlsx
-    for p in [r"G:\My Drive\Cota App\BD_COTA_APP_PRUEBAS.xlsx", r"D:\cota-app\BD_COTA_APP_PRUEBAS.xlsx"]:
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rutas_excel = list(dict.fromkeys([
+        r"G:\My Drive\Cota App\BD_COTA_APP_PRUEBAS.xlsx",
+        os.path.join(repo_root, "BD_COTA_APP_PRUEBAS.xlsx"),
+        r"D:\cota-app\BD_COTA_APP_PRUEBAS.xlsx",
+    ]))
+    for p in rutas_excel:
         _guardar_hoja_excel(p, pestaña, df)
 
     if 'original_tables' in st.session_state:
@@ -461,6 +473,21 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
         for c in num_cols:
             if c in df_new.columns:
                 df_new[c] = pd.to_numeric(df_new[c], errors='coerce').fillna(0.0)
+
+    # Recalcular Costo_Estimado automáticamente en FF&E si cambian Cantidad o Precio Unitario
+    if master_state_key == 'materiales' and 'Cantidad' in df_new.columns and 'Precio_Unit_Estimado' in df_new.columns:
+        for idx, cols in edits.get("edited_rows", {}).items():
+            r_idx = int(idx)
+            if r_idx in df_new.index and ('Cantidad' in cols or 'Precio_Unit_Estimado' in cols) and 'Costo_Estimado' not in cols:
+                df_new.at[r_idx, 'Costo_Estimado'] = round(
+                    float(df_new.at[r_idx, 'Cantidad'] or 0.0) * float(df_new.at[r_idx, 'Precio_Unit_Estimado'] or 0.0), 2
+                )
+        for i, row in df_new.iterrows():
+            c_est = float(row.get('Costo_Estimado') or 0.0)
+            cant = float(row.get('Cantidad') or 0.0)
+            p_unit = float(row.get('Precio_Unit_Estimado') or 0.0)
+            if c_est == 0.0 and cant > 0 and p_unit > 0:
+                df_new.at[i, 'Costo_Estimado'] = round(cant * p_unit, 2)
 
     st.session_state[base_key] = df_new
 
