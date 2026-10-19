@@ -189,3 +189,78 @@ def test_calcular_rating_y_sugerir():
     assert 'Juan Perez' in rec
 
 
+def test_analizar_tareas_proyecto():
+    from cota.utils import analizar_tareas_proyecto
+
+    hoy = datetime.date(2026, 10, 19)
+    df_tasks = pd.DataFrame([
+        {
+            'Proyecto': 'Casa Test',
+            'Tarea': 'Demolición',
+            'Contratista': 'C1',
+            'Estado': '🟢 Completado a tiempo',
+            'Inicio': '2026-10-01',
+            'Fin': '2026-10-10',
+        },
+        {
+            'Proyecto': 'Casa Test',
+            'Tarea': 'Instalación Porcelanato',
+            'Contratista': 'Mármoles SAC',
+            'Estado': '🔵 En Proceso',
+            'Inicio': '2026-10-12',
+            'Fin': '2026-10-21',
+        },
+        {
+            'Proyecto': 'Casa Test',
+            'Tarea': 'Pintura General',
+            'Contratista': 'Pintores EIRL',
+            'Estado': '🟡 Planificado',
+            'Inicio': '2026-10-22',
+            'Fin': '2026-10-30',
+        },
+    ])
+
+    info = analizar_tareas_proyecto(df_tasks, 'Casa Test', hoy)
+    assert info['total'] == 3
+    assert info['en_proceso'] == 1
+    assert info['completadas'] == 1
+    assert len(info['por_terminar']) == 1
+    assert len(info['por_empezar']) == 1
+    assert 'POR TERMINAR' in info['widget_badge']
+    assert info['widget_titulo'] == 'Instalación Porcelanato'
+
+
+def test_banco_y_sincronizar_fases():
+    import streamlit as st
+    from cota.db import obtener_banco_fases, agregar_fase_banco, sincronizar_fases_proyecto, sembrar_fases_default
+
+    st.session_state['fases'] = sembrar_fases_default('Depa Express', datetime.date(2026, 10, 1))
+    # Marcar primera fase como aprobada al 100%
+    st.session_state['fases'].loc[0, 'Avance_Pct'] = 100
+    st.session_state['fases'].loc[0, 'Aprobado_Cliente'] = True
+
+    banco = obtener_banco_fases()
+    assert len(banco) >= 8
+
+    nueva = agregar_fase_banco("99. Styling Fotográfico", etapa="Cierre", dias=3)
+    assert nueva["Fase"] == "99. Styling Fotográfico"
+
+    # Activar solo 3 fases (sin Expediente Técnico)
+    fases_elegidas = [
+        "01. Levantamiento & Brief",
+        "02. Concepto & Moodboard",
+        "99. Styling Fotográfico",
+    ]
+    sincronizar_fases_proyecto('Depa Express', fases_elegidas, datetime.date(2026, 10, 1))
+
+    df_res = st.session_state['fases'][st.session_state['fases']['Proyecto'] == 'Depa Express']
+    assert len(df_res) == 3
+    assert "05. Expediente Técnico & Planos" not in df_res['Fase'].tolist()
+    assert "99. Styling Fotográfico" in df_res['Fase'].tolist()
+    # Verificar que el avance de la fase 1 se conservó
+    f1 = df_res[df_res['Fase'] == "01. Levantamiento & Brief"].iloc[0]
+    assert int(f1['Avance_Pct']) == 100
+    assert bool(f1['Aprobado_Cliente']) is True
+
+
+

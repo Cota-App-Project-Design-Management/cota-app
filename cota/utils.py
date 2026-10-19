@@ -395,3 +395,150 @@ def parse_resumen_meet(texto, proyecto, count=0):
         "acuerdos": acuerdos,
         "resumen_ejecutivo": "Minuta registrada a partir de notas de reunión."
     }
+
+
+def analizar_tareas_proyecto(df_tasks: pd.DataFrame, proy_name: str, fecha_hoy: datetime.date | None = None) -> dict:
+    """
+    Analiza las tareas de un proyecto y devuelve conteos operativos (total, en proceso, completadas)
+    junto con un widget inteligente de alertas (tareas atrasadas, por terminar, por empezar o en curso).
+    """
+    hoy = parse_date(fecha_hoy) or get_now().date()
+    res = {
+        "total": 0,
+        "en_proceso": 0,
+        "completadas": 0,
+        "planificadas": 0,
+        "atrasadas": [],
+        "por_terminar": [],
+        "por_empezar": [],
+        "en_curso_lista": [],
+        "widget_badge": "⚪ SIN TAREAS",
+        "widget_titulo": "Sin tareas registradas",
+        "widget_detalle": "Agrega tareas en Ejecución & Partidas",
+        "widget_color": "#6E665E",
+        "widget_bg": "#F7F4EF",
+        "pills_extra": [],
+    }
+
+    if df_tasks is None or df_tasks.empty or "Proyecto" not in df_tasks.columns:
+        return res
+
+    df_p = df_tasks[df_tasks["Proyecto"] == proy_name].copy()
+    if df_p.empty:
+        return res
+
+    res["total"] = len(df_p)
+
+    for _, r in df_p.iterrows():
+        est = safe_str(r.get("Estado", ""))
+        est_low = est.lower()
+        tarea_nom = safe_str(r.get("Tarea", "Tarea sin nombre"))
+        ctr_nom = safe_str(r.get("Contratista", "Sin asignar")) or "Sin asignar"
+        ini_d = parse_date(r.get("Inicio"))
+        fin_d = parse_date(r.get("Fin"))
+
+        es_completada = "completado" in est_low
+        es_proceso = ("proceso" in est_low) or (
+            not es_completada and ini_d is not None and fin_d is not None and ini_d <= hoy <= fin_d
+        )
+
+        if es_completada:
+            res["completadas"] += 1
+            continue
+
+        if "proceso" in est_low:
+            res["en_proceso"] += 1
+        elif es_proceso:
+            res["en_proceso"] += 1
+        else:
+            res["planificadas"] += 1
+
+        info_item = {
+            "Tarea": tarea_nom,
+            "Contratista": ctr_nom,
+            "Inicio": ini_d,
+            "Fin": fin_d,
+            "Estado": est,
+        }
+
+        # 1. ¿Está atrasada? (No completada y fecha fin < hoy)
+        if fin_d is not None and fin_d < hoy:
+            dias_atr = (hoy - fin_d).days
+            info_item["dias"] = dias_atr
+            res["atrasadas"].append(info_item)
+        # 2. ¿Está por terminar pronto? (Activa o en proceso y vence en los próximos 7 días)
+        elif fin_d is not None and hoy <= fin_d <= (hoy + datetime.timedelta(days=7)) and (es_proceso or (ini_d and ini_d <= hoy)):
+            dias_rest = (fin_d - hoy).days
+            info_item["dias"] = dias_rest
+            res["por_terminar"].append(info_item)
+        # 3. ¿Está por empezar pronto? (Inicia hoy o en los próximos 14 días y aún no está en proceso)
+        elif ini_d is not None and ini_d >= hoy and "proceso" not in est_low:
+            dias_ini = (ini_d - hoy).days
+            info_item["dias"] = dias_ini
+            res["por_empezar"].append(info_item)
+        elif es_proceso:
+            res["en_curso_lista"].append(info_item)
+
+    # Ordenar listas por urgencia
+    res["atrasadas"].sort(key=lambda x: x.get("dias", 0), reverse=True)
+    res["por_terminar"].sort(key=lambda x: x.get("dias", 999))
+    res["por_empezar"].sort(key=lambda x: x.get("dias", 999))
+
+    # Construir alerta principal y píldoras secundarias
+    pills = []
+    if res["atrasadas"]:
+        top = res["atrasadas"][0]
+        d_fin = top["Fin"].strftime("%d/%m/%Y") if top["Fin"] else ""
+        res["widget_badge"] = f"🔴 ATRASADA ({len(res['atrasadas'])})" if len(res["atrasadas"]) > 1 else "🔴 TAREA ATRASADA"
+        res["widget_titulo"] = top["Tarea"]
+        res["widget_detalle"] = f"Venció hace {top['dias']} día(s) ({d_fin}) · {top['Contratista']}"
+        res["widget_color"] = "#C93B2B"
+        res["widget_bg"] = "rgba(201, 59, 43, 0.08)"
+        if res["por_terminar"]:
+            pt = res["por_terminar"][0]
+            txt_d = "hoy" if pt["dias"] == 0 else f"en {pt['dias']}d"
+            pills.append(f"🟠 Por terminar ({txt_d}): {pt['Tarea']}")
+        if res["por_empezar"]:
+            pe = res["por_empezar"][0]
+            txt_d = "hoy" if pe["dias"] == 0 else f"en {pe['dias']}d"
+            pills.append(f"🔵 Por empezar ({txt_d}): {pe['Tarea']}")
+    elif res["por_terminar"]:
+        top = res["por_terminar"][0]
+        d_fin = top["Fin"].strftime("%d/%m/%Y") if top["Fin"] else ""
+        cuando = "Vence HOY" if top["dias"] == 0 else f"Termina en {top['dias']} día(s)"
+        res["widget_badge"] = "🟠 POR TERMINAR"
+        res["widget_titulo"] = top["Tarea"]
+        res["widget_detalle"] = f"{cuando} ({d_fin}) · {top['Contratista']}"
+        res["widget_color"] = "#D98A2B"
+        res["widget_bg"] = "rgba(217, 138, 43, 0.10)"
+        if res["por_empezar"]:
+            pe = res["por_empezar"][0]
+            txt_d = "hoy" if pe["dias"] == 0 else f"en {pe['dias']}d"
+            pills.append(f"🔵 Por empezar ({txt_d}): {pe['Tarea']}")
+    elif res["por_empezar"]:
+        top = res["por_empezar"][0]
+        d_ini = top["Inicio"].strftime("%d/%m/%Y") if top["Inicio"] else ""
+        cuando = "Inicia HOY" if top["dias"] == 0 else f"Inicia en {top['dias']} día(s)"
+        res["widget_badge"] = "🔵 POR EMPEZAR"
+        res["widget_titulo"] = top["Tarea"]
+        res["widget_detalle"] = f"{cuando} ({d_ini}) · {top['Contratista']}"
+        res["widget_color"] = "#2B6CB0"
+        res["widget_bg"] = "rgba(43, 108, 176, 0.08)"
+    elif res["en_curso_lista"]:
+        top = res["en_curso_lista"][0]
+        d_fin = f" (hasta {top['Fin'].strftime('%d/%m/%Y')})" if top["Fin"] else ""
+        res["widget_badge"] = "🔵 EN EJECUCIÓN"
+        res["widget_titulo"] = top["Tarea"]
+        res["widget_detalle"] = f"En curso{d_fin} · {top['Contratista']}"
+        res["widget_color"] = "#C85A32"
+        res["widget_bg"] = "rgba(200, 90, 50, 0.08)"
+    elif res["completadas"] == res["total"] and res["total"] > 0:
+        res["widget_badge"] = "🟢 AL DÍA / COMPLETADO"
+        res["widget_titulo"] = f"{res['completadas']} de {res['total']} tareas completadas"
+        res["widget_detalle"] = "Todas las partidas registradas han concluido"
+        res["widget_color"] = "#4A7C59"
+        res["widget_bg"] = "rgba(74, 124, 89, 0.08)"
+
+    res["pills_extra"] = pills[:2]
+    return res
+

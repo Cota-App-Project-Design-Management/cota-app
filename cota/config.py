@@ -45,6 +45,22 @@ FASES_CANONICAS = [
     {"Orden": 8, "Fase": "08. Cierre & Entrega Final", "Etapa": "Cierre", "Dias": 7},
 ]
 
+# Banco completo de fases disponibles para activar/desactivar según las características del proyecto
+BANCO_FASES_DEFAULT = [
+    {"Orden": 1, "Fase": "01. Levantamiento & Brief", "Etapa": "Conceptual", "Dias": 7, "Por_Defecto": True},
+    {"Orden": 2, "Fase": "02. Concepto & Moodboard", "Etapa": "Conceptual", "Dias": 10, "Por_Defecto": True},
+    {"Orden": 3, "Fase": "03. Anteproyecto / Distribución", "Etapa": "Diseño", "Dias": 14, "Por_Defecto": True},
+    {"Orden": 4, "Fase": "04. Desarrollo de Diseño & 3D", "Etapa": "Diseño", "Dias": 18, "Por_Defecto": True},
+    {"Orden": 5, "Fase": "05. Expediente Técnico & Planos", "Etapa": "Documentación", "Dias": 15, "Por_Defecto": True},
+    {"Orden": 6, "Fase": "06. Presupuesto & Compras (FF&E)", "Etapa": "Adquisiciones", "Dias": 10, "Por_Defecto": True},
+    {"Orden": 7, "Fase": "07. Ejecución / Obra / Montaje", "Etapa": "Construcción", "Dias": 30, "Por_Defecto": True},
+    {"Orden": 8, "Fase": "08. Cierre & Entrega Final", "Etapa": "Cierre", "Dias": 7, "Por_Defecto": True},
+    {"Orden": 9, "Fase": "09. Licencias & Trámites Municipales", "Etapa": "Documentación", "Dias": 20, "Por_Defecto": False},
+    {"Orden": 10, "Fase": "10. Coordinación de Especialidades (MEP)", "Etapa": "Documentación", "Dias": 12, "Por_Defecto": False},
+    {"Orden": 11, "Fase": "11. Supervisión de Obra / Visitas", "Etapa": "Construcción", "Dias": 25, "Por_Defecto": False},
+    {"Orden": 12, "Fase": "12. Styling & Decoración Final", "Etapa": "Cierre", "Dias": 5, "Por_Defecto": False},
+]
+
 STATUS_FASES = [
     "⚪ No iniciada",
     "🟡 En desarrollo",

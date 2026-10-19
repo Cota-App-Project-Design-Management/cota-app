@@ -10,7 +10,7 @@ import uuid
 import openpyxl
 import pandas as pd
 import streamlit as st
-from cota.config import FASES_CANONICAS, get_secret
+from cota.config import BANCO_FASES_DEFAULT, FASES_CANONICAS, get_secret
 from cota.utils import to_bool, parse_date
 
 
@@ -274,12 +274,20 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
 
     # 3. Carga desde Excel (Google Drive montado o Respaldo en Repositorio BD_COTA_APP_PRUEBAS.xlsx)
     if df is None or df.empty:
-        excel_path = _get_local_excel_path()
-        if excel_path and os.path.exists(excel_path):
-            try:
-                df = pd.read_excel(excel_path, sheet_name=pestaña)
-            except Exception:
-                df = None
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidatos_excel = list(dict.fromkeys([
+            os.path.join(repo_root, "BD_COTA_APP_PRUEBAS.xlsx"),
+            r"D:\cota-app\BD_COTA_APP_PRUEBAS.xlsx",
+            r"G:\My Drive\Cota App\BD_COTA_APP_PRUEBAS.xlsx",
+        ]))
+        for excel_path in candidatos_excel:
+            if excel_path and os.path.exists(excel_path):
+                try:
+                    df = pd.read_excel(excel_path, sheet_name=pestaña)
+                    if df is not None and not df.empty:
+                        break
+                except Exception:
+                    df = None
 
     if df is None or df.empty:
         df = pd.DataFrame(columns=columnas)
@@ -406,21 +414,86 @@ def guardar_tabla(conn, sheet_url, nube_ok, df, pestaña):
     return True
 
 
-def sembrar_fases_default(nombre_proyecto, fecha_inicio=None):
-    """Crea las 8 fases estándar de diseño para un nuevo proyecto."""
+def obtener_banco_fases() -> list[dict]:
+    """
+    Retorna el catálogo del Banco de Fases del estudio, combinando las fases predeterminadas
+    con cualquier fase personalizada creada o existente en los proyectos.
+    """
+    if "banco_fases" not in st.session_state or not st.session_state.banco_fases:
+        st.session_state.banco_fases = [dict(f) for f in BANCO_FASES_DEFAULT]
+
+    nombres_en_banco = {f["Fase"] for f in st.session_state.banco_fases}
+
+    # Incorporar fases personalizadas que ya existan en la tabla fases de la BD
+    if "fases" in st.session_state and isinstance(st.session_state.fases, pd.DataFrame) and not st.session_state.fases.empty:
+        for _, r in st.session_state.fases.iterrows():
+            f_nom = str(r.get("Fase", "")).strip()
+            if f_nom and f_nom not in nombres_en_banco:
+                orden_max = max((item.get("Orden", 0) for item in st.session_state.banco_fases), default=0) + 1
+                st.session_state.banco_fases.append({
+                    "Orden": int(r.get("Orden", orden_max) or orden_max),
+                    "Fase": f_nom,
+                    "Etapa": str(r.get("Etapa", "Diseño") or "Diseño"),
+                    "Dias": 10,
+                    "Por_Defecto": False,
+                })
+                nombres_en_banco.add(f_nom)
+
+    return sorted(st.session_state.banco_fases, key=lambda x: x.get("Orden", 99))
+
+
+def agregar_fase_banco(nombre_fase: str, etapa: str = "Diseño", dias: int = 10, por_defecto: bool = False) -> dict:
+    """Agrega una nueva fase al Banco de Fases del estudio si no existe."""
+    banco = obtener_banco_fases()
+    limpio = str(nombre_fase).strip()
+    for f in banco:
+        if f["Fase"].lower() == limpio.lower():
+            return f
+    nuevo_orden = max((f.get("Orden", 0) for f in banco), default=0) + 1
+    nueva = {
+        "Orden": nuevo_orden,
+        "Fase": limpio,
+        "Etapa": etapa,
+        "Dias": max(1, int(dias)),
+        "Por_Defecto": por_defecto,
+    }
+    st.session_state.banco_fases.append(nueva)
+    return nueva
+
+
+def sembrar_fases_default(nombre_proyecto, fecha_inicio=None, fases_seleccionadas=None):
+    """
+    Crea las fases de diseño para un proyecto.
+    Si `fases_seleccionadas` es None, siembra las 8 fases canónicas por defecto.
+    Si se pasa una lista de nombres de fases (del Banco de Fases), siembra únicamente las activadas.
+    """
     f_ini = parse_date(fecha_inicio) or datetime.date.today()
     cursor = f_ini
     rows = []
 
-    for f in FASES_CANONICAS:
+    if fases_seleccionadas is None:
+        plantilla = FASES_CANONICAS
+    else:
+        banco = obtener_banco_fases()
+        mapa_banco = {f["Fase"]: f for f in banco}
+        plantilla = []
+        for idx_f, item in enumerate(fases_seleccionadas, start=1):
+            if isinstance(item, dict):
+                plantilla.append(item)
+            elif str(item) in mapa_banco:
+                plantilla.append(mapa_banco[str(item)])
+            else:
+                plantilla.append({"Orden": idx_f, "Fase": str(item), "Etapa": "Diseño", "Dias": 10})
+
+    for idx_ord, f in enumerate(plantilla, start=1):
         dias = f.get('Dias', 7)
         cursor_fin = cursor + datetime.timedelta(days=dias)
         rows.append({
             'ID': f"FASE_{int(time.time())}_{uuid.uuid4().hex[:6]}",
             'Proyecto': nombre_proyecto,
-            'Orden': f['Orden'],
+            'Orden': f.get('Orden', idx_ord) if fases_seleccionadas is None else idx_ord,
             'Fase': f['Fase'],
-            'Etapa': f['Etapa'],
+            'Etapa': f.get('Etapa', 'Diseño'),
             'Inicio': cursor.strftime('%Y-%m-%d'),
             'Fin': cursor_fin.strftime('%Y-%m-%d'),
             'Estado': '⚪ No iniciada',
@@ -431,7 +504,68 @@ def sembrar_fases_default(nombre_proyecto, fecha_inicio=None):
         })
         cursor = cursor_fin + datetime.timedelta(days=1)
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=COLS_FASES) if rows else pd.DataFrame(columns=COLS_FASES)
+
+
+def sincronizar_fases_proyecto(nombre_proyecto: str, fases_activas_nombres: list[str], fecha_inicio=None):
+    """
+    Activa o desactiva fases para un proyecto específico según la selección del Banco de Fases.
+    Conserva intactos los datos (avance, fechas, aprobaciones, notas) de las fases que ya estaban activas.
+    """
+    if 'fases' not in st.session_state or not isinstance(st.session_state.fases, pd.DataFrame):
+        st.session_state.fases = pd.DataFrame(columns=COLS_FASES)
+
+    df_all = st.session_state.fases
+    df_otros = df_all[df_all['Proyecto'] != nombre_proyecto].copy()
+    df_proy = df_all[df_all['Proyecto'] == nombre_proyecto].copy()
+
+    banco = obtener_banco_fases()
+    mapa_banco = {f["Fase"]: f for f in banco}
+    orden_banco = {f["Fase"]: idx for idx, f in enumerate(banco, start=1)}
+
+    f_ini_base = parse_date(fecha_inicio) or datetime.date.today()
+    if not df_proy.empty:
+        fechas_fin_exist = [parse_date(x) for x in df_proy['Fin'].tolist() if parse_date(x) is not None]
+        cursor = (max(fechas_fin_exist) + datetime.timedelta(days=1)) if fechas_fin_exist else f_ini_base
+    else:
+        cursor = f_ini_base
+
+    nuevas_filas_proy = []
+    # Ordenar las fases seleccionadas según su orden en el banco
+    fases_ordenadas = sorted(
+        list(dict.fromkeys(fases_activas_nombres)),
+        key=lambda nom: orden_banco.get(nom, 999)
+    )
+
+    for nuevo_ord, f_nom in enumerate(fases_ordenadas, start=1):
+        match_exist = df_proy[df_proy['Fase'] == f_nom]
+        if not match_exist.empty:
+            fila = match_exist.iloc[0].to_dict()
+            fila['Orden'] = nuevo_ord
+            nuevas_filas_proy.append(fila)
+        else:
+            info_b = mapa_banco.get(f_nom, {"Fase": f_nom, "Etapa": "Diseño", "Dias": 10})
+            dias = int(info_b.get("Dias", 10))
+            c_fin = cursor + datetime.timedelta(days=dias)
+            nuevas_filas_proy.append({
+                'ID': f"FASE_{int(time.time())}_{uuid.uuid4().hex[:6]}",
+                'Proyecto': nombre_proyecto,
+                'Orden': nuevo_ord,
+                'Fase': f_nom,
+                'Etapa': info_b.get('Etapa', 'Diseño'),
+                'Inicio': cursor.strftime('%Y-%m-%d'),
+                'Fin': c_fin.strftime('%Y-%m-%d'),
+                'Estado': '⚪ No iniciada',
+                'Avance_Pct': 0,
+                'Responsable': '',
+                'Aprobado_Cliente': False,
+                'Notas': ''
+            })
+            cursor = c_fin + datetime.timedelta(days=1)
+
+    df_proy_nuevo = pd.DataFrame(nuevas_filas_proy, columns=COLS_FASES) if nuevas_filas_proy else pd.DataFrame(columns=COLS_FASES)
+    st.session_state.fases = pd.concat([df_otros, df_proy_nuevo], ignore_index=True)
+    clear_base_dfs()
 
 
 def renombrar_proyecto(viejo_nombre, nuevo_nombre):

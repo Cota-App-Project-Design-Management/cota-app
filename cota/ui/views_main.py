@@ -20,16 +20,20 @@ from cota.config import (
 from cota.db import (
     COLS_MAESTRO,
     COLS_PROY,
+    agregar_fase_banco,
     clear_base_dfs,
     get_proyectos_activos,
     get_proyectos_archivados,
     guardar_tabla,
+    obtener_banco_fases,
     purgar_proyecto_cascada,
     renombrar_proyecto,
     sembrar_fases_default,
+    sincronizar_fases_proyecto,
 )
 from cota.ui.components import render_metric_card, render_metric_row
 from cota.utils import (
+    analizar_tareas_proyecto,
     calcular_rating,
     format_currency,
     format_date,
@@ -66,9 +70,9 @@ def render_main_view(conn, sheet_url, nube_ok, lista_socios):
 
     # Tabs principales
     t_proy, t_con, t_fin, t_ope, t_cal, t_arc = st.tabs([
-        "PROYECTOS & DISEÑO",
+        "DISEÑO",
         "BASE CONTRATISTAS",
-        "FINANZAS DEL ESTUDIO",
+        "FINANZAS",
         "CONTROL OPERATIVO",
         "CALENDARIO",
         "ARCHIVO"
@@ -268,6 +272,9 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
 
     # 2. Barra de herramientas: Nuevo Proyecto + Buscador (alineados simétricamente)
     col_new, col_search = st.columns([3, 7])
+    banco_fases_estudio = obtener_banco_fases()
+    nombres_banco_all = [f["Fase"] for f in banco_fases_estudio]
+    nombres_banco_def = [f["Fase"] for f in banco_fases_estudio if f.get("Por_Defecto", True)]
 
     with col_new:
         with st.popover("➕ NUEVO PROYECTO DE DISEÑO", use_container_width=True):
@@ -283,13 +290,21 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 p_cliente = st.text_input("Nombre del Cliente", placeholder="ej. Familia Gómez")
                 p_color = st.color_picker("Color Identificador", value="#C85A32")
 
+                st.markdown("##### Fases Activas del Proyecto (Banco de Fases)")
+                fases_sel_nuevo = st.multiselect(
+                    "Selecciona las fases que aplican a este proyecto:",
+                    options=nombres_banco_all,
+                    default=nombres_banco_def,
+                )
+
                 st.markdown("##### Presupuestos Iniciales (Opcional)")
                 col_m1, col_m2 = st.columns(2)
                 p_presupuesto = col_m1.number_input("Ppto Total Venta (S/)", value=0.0)
-                p_hon = col_m2.number_input("Honorarios Diseño (S/)", value=0.0)
+                p_util = col_m2.number_input("Utilidades Proyectadas (S/)", value=0.0, help="Si se deja en 0, se calcula el 20% del contrato por defecto.")
                 col_m3, col_m4 = st.columns(2)
-                p_ffe = col_m3.number_input("Ppto FF&E / Muebles (S/)", value=0.0)
-                p_gg = col_m4.number_input("Ppto Caja Chica (S/)", value=0.0)
+                p_hon = col_m3.number_input("Honorarios Diseño (S/)", value=0.0)
+                p_ffe = col_m4.number_input("Ppto FF&E / Muebles (S/)", value=0.0)
+                p_gg = st.number_input("Ppto Caja Chica (S/)", value=0.0)
 
                 if st.form_submit_button("CREAR PROYECTO", type="primary", use_container_width=True):
                     if not pn:
@@ -297,6 +312,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                     elif pn in st.session_state.proyectos['Nombre'].tolist():
                         st.error(f"Ya existe un proyecto con el nombre '{pn}'. Elige un nombre único.")
                     else:
+                        util_final = p_util if p_util > 0 else (p_presupuesto * 0.20)
                         n_p = pd.DataFrame([{
                             'Nombre': pn,
                             'Encargado': pe,
@@ -306,7 +322,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                             'Fin': (fecha_hoy + datetime.timedelta(days=90)).strftime('%Y-%m-%d'),
                             'Color': p_color,
                             'Presupuesto': p_presupuesto,
-                            'Utilidades': p_presupuesto * 0.20,
+                            'Utilidades': util_final,
                             'GG_Presupuesto': p_gg,
                             'Archivado': False,
                             'Metodologia': 'Diseño Interior',
@@ -320,15 +336,16 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                         }])
                         st.session_state.proyectos = pd.concat([st.session_state.proyectos, n_p[COLS_PROY]], ignore_index=True)
 
-                        # Sembrar las 8 fases estándar
-                        if 'fases' not in st.session_state:
-                            st.session_state.fases = sembrar_fases_default(pn, fecha_hoy)
+                        # Sembrar fases seleccionadas del Banco de Fases
+                        fases_a_sembrar = fases_sel_nuevo if fases_sel_nuevo else nombres_banco_def
+                        nuevas_fases = sembrar_fases_default(pn, fecha_hoy, fases_seleccionadas=fases_a_sembrar)
+                        if 'fases' not in st.session_state or st.session_state.fases.empty:
+                            st.session_state.fases = nuevas_fases
                         else:
-                            nuevas_fases = sembrar_fases_default(pn, fecha_hoy)
                             st.session_state.fases = pd.concat([st.session_state.fases, nuevas_fases], ignore_index=True)
 
                         clear_base_dfs()
-                        st.success(f"Proyecto '{pn}' creado exitosamente con sus fases de diseño.")
+                        st.success(f"Proyecto '{pn}' creado exitosamente con {len(fases_a_sembrar)} fase(s) activa(s).")
                         st.rerun()
 
     with col_search:
@@ -388,16 +405,21 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                     p_nom = proy['Nombre']
                     ukey = f"{d_key}_{idx_p}"
 
-                    # Calcular avance de fases
+                    # Calcular avance de fases activas
                     pct_avance = 0
-                    fase_actual_str = "01. Levantamiento & Brief"
+                    fase_actual_str = "Sin fases activas"
+                    fases_activas_proy = []
                     if 'fases' in st.session_state and not st.session_state.fases.empty:
                         f_p = st.session_state.fases[st.session_state.fases['Proyecto'] == p_nom].sort_values(by='Orden')
                         if not f_p.empty:
+                            fases_activas_proy = f_p['Fase'].tolist()
                             ok_cnt = len(f_p[f_p['Aprobado_Cliente'].apply(to_bool) | (f_p['Estado'].astype(str).str.contains('Aprobada', case=False))])
                             pct_avance = int(ok_cnt / len(f_p) * 100)
                             en_curso = f_p[~(f_p['Aprobado_Cliente'].apply(to_bool) | (f_p['Estado'].astype(str).str.contains('Aprobada', case=False)))]
-                            fase_actual_str = en_curso.iloc[0]['Fase'] if not en_curso.empty else "08. Cierre & Entrega Final"
+                            fase_actual_str = en_curso.iloc[0]['Fase'] if not en_curso.empty else f_p.iloc[-1]['Fase']
+
+                    # Analizar tareas en proceso y widget inteligente de alertas (Foto 2)
+                    info_t = analizar_tareas_proyecto(st.session_state.get('tasks'), p_nom, fecha_hoy)
 
                     cli_val = safe_str(proy.get('Cliente', ''))
                     cli_str = f" · Cliente: {cli_val}" if cli_val else ""
@@ -413,27 +435,42 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                         ini_p = format_date(proy.get('Inicio'))
                         fin_p = format_date(proy.get('Fin'))
 
-                        # Ficha resumen ejecutiva del proyecto
+                        pills_html = "".join(
+                            f"<span style='background:#FFFFFF; border:1px solid #DFD9CE; border-radius:4px; padding:2px 8px; font-size:11px; color:#262320; font-weight:500;'>{pill}</span>"
+                            for pill in info_t.get("pills_extra", [])
+                        )
+                        pills_wrap = f"<div style='display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;'>{pills_html}</div>" if pills_html else ""
+
+                        # Ficha resumen ejecutiva del proyecto con conteo de tareas en proceso y widget inteligente
                         summary_html = (
                             f"<div style='border-left: 4px solid {col_st}; background: #FAF8F5; border: 1px solid #DFD9CE; border-left-width: 4px; border-left-color: {col_st}; border-radius: 8px; padding: 14px 16px; margin-bottom: 14px;'>"
-                            f"<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; font-size: 12.5px;'>"
+                            f"<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px; font-size: 12.5px;'>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Ubicación</span><br><b style='color:#262320;'>{ubi_p}</b></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Cronograma</span><br><b style='color:#262320;'>{ini_p} → {fin_p}</b></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Fase Actual</span><br><b style='color:#C85A32;'>{fase_actual_str}</b></div>"
+                            f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Tareas en Proceso</span><br><b style='color:#262320; font-family:monospace;'>{info_t['en_proceso']} en proceso</b> <span style='color:#6E665E; font-size:11px;'>({info_t['completadas']}/{info_t['total']} listas)</span></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Ppto. Contrato</span><br><b style='color:#262320; font-family:monospace;'>{format_currency(ppto_p)}</b></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Honorarios / FF&E</span><br><b style='color:#4A7C59; font-family:monospace;'>{format_currency(hon_p)} / {format_currency(ffe_p)}</b></div>"
                             f"</div>"
                             f"<div style='margin-top: 10px; background: #EFECE6; border-radius: 4px; height: 6px; overflow: hidden;'>"
                             f"<div style='background: {col_st}; width: {pct_avance}%; height: 100%;'></div>"
                             f"</div>"
+                            f"<div style='margin-top: 10px; background: {info_t['widget_bg']}; border: 1px solid #DFD9CE; border-left: 3px solid {info_t['widget_color']}; border-radius: 6px; padding: 8px 12px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;'>"
+                            f"<div>"
+                            f"<span style='font-family:monospace; font-size:10.5px; font-weight:700; color:{info_t['widget_color']}; background:#FFFFFF; border:1px solid {info_t['widget_color']}; border-radius:4px; padding:1px 6px; margin-right:8px;'>{info_t['widget_badge']}</span>"
+                            f"<b style='color:#262320; font-size:12.5px;'>{info_t['widget_titulo']}</b> "
+                            f"<span style='color:#6E665E; font-size:12px;'>— {info_t['widget_detalle']}</span>"
+                            f"</div>"
+                            f"{pills_wrap}"
+                            f"</div>"
                             f"</div>"
                         )
                         st.markdown(summary_html, unsafe_allow_html=True)
 
-                        c_btn1, c_btn2, c_btn3, c_btn4, _ = st.columns([2.6, 2, 2, 2.2, 3.2])
+                        c_btn1, c_btn2, c_btn_fases, c_btn3, c_btn4 = st.columns([2.5, 2, 2.2, 2, 2])
 
                         with c_btn1:
-                            if st.button("ABRIR EXPEDIENTE →", key=f"open_proy_{ukey}", type="primary", use_container_width=True):
+                            if st.button("ABRIR PROYECTO →", key=f"open_proy_{ukey}", type="primary", use_container_width=True):
                                 st.session_state.proy_activo = p_nom
                                 st.session_state.vista_actual = 'proyecto'
                                 clear_base_dfs()
@@ -452,6 +489,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                     d_i = col_d1.date_input("Inicio", value=parse_date(proy.get('Inicio')) or fecha_hoy)
                                     d_f = col_d2.date_input("Fin", value=parse_date(proy.get('Fin')) or fecha_hoy)
                                     v_p = st.number_input("Ppto Total (S/)", value=safe_float(proy.get('Presupuesto', 0)))
+                                    v_util = st.number_input("Utilidades Proyectadas (S/)", value=safe_float(proy.get('Utilidades', 0)))
                                     v_hon = st.number_input("Honorarios Diseño (S/)", value=safe_float(proy.get('Honorarios_Diseno', 0)))
                                     v_ffe = st.number_input("Ppto FF&E (S/)", value=safe_float(proy.get('Presupuesto_FFE', 0)))
                                     v_gg = st.number_input("Ppto Caja Chica (S/)", value=safe_float(proy.get('GG_Presupuesto', 0)))
@@ -469,11 +507,34 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                         st.session_state.proyectos.at[idx_p, 'Inicio'] = d_i.strftime('%Y-%m-%d')
                                         st.session_state.proyectos.at[idx_p, 'Fin'] = d_f.strftime('%Y-%m-%d')
                                         st.session_state.proyectos.at[idx_p, 'Presupuesto'] = v_p
+                                        st.session_state.proyectos.at[idx_p, 'Utilidades'] = v_util
                                         st.session_state.proyectos.at[idx_p, 'Honorarios_Diseno'] = v_hon
                                         st.session_state.proyectos.at[idx_p, 'Presupuesto_FFE'] = v_ffe
                                         st.session_state.proyectos.at[idx_p, 'GG_Presupuesto'] = v_gg
                                         clear_base_dfs()
                                         st.success("Datos actualizados correctamente.")
+                                        st.rerun()
+
+                        with c_btn_fases:
+                            with st.popover("🗂️ FASES DEL PROYECTO", use_container_width=True):
+                                st.markdown("##### Banco de Fases")
+                                st.caption("Activa o desactiva las fases que corresponden a las características de este proyecto.")
+                                with st.form(f"f_banco_fases_card_{ukey}"):
+                                    opciones_f_card = list(dict.fromkeys(nombres_banco_all + fases_activas_proy))
+                                    sel_f_card = st.multiselect(
+                                        "Fases activas:",
+                                        options=opciones_f_card,
+                                        default=fases_activas_proy if fases_activas_proy else nombres_banco_def,
+                                    )
+                                    nueva_f_card = st.text_input("➕ Crear nueva fase en el banco (opcional):", placeholder="ej. 09. Licencias Municipales")
+                                    if st.form_submit_button("GUARDAR FASES DEL PROYECTO", type="primary", use_container_width=True):
+                                        fases_finales = list(sel_f_card)
+                                        if nueva_f_card.strip():
+                                            nf_obj = agregar_fase_banco(nueva_f_card.strip())
+                                            if nf_obj["Fase"] not in fases_finales:
+                                                fases_finales.append(nf_obj["Fase"])
+                                        sincronizar_fases_proyecto(p_nom, fases_finales, proy.get('Inicio'))
+                                        st.success("Fases del proyecto actualizadas.")
                                         st.rerun()
 
                         with c_btn3:
@@ -534,7 +595,11 @@ def _render_tab_contratistas(fecha_hoy, df_hoy):
         n_c = m_row['ID_Contratista']
         t_c = df_tasks_act[df_tasks_act['Contratista'] == n_c]
         en_obra = t_c[(t_c['Inicio_DT'].dt.date <= fecha_hoy) & (t_c['Fin_DT'].dt.date >= fecha_hoy)]
-        estado_din[n_c] = "🔵 En Obra Hoy" if not en_obra.empty else "🟢 Disponible"
+        if not en_obra.empty:
+            fecha_hasta = en_obra['Fin_DT'].max().date()
+            estado_din[n_c] = f"🔵 En Obra Hoy (hasta {fecha_hasta.strftime('%d/%m/%Y')})"
+        else:
+            estado_din[n_c] = "🟢 Disponible"
 
         t_7d = t_c[(t_c['Inicio_DT'].dt.date <= fecha_hoy + datetime.timedelta(days=7)) & (t_c['Fin_DT'].dt.date >= fecha_hoy)]
         frentes = t_7d['Proyecto'].nunique()
@@ -553,7 +618,7 @@ def _render_tab_contratistas(fecha_hoy, df_hoy):
             "ID_Contratista": st.column_config.TextColumn("Nombre / Empresa", width="medium"),
             "Especialidad": st.column_config.TextColumn("Especialidad"),
             "Ubicación_Base": st.column_config.TextColumn("Ubicación Base"),
-            "Estatus": st.column_config.TextColumn("Estatus Hoy"),
+            "Estatus": st.column_config.TextColumn("Estatus Hoy", width="medium"),
             "Carga_Trabajo": st.column_config.TextColumn("Disponibilidad (7 Días)"),
             "Rating": st.column_config.NumberColumn("Rating (1-5 ⭐)", format="%d ⭐"),
             "Notas": st.column_config.TextColumn("Observaciones / Historial")
@@ -595,50 +660,134 @@ def _render_tab_contratistas(fecha_hoy, df_hoy):
 
 
 def _render_tab_finanzas_estudio(fecha_hoy):
-    """Consolidado de finanzas, flujo de caja y rentabilidad a nivel de todo el estudio."""
-    st.markdown("### 📊 FINANZAS CONSOLIDADAS DEL ESTUDIO")
-    st.caption("Visión integral de contratos activos, cuentas por cobrar a clientes, pagos a contratistas y margen operativo.")
-
+    """Consolidado de finanzas, utilidades, caja chica y rentabilidad del estudio."""
     df_p_act = get_proyectos_activos(st.session_state.proyectos)
     nombres_activos = df_p_act['Nombre'].tolist()
 
+    # 1. Total Contratos y Honorarios
     tot_ventas = sum(safe_float(v) for v in df_p_act['Presupuesto'])
     tot_hon = sum(safe_float(h) for h in df_p_act.get('Honorarios_Diseno', []))
 
-    # Cobrado a clientes
-    df_cob = st.session_state.cobros if 'cobros' in st.session_state else pd.DataFrame()
-    if not df_cob.empty and 'Proyecto' in df_cob.columns:
-        df_cob = df_cob[df_cob['Proyecto'].isin(nombres_activos)]
-    tot_cobrado = pd.to_numeric(df_cob['Monto_Cobrado'], errors='coerce').sum() if not df_cob.empty and 'Monto_Cobrado' in df_cob.columns else 0.0
+    # 2. Utilidades Proyectadas (Total de la columna Utilidades de proyectos activos)
+    tot_utilidades = sum(safe_float(u) for u in df_p_act.get('Utilidades', []))
+    if tot_utilidades == 0.0 and tot_ventas > 0:
+        tot_utilidades = tot_ventas * 0.20
 
-    # Salidas a contratistas
-    df_pag = st.session_state.pagos if 'pagos' in st.session_state else pd.DataFrame(columns=['Proyecto', 'Monto'])
-    if not df_pag.empty and 'Proyecto' in df_pag.columns:
-        df_pag = df_pag[df_pag['Proyecto'].isin(nombres_activos)]
-    tot_pagado_maestros = pd.to_numeric(df_pag['Monto'], errors='coerce').sum() if not df_pag.empty and 'Monto' in df_pag.columns else 0.0
-
-    # Caja chica total gastada
+    # 3. Caja Chica Ejecutada vs Presupuesto Total para Caja Chica (GG_Presupuesto)
+    tot_caja_ppto = sum(safe_float(g) for g in df_p_act.get('GG_Presupuesto', []))
     df_gg = st.session_state.gg_log if 'gg_log' in st.session_state else pd.DataFrame(columns=['Proyecto', 'Monto'])
     if not df_gg.empty and 'Proyecto' in df_gg.columns:
         df_gg = df_gg[df_gg['Proyecto'].isin(nombres_activos)]
     tot_caja_gastada = pd.to_numeric(df_gg['Monto'], errors='coerce').sum() if not df_gg.empty and 'Monto' in df_gg.columns else 0.0
+    saldo_caja = tot_caja_ppto - tot_caja_gastada
+    pct_caja = (tot_caja_gastada / tot_caja_ppto * 100.0) if tot_caja_ppto > 0 else 0.0
 
-    # FF&E Real comprado
+    # 4. Utilidades Ejecutadas + Gastos Generales Cobrados
+    df_ing = st.session_state.ingresos_socios if 'ingresos_socios' in st.session_state else pd.DataFrame(columns=['Proyecto', 'Categoria', 'Monto'])
+    if not df_ing.empty and 'Proyecto' in df_ing.columns:
+        df_ing_act = df_ing[df_ing['Proyecto'].isin(nombres_activos + ['General'])].copy()
+    else:
+        df_ing_act = pd.DataFrame(columns=['Proyecto', 'Categoria', 'Monto'])
+
+    if not df_ing_act.empty and 'Categoria' in df_ing_act.columns and 'Monto' in df_ing_act.columns:
+        cat_s = df_ing_act['Categoria'].astype(str)
+        mask_util = cat_s.str.contains('Utilidad|Honorario', case=False, na=False)
+        mask_gg = cat_s.str.contains('Gasto|Caja|GG', case=False, na=False)
+        util_ejecutadas = float(pd.to_numeric(df_ing_act.loc[mask_util, 'Monto'], errors='coerce').fillna(0.0).sum())
+        gg_cobrados = float(pd.to_numeric(df_ing_act.loc[mask_gg, 'Monto'], errors='coerce').fillna(0.0).sum())
+    else:
+        util_ejecutadas = 0.0
+        gg_cobrados = 0.0
+
+    tot_util_ejec_mas_gg = util_ejecutadas + gg_cobrados
+
+    # Sub-módulo de Manejo de Caja Chica y Gastos Generales (Punto 1.3)
+    if st.session_state.get("modulo_caja_chica_abierto", False):
+        col_back_cc, col_tit_cc = st.columns([2.2, 7.8])
+        with col_back_cc:
+            if st.button("⬅ VOLVER A FINANZAS", key="btn_volver_finanzas", use_container_width=True):
+                st.session_state.modulo_caja_chica_abierto = False
+                st.rerun()
+        with col_tit_cc:
+            st.markdown("### 💼 MÓDULO DE MANEJO DE CAJA CHICA Y GASTOS GENERALES")
+
+        st.markdown(
+            "<div style='background:#FAF8F5; border:2px dashed #C85A32; border-radius:12px; padding:24px; text-align:center; margin:14px 0 20px 0;'>"
+            "<span style='font-family:monospace; font-size:12px; font-weight:700; color:#C85A32; background:rgba(200,90,50,0.12); padding:4px 10px; border-radius:6px; border:1px solid #C85A32;'>🚀 PRÓXIMAMENTE</span>"
+            "<h3 style='color:#262320; margin:12px 0 6px 0;'>Módulo de Manejo de Caja Chica y Gastos Generales</h3>"
+            "<p style='color:#6E665E; font-size:14px; max-width:680px; margin:0 auto;'>"
+            "Aquí podrás gestionar reposiciones de fondo fijo, rendiciones por proyecto, gastos generales de oficina y aprobaciones de caja chica. "
+            "<b>Disponible muy pronto en la siguiente iteración.</b></p>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+        render_metric_row([
+            {"title": "Presupuesto Caja Chica", "value": format_currency(tot_caja_ppto), "subtitle": "Fondo total asignado a proyectos"},
+            {"title": "Caja Chica Ejecutada", "value": format_currency(tot_caja_gastada), "subtitle": f"{pct_caja:.1f}% del presupuesto ejecutado", "border_color": "#C85A32", "text_color": "#C85A32"},
+            {"title": "Saldo Disponible Caja", "value": format_currency(saldo_caja), "subtitle": "Presupuesto restante por ejecutar", "border_color": "#4A7C59" if saldo_caja >= 0 else "#C93B2B", "text_color": "#4A7C59" if saldo_caja >= 0 else "#C93B2B"},
+            {"title": "Gastos Generales Cobrados", "value": format_currency(gg_cobrados), "subtitle": "Ingresos aplicados a caja / GG", "border_color": "#4A7C59", "text_color": "#4A7C59"},
+        ])
+
+        if not df_gg.empty:
+            st.markdown("#### 📋 Vista Previa de Movimientos de Caja Chica Registrados")
+            st.dataframe(df_gg, use_container_width=True, hide_index=True)
+        return
+
+    st.markdown("### 📊 FINANZAS")
+    st.caption("Control ejecutivo de contratos activos, utilidades proyectadas, ejecución de caja chica y utilidades + gastos generales cobrados.")
+
+    # Cobrado a clientes y egresos adicionales para tablas y gráficos
+    df_cob = st.session_state.cobros if 'cobros' in st.session_state else pd.DataFrame()
+    if not df_cob.empty and 'Proyecto' in df_cob.columns:
+        df_cob = df_cob[df_cob['Proyecto'].isin(nombres_activos)]
+
+    df_pag = st.session_state.pagos if 'pagos' in st.session_state else pd.DataFrame(columns=['Proyecto', 'Monto'])
+    if not df_pag.empty and 'Proyecto' in df_pag.columns:
+        df_pag = df_pag[df_pag['Proyecto'].isin(nombres_activos)]
+
     df_mat = st.session_state.materiales if 'materiales' in st.session_state else pd.DataFrame(columns=['Proyecto', 'Costo_Real'])
     if not df_mat.empty and 'Proyecto' in df_mat.columns:
         df_mat = df_mat[df_mat['Proyecto'].isin(nombres_activos)]
-    tot_ffe_real = pd.to_numeric(df_mat['Costo_Real'], errors='coerce').sum() if not df_mat.empty and 'Costo_Real' in df_mat.columns else 0.0
 
-    flujo_neto = tot_cobrado - (tot_pagado_maestros + tot_caja_gastada + tot_ffe_real)
+    col_caja_card = "#C85A32" if tot_caja_gastada <= tot_caja_ppto else "#C93B2B"
+    pct_util_contratos = (tot_utilidades / tot_ventas * 100.0) if tot_ventas > 0 else 0.0
 
-    col_flujo = "#4A7C59" if flujo_neto >= 0 else "#C93B2B"
-    render_metric_row([
-        {"title": "Total Contratos", "value": format_currency(tot_ventas), "subtitle": f"Honorarios: {format_currency(tot_hon)}"},
-        {"title": "Total Cobrado", "value": format_currency(tot_cobrado), "subtitle": f"Por cobrar: {format_currency(max(0.0, tot_ventas - tot_cobrado))}", "border_color": "#4A7C59", "text_color": "#4A7C59"},
-        {"title": "Pagos Contratistas", "value": format_currency(tot_pagado_maestros), "subtitle": "Ejecución de partidas"},
-        {"title": "Compras FF&E + Caja", "value": format_currency(tot_ffe_real + tot_caja_gastada), "subtitle": f"FF&E: {format_currency(tot_ffe_real)}"},
-        {"title": "Flujo de Caja Neto", "value": format_currency(flujo_neto), "subtitle": "Ingresos percibidos vs Egresos", "border_color": col_flujo, "text_color": col_flujo},
-    ])
+    # Los 4 Widgets de Finanzas (Punto 1.2 - Foto 1) + Acceso directo a Caja Chica (Punto 1.3)
+    cw1, cw2, cw3, cw4 = st.columns(4)
+    with cw1:
+        render_metric_card(
+            "1. Total Contratos",
+            format_currency(tot_ventas),
+            f"{len(df_p_act)} proyectos · Honorarios: {format_currency(tot_hon)}",
+        )
+    with cw2:
+        render_metric_card(
+            "2. Utilidades",
+            format_currency(tot_utilidades),
+            f"Margen estimado: {pct_util_contratos:.0f}% sobre contratos",
+            border_color="#4A7C59",
+            text_color="#4A7C59",
+        )
+    with cw3:
+        render_metric_card(
+            "3. Caja Chica Ejecutada vs Caja Chica",
+            f"{format_currency(tot_caja_gastada)} / {format_currency(tot_caja_ppto)}",
+            f"Ejecutado: {pct_caja:.1f}% · Saldo: {format_currency(saldo_caja)}",
+            border_color=col_caja_card,
+            text_color=col_caja_card,
+        )
+        if st.button("💼 ABRIR CAJA CHICA Y GASTOS GENERALES →", key="btn_open_modulo_caja", type="primary", use_container_width=True):
+            st.session_state.modulo_caja_chica_abierto = True
+            st.rerun()
+    with cw4:
+        render_metric_card(
+            "4. Utilidades Ejecutadas + GG Cobrados",
+            format_currency(tot_util_ejec_mas_gg),
+            f"Util. Ejec.: {format_currency(util_ejecutadas)} · GG: {format_currency(gg_cobrados)}",
+            border_color="#4A7C59",
+            text_color="#4A7C59",
+        )
 
     st.divider()
 
@@ -651,28 +800,37 @@ def _render_tab_finanzas_estudio(fecha_hoy):
     for _, pr in df_p_act.iterrows():
         p_name = pr['Nombre']
         ppto_p = safe_float(pr.get('Presupuesto', 0))
-        hon_p = safe_float(pr.get('Honorarios_Diseno', 0))
+        util_p = safe_float(pr.get('Utilidades', 0))
+        if util_p == 0.0 and ppto_p > 0:
+            util_p = ppto_p * 0.20
+        gg_ppto_p = safe_float(pr.get('GG_Presupuesto', 0))
         cob_p = pd.to_numeric(df_cob[df_cob['Proyecto'] == p_name]['Monto_Cobrado'], errors='coerce').sum() if not df_cob.empty and 'Proyecto' in df_cob.columns and 'Monto_Cobrado' in df_cob.columns else 0.0
         pag_p = pd.to_numeric(df_pag[df_pag['Proyecto'] == p_name]['Monto'], errors='coerce').sum() if not df_pag.empty and 'Proyecto' in df_pag.columns and 'Monto' in df_pag.columns else 0.0
         caja_p = pd.to_numeric(df_gg[df_gg['Proyecto'] == p_name]['Monto'], errors='coerce').sum() if not df_gg.empty and 'Proyecto' in df_gg.columns and 'Monto' in df_gg.columns else 0.0
         ffe_p = pd.to_numeric(df_mat[df_mat['Proyecto'] == p_name]['Costo_Real'], errors='coerce').sum() if not df_mat.empty and 'Proyecto' in df_mat.columns and 'Costo_Real' in df_mat.columns else 0.0
         egresos_p = pag_p + caja_p + ffe_p
 
+        if not df_ing_act.empty:
+            ing_p = df_ing_act[df_ing_act['Proyecto'] == p_name]
+            u_ej_p = float(pd.to_numeric(ing_p['Monto'], errors='coerce').fillna(0.0).sum())
+        else:
+            u_ej_p = 0.0
+
         rows_fin.append({
             "Proyecto": p_name,
             "Cliente": safe_str(pr.get('Cliente', '')),
-            "Ppto. Contrato": format_currency(ppto_p),
-            "Honorarios Diseño": format_currency(hon_p),
+            "Total Contrato": format_currency(ppto_p),
+            "Utilidades": format_currency(util_p),
+            "Caja Chica (Ejec. / Ppto.)": f"{format_currency(caja_p)} / {format_currency(gg_ppto_p)}",
+            "Util. Ejec. + GG Cobrados": format_currency(u_ej_p),
             "Cobrado Cliente": format_currency(cob_p),
-            "Por Cobrar": format_currency(max(0.0, ppto_p - cob_p)),
             "Pagos Obra + FF&E": format_currency(egresos_p),
-            "Liquidez Actual": format_currency(cob_p - egresos_p)
         })
 
         chart_rows.extend([
-            {"Proyecto": p_name, "Categoría": "1. Presupuesto Contrato", "Monto": ppto_p},
-            {"Proyecto": p_name, "Categoría": "2. Cobrado al Cliente", "Monto": cob_p},
-            {"Proyecto": p_name, "Categoría": "3. Egresos (Obra + FF&E + Caja)", "Monto": egresos_p},
+            {"Proyecto": p_name, "Categoría": "1. Total Contrato", "Monto": ppto_p},
+            {"Proyecto": p_name, "Categoría": "2. Utilidades", "Monto": util_p},
+            {"Proyecto": p_name, "Categoría": "3. Util. Ejecutadas + GG Cobrados", "Monto": u_ej_p},
         ])
 
     # Gráfico Comparativo por Proyecto
@@ -686,7 +844,7 @@ def _render_tab_finanzas_estudio(fecha_hoy):
             color=alt.Color(
                 'Categoría:N',
                 scale=alt.Scale(
-                    domain=["1. Presupuesto Contrato", "2. Cobrado al Cliente", "3. Egresos (Obra + FF&E + Caja)"],
+                    domain=["1. Total Contrato", "2. Utilidades", "3. Util. Ejecutadas + GG Cobrados"],
                     range=['#262320', '#4A7C59', '#C85A32']
                 ),
                 legend=alt.Legend(title="Indicador Financiero", orient="top", labelColor='#262320', titleColor='#6E665E')

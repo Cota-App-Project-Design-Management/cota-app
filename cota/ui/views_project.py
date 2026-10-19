@@ -31,13 +31,17 @@ from cota.db import (
     COLS_MAT,
     COLS_PAGOS,
     COLS_PUNCH,
+    agregar_fase_banco,
     clear_base_dfs,
+    obtener_banco_fases,
     on_table_edit,
     sembrar_fases_default,
+    sincronizar_fases_proyecto,
 )
 from cota.pdf import generar_pdf_minuta
 from cota.ui.components import render_metric_card
 from cota.utils import (
+    analizar_tareas_proyecto,
     extraer_esp,
     extraer_texto_documento,
     format_currency,
@@ -195,7 +199,12 @@ def _render_tab_resumen(proy_name, proy_data):
 
     st.divider()
 
-    # Datos descriptivos y estado de fases
+    # Datos descriptivos, widget inteligente de tareas y estado de fases activas
+    info_t = analizar_tareas_proyecto(st.session_state.get('tasks'), proy_name)
+    banco_fases_estudio = obtener_banco_fases()
+    nombres_banco_all = [f["Fase"] for f in banco_fases_estudio]
+    fases_activas_actuales = fases_p['Fase'].tolist() if not fases_p.empty else []
+
     col_d1, col_d2 = st.columns([1, 1.1])
     with col_d1:
         st.markdown("#### FICHA TÉCNICA DEL PROYECTO")
@@ -207,6 +216,7 @@ def _render_tab_resumen(proy_name, proy_data):
             ("Carpeta / División", proy_data.get('Division', 'General')),
             ("Fecha Inicio", format_date(proy_data.get('Inicio'))),
             ("Fecha Estimada Entrega", format_date(proy_data.get('Fin'))),
+            ("Tareas en Proceso", f"{info_t['en_proceso']} en proceso ({info_t['completadas']}/{info_t['total']} completadas)"),
         ]
         rows_html = "".join(
             f"<div style='display:flex; justify-content:space-between; padding:8px 12px; border-bottom:1px solid #DFD9CE;'>"
@@ -216,6 +226,25 @@ def _render_tab_resumen(proy_name, proy_data):
         )
         st.markdown(
             f"<div style='background:#FFFFFF; border:1px solid #DFD9CE; border-radius:10px; overflow:hidden; margin-bottom:14px;'>{rows_html}</div>",
+            unsafe_allow_html=True
+        )
+
+        # Widget Inteligente de Tareas dentro del Resumen del Proyecto
+        pills_html = "".join(
+            f"<span style='background:#FFFFFF; border:1px solid #DFD9CE; border-radius:4px; padding:2px 8px; font-size:11px; color:#262320; font-weight:500;'>{pill}</span>"
+            for pill in info_t.get("pills_extra", [])
+        )
+        pills_wrap = f"<div style='display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;'>{pills_html}</div>" if pills_html else ""
+        st.markdown(
+            f"<div style='background:{info_t['widget_bg']}; border:1px solid #DFD9CE; border-left:4px solid {info_t['widget_color']}; border-radius:8px; padding:12px 14px; margin-bottom:14px;'>"
+            f"<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;'>"
+            f"<span style='font-size:11px; color:#6E665E; font-weight:700; text-transform:uppercase;'>⚡ MONITOR INTELIGENTE DE TAREAS</span>"
+            f"<span style='font-family:monospace; font-size:10.5px; font-weight:700; color:{info_t['widget_color']}; background:#FFFFFF; border:1px solid {info_t['widget_color']}; border-radius:4px; padding:1px 7px;'>{info_t['widget_badge']}</span>"
+            f"</div>"
+            f"<div style='color:#262320; font-weight:700; font-size:13.5px;'>{info_t['widget_titulo']}</div>"
+            f"<div style='color:#6E665E; font-size:12px; margin-top:2px;'>{info_t['widget_detalle']}</div>"
+            f"{pills_wrap}"
+            f"</div>",
             unsafe_allow_html=True
         )
 
@@ -230,7 +259,31 @@ def _render_tab_resumen(proy_name, proy_data):
             st.markdown("<p style='color:#8C8277; font-style:italic;'>Sin notas registradas en el brief de este proyecto.</p>", unsafe_allow_html=True)
 
     with col_d2:
-        st.markdown("#### ESTADO DE LAS 8 FASES DE DISEÑO")
+        ch_f1, ch_f2 = st.columns([6.2, 3.8])
+        with ch_f1:
+            st.markdown(f"#### ESTADO DE LAS FASES ({n_fases} ACTIVAS)")
+        with ch_f2:
+            with st.popover("🗂️ BANCO DE FASES", use_container_width=True):
+                st.markdown("##### Activar / Desactivar Fases")
+                st.caption("Selecciona del banco las fases que aplican a las características de este proyecto.")
+                with st.form(f"form_res_banco_fases_{proy_name}"):
+                    opciones_res_f = list(dict.fromkeys(nombres_banco_all + fases_activas_actuales))
+                    sel_res_f = st.multiselect(
+                        "Fases activas en este proyecto:",
+                        options=opciones_res_f,
+                        default=fases_activas_actuales,
+                    )
+                    nueva_f_res = st.text_input("➕ Nueva fase al Banco (opcional):", placeholder="ej. 09. Licencias Municipales")
+                    if st.form_submit_button("APLICAR FASES", type="primary", use_container_width=True):
+                        fases_aplicar = list(sel_res_f)
+                        if nueva_f_res.strip():
+                            nf = agregar_fase_banco(nueva_f_res.strip())
+                            if nf["Fase"] not in fases_aplicar:
+                                fases_aplicar.append(nf["Fase"])
+                        sincronizar_fases_proyecto(proy_name, fases_aplicar, proy_data.get('Inicio'))
+                        st.success("Fases del proyecto actualizadas.")
+                        st.rerun()
+
         if not fases_p.empty:
             fases_items = []
             for _, fr in fases_p.iterrows():
@@ -253,19 +306,58 @@ def _render_tab_resumen(proy_name, proy_data):
                 f"<div style='background:#FFFFFF; border:1px solid #DFD9CE; border-radius:10px; overflow:hidden;'>{''.join(fases_items)}</div>",
                 unsafe_allow_html=True
             )
+        else:
+            st.info("No hay fases activas para este proyecto. Usa el botón '🗂️ BANCO DE FASES' para activar las que correspondan.")
 
 
 def _render_tab_fases(proy_name, proy_data):
-    """Pestaña 2: Fases de diseño y cronograma canónico."""
-    st.markdown("### 📐 CICLO DE VIDA Y FASES DEL DISEÑO")
-    st.caption("Estructura secuencial para estudios de interiores y arquitectura: desde el brief inicial hasta la entrega final.")
+    """Pestaña 2: Fases de diseño, Banco de Fases configurable y cronograma."""
+    st.markdown("### 📐 CICLO DE VIDA Y FASES DEL PROYECTO")
+    st.caption("Personaliza las fases activas de este proyecto a partir del Banco de Fases del estudio según sus características (con o sin Expediente Técnico, Obra, Licencias, etc.).")
 
     fases_df = st.session_state.fases[st.session_state.fases['Proyecto'] == proy_name].copy()
-    if fases_df.empty:
-        st.session_state.fases = sembrar_fases_default(proy_name, proy_data.get('Inicio'))
-        fases_df = st.session_state.fases[st.session_state.fases['Proyecto'] == proy_name].copy()
-
     fases_df = fases_df.sort_values(by='Orden')
+    fases_activas_actuales = fases_df['Fase'].tolist() if not fases_df.empty else []
+
+    banco_fases = obtener_banco_fases()
+    nombres_banco = [f["Fase"] for f in banco_fases]
+    todas_opciones_fases = list(dict.fromkeys(nombres_banco + fases_activas_actuales))
+
+    # Banco de Fases del Estudio: activar/desactivar por proyecto + agregar al banco
+    with st.expander("🗂️ BANCO DE FASES — Activar / Desactivar Fases para este Proyecto", expanded=False):
+        cb_left, cb_right = st.columns([6.5, 3.5])
+        with cb_left:
+            with st.form(f"form_tab_fases_banco_{proy_name}"):
+                st.markdown("##### Selecciona las Fases Activas del Proyecto")
+                st.caption("Marca únicamente las fases que aplican a este proyecto. Los datos de avance de las fases que ya estaban activas se conservarán.")
+                checks_seleccionados = []
+                cols_chk = st.columns(2)
+                for idx_f, nom_f in enumerate(todas_opciones_fases):
+                    col_c = cols_chk[idx_f % 2]
+                    activo_actual = nom_f in fases_activas_actuales
+                    if col_c.checkbox(nom_f, value=activo_actual, key=f"chk_bf_{proy_name}_{idx_f}"):
+                        checks_seleccionados.append(nom_f)
+
+                if st.form_submit_button("💾 ACTUALIZAR FASES ACTIVAS DEL PROYECTO", type="primary", use_container_width=True):
+                    sincronizar_fases_proyecto(proy_name, checks_seleccionados, proy_data.get('Inicio'))
+                    st.success(f"Fases actualizadas ({len(checks_seleccionados)} fases activas en '{proy_name}').")
+                    st.rerun()
+
+        with cb_right:
+            with st.form(f"form_nueva_fase_banco_{proy_name}", clear_on_submit=True):
+                st.markdown("##### ➕ Agregar Fase al Banco")
+                st.caption("Crea una nueva fase en el catálogo del estudio.")
+                nf_nombre = st.text_input("Nombre de la Fase", placeholder="ej. 09. Licencias Municipales")
+                nf_etapa = st.selectbox("Etapa", ["Conceptual", "Diseño", "Documentación", "Adquisiciones", "Construcción", "Cierre"])
+                nf_dias = st.number_input("Duración estimada (días)", min_value=1, max_value=365, value=10)
+                nf_activar = st.checkbox("Activar inmediatamente en este proyecto", value=True)
+                if st.form_submit_button("AGREGAR AL BANCO", use_container_width=True) and nf_nombre.strip():
+                    nueva_f = agregar_fase_banco(nf_nombre.strip(), etapa=nf_etapa, dias=int(nf_dias))
+                    if nf_activar:
+                        nuevas_act = list(dict.fromkeys(fases_activas_actuales + [nueva_f["Fase"]]))
+                        sincronizar_fases_proyecto(proy_name, nuevas_act, proy_data.get('Inicio'))
+                    st.success(f"Fase '{nueva_f['Fase']}' añadida al Banco de Fases.")
+                    st.rerun()
 
     # Gantt interactivo de Fases
     df_chart = fases_df.copy()
@@ -293,7 +385,7 @@ def _render_tab_fases(proy_name, proy_data):
         st.altair_chart(chart_fases, use_container_width=True)
 
     st.divider()
-    st.markdown("#### EDITOR DE FASES Y APROBACIÓN DEL CLIENTE")
+    st.markdown("#### EDITOR DE FASES ACTIVAS Y APROBACIÓN DEL CLIENTE")
 
     base_fases_key = f"base_df_fases_{proy_name}"
     counter_key = f"c_{base_fases_key}"
