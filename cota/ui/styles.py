@@ -527,5 +527,44 @@ def get_app_css() -> str:
         hr {
             border-color: var(--border-sand) !important;
         }
+
+        /* 12. TARJETA KPI CLICABLE (CAJA CHICA EN FINANZAS) */
+        div[data-testid="stColumn"]:has(.st-key-btn_open_modulo_caja) div[data-testid="stVerticalBlock"] {
+            position: relative !important;
+            gap: 0px !important;
+        }
+
+        .st-key-btn_open_modulo_caja {
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            width: 100% !important;
+            height: 118px !important;
+            z-index: 25 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+
+        .st-key-btn_open_modulo_caja div[data-testid="stButton"],
+        .st-key-btn_open_modulo_caja button {
+            width: 100% !important;
+            height: 118px !important;
+            min-height: 118px !important;
+            max-height: 118px !important;
+            opacity: 0 !important;
+            cursor: pointer !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: none !important;
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+
+        div[data-testid="stColumn"]:has(.st-key-btn_open_modulo_caja):hover .metric-card {
+            transform: translateY(-2px) !important;
+            box-shadow: 0 8px 20px rgba(200, 90, 50, 0.14) !important;
+            border-color: var(--clay-primary) !important;
+        }
     </style>
     """

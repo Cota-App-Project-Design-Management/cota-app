@@ -771,13 +771,13 @@ def _render_tab_finanzas_estudio(fecha_hoy):
         )
     with cw3:
         render_metric_card(
-            "3. Caja Chica Ejecutada vs Caja Chica",
+            "3. Caja Chica Ejecutada vs Caja Chica ↗",
             f"{format_currency(tot_caja_gastada)} / {format_currency(tot_caja_ppto)}",
             f"Ejecutado: {pct_caja:.1f}% · Saldo: {format_currency(saldo_caja)}",
             border_color=col_caja_card,
             text_color=col_caja_card,
         )
-        if st.button("💼 ABRIR CAJA CHICA Y GASTOS GENERALES →", key="btn_open_modulo_caja", type="primary", use_container_width=True):
+        if st.button("Abrir Caja Chica y Gastos Generales", key="btn_open_modulo_caja", use_container_width=True):
             st.session_state.modulo_caja_chica_abierto = True
             st.rerun()
     with cw4:
