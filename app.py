@@ -6,8 +6,28 @@ y contratistas para estudios de arquitectura e interiorismo medianos y pequeños
 
 import hashlib
 import hmac
+import importlib
 import pandas as pd
 import streamlit as st
+
+import cota.config
+import cota.utils
+import cota.db
+import cota.ui.styles
+import cota.ui.components
+import cota.ui.views_main
+import cota.ui.views_project
+
+for _mod in (
+    cota.config,
+    cota.utils,
+    cota.db,
+    cota.ui.styles,
+    cota.ui.components,
+    cota.ui.views_main,
+    cota.ui.views_project,
+):
+    importlib.reload(_mod)
 
 from cota.config import (
     DEFAULT_APP_TITLE,

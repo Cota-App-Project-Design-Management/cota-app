@@ -397,7 +397,7 @@ def parse_resumen_meet(texto, proyecto, count=0):
     }
 
 
-def analizar_tareas_proyecto(df_tasks: pd.DataFrame, proy_name: str, fecha_hoy: datetime.date | None = None) -> dict:
+def analizar_tareas_proyecto(df_tasks: pd.DataFrame, proy_name: str, fecha_hoy=None) -> dict:
     """
     Analiza las tareas de un proyecto y devuelve conteos operativos (total, en proceso, completadas)
     junto con un widget inteligente de alertas (tareas atrasadas, por terminar, por empezar o en curso).
