@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>COTA APP v2.0 — Presentación para Socio (Lenguaje Ejecutivo)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --background: #F7F4EF;
+      --card: #FFFFFF;
+      --foreground: #262320;
+      --muted-foreground: #6E665E;
+      --border: #DFD9CE;
+      --secondary: #EFECE6;
+      --secondary-foreground: #262320;
+    }
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: var(--background);
+      color: var(--foreground);
+    }
+    .font-mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    @media print {
+      body { background-color: #FFFFFF !important; padding: 0 !important; }
+      .no-print { display: none !important; }
+      .slide-card {
+        display: block !important;
+        page-break-after: always;
+        break-after: page;
+        margin-bottom: 20px !important;
+        box-shadow: none !important;
+        border: 1px solid #DFD9CE !important;
+      }
+      .ss-instructions { display: none !important; }
+    }
+    .drop-zone.dragover {
+      border-color: #C85A32 !important;
+      background-color: rgba(200, 90, 50, 0.08) !important;
+    }
+  </style>
+</head>
+<body class="bg-[var(--background)] text-[var(--foreground)] antialiased p-4 md:p-8">
+
+  <div class="no-print max-w-6xl mx-auto mb-6 bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 shadow-sm flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <span class="inline-flex items-center justify-center px-2.5 py-1 rounded text-xs font-mono font-bold border" style="color:#C85A32; border-color:#C85A32; background:rgba(200,90,50,0.12);">
+        COTA // STUDIO v2.0
+      </span>
+      <div>
+        <h1 class="text-base font-bold text-[var(--foreground)]">Presentación Ejecutiva para Socio (Sin Tecnicismos de Arquitectura)</h1>
+        <p class="text-xs text-[var(--muted-foreground)]">Métricas en vez de KPIs · Materiales y Mobiliario en vez de FF&E · Cronograma Visual en vez de Gantt.</p>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2">
+      <button id="btnModeSlide" onclick="setViewMode('slide')" class="px-3 py-1.5 rounded-lg text-xs font-semibold border border-[var(--border)] bg-[var(--secondary)] text-[var(--secondary-foreground)] transition">
+        🖥️ Modo Diapositiva
+      </button>
+      <button id="btnModeAll" onclick="setViewMode('all')" class="px-3 py-1.5 rounded-lg text-xs font-semibold border border-[var(--border)] bg-[var(--card)] text-[var(--foreground)] transition">
+        📜 Ver Todas (8)
+      </button>
+      <button onclick="window.print()" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition" style="background-color:#C85A32;">
+        🖨️ Imprimir / Guardar PDF
+      </button>
+    </div>
+  </div>
+
+  <div id="slideNav" class="no-print max-w-6xl mx-auto mb-4 flex items-center justify-between bg-[var(--card)] border border-[var(--border)] rounded-xl px-4 py-2.5">
+    <button onclick="changeSlide(-1)" class="px-3 py-1 rounded-lg border border-[var(--border)] text-xs font-semibold hover:opacity-80">
+      ◀ Anterior
+    </button>
+    <div class="flex items-center gap-1.5" id="slideDots"></div>
+    <span id="slideCounter" class="text-xs font-mono font-semibold text-[var(--muted-foreground)]">Diapositiva 1 de 8</span>
+    <button onclick="changeSlide(1)" class="px-3 py-1 rounded-lg text-xs font-semibold text-white hover:opacity-90" style="background-color:#C85A32;">
+      Siguiente ▶
+    </button>
+  </div>
+
+  <div class="max-w-6xl mx-auto space-y-8" id="slidesContainer">
+
+    <!-- SLIDE 1 -->
+    <section class="slide-card bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-10 shadow-sm">
+      <div class="flex items-center justify-between border-b border-[var(--border)] pb-4 mb-6">
+        <div>
+          <span class="text-xs font-mono uppercase tracking-widest font-semibold" style="color:#C85A32;">01 // Visión y Oportunidad de Negocio</span>
+          <h2 class="text-2xl md:text-3xl font-bold mt-1">COTA APP: Plataforma de Gestión para Proyectos de Diseño y Remodelación</h2>
+        </div>
+        <span class="text-xs font-mono px-3 py-1 rounded-full border border-[var(--border)] text-[var(--muted-foreground)]">Versión v2.0 Operativa</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
+        <div class="p-5 rounded-xl border border-[var(--border)] bg-[var(--background)]" style="border-left: 4px solid #D98A2B;">
+          <div class="text-xs font-mono font-bold uppercase mb-2" style="color:#D98A2B;">1. El Problema del Sector</div>
+          <h3 class="font-bold text-base mb-2">Operación Dispersa y Descontrol de Costos</h3>
+          <p class="text-xs text-[var(--muted-foreground)] leading-relaxed">
+            La mayoría de estudios de diseño y remodelación manejan su operación dispersa entre hojas de Excel sueltas, WhatsApp y carpetas en la nube.<br/><br/>
+            Los presupuestos de materiales y mobiliario se desfasan sin detectarlo a tiempo, y no se conoce la ganancia real ni el saldo pendiente con cada proveedor hasta terminar la obra.
+          </p>
+        </div>
+
+        <div class="p-5 rounded-xl border border-[var(--border)] bg-[var(--background)]" style="border-left: 4px solid #C85A32;">
+          <div class="text-xs font-mono font-bold uppercase mb-2" style="color:#C85A32;">2. La Solución: COTA App v2.0</div>
+          <h3 class="font-bold text-base mb-2">Todo el Proyecto Conectado en un Solo Lugar</h3>
+          <p class="text-xs text-[var(--muted-foreground)] leading-relaxed">
+            Sistema todo-en-uno que conecta las <b>8 etapas de diseño</b>, el <b>catálogo de materiales y muebles por habitación</b>, el control de <b>planos</b>, los <b>pagos a trabajadores</b>, los <b>cobros al cliente</b> y la emisión de <b>actas en PDF</b>.<br/><br/>
+            Se guarda en tiempo real en Google Sheets con respaldo directo en archivos Excel (<code>.xlsx</code>) en Google Drive.
+          </p>
+        </div>
+
+        <div class="p-5 rounded-xl border border-[var(--border)] bg-[var(--background)]" style="border-left: 4px solid #4A7C59;">
+          <div class="text-xs font-mono font-bold uppercase mb-2" style="color:#4A7C59;">3. Doble Oportunidad para Socios</div>
+          <h3 class="font-bold text-base mb-2">Uso Interno + Suscripción a Terceros (SaaS)</h3>
+          <p class="text-xs text-[var(--muted-foreground)] leading-relaxed">
+            <b>1) Uso Interno Inmediato:</b> Ordenar el 100% de nuestros proyectos activos, protegiendo el margen de ganancia y ahorrando horas administrativas.<br/><br/>
+            <b>2) Modelo de Suscripción:</b> El sistema está listo para alquilarse mensualmente a otros estudios de diseño, arquitectura y remodelación.
+          </p>
+        </div>
+      </div>
+
+      <div class="p-5 rounded-xl border border-[var(--border)] bg-[var(--background)]">
+        <div class="text-xs font-mono uppercase tracking-wider text-[var(--muted-foreground)] mb-3 font-semibold">Flujo Integral de Trabajo en COTA App v2.0</div>
+        <div class="grid grid-cols-2 md:grid-cols-6 gap-3 text-center">
+          <div class="p-3 rounded-lg bg-[var(--card)] border border-[var(--border)]">
+            <div class="text-lg">📐</div>
+            <div class="text-xs font-bold mt-1">1. Cronograma</div>
+            <div class="text-xs text-[var(--muted-foreground)]">8 etapas de avance</div>
+          </div>
+          <div class="p-3 rounded-lg bg-[var(--card)] border border-[var(--border)]">
+            <div class="text-lg">🛋️</div>
+            <div class="text-xs font-bold mt-1">2. Materiales</div>
+            <div class="text-xs text-[var(--muted-foreground)]">Compras por ambiente</div>
+          </div>
+          <div class="p-3 rounded-lg bg-[var(--card)] border border-[var(--border)]">
+            <div class="text-lg">📋</div>
+            <div class="text-xs font-bold mt-1">3. Planos y 3D</div>
+            <div class="text-xs text-[var(--muted-foreground)]">Control de versiones</div>
+          </div>
+          <div class="p-3 rounded-lg bg-[var(--card)] border border-[var(--border)]">
+            <div class="text-lg">🏗️</div>
+            <div class="text-xs font-bold mt-1">4. Obra y Equipo</div>
+            <div class="text-xs text-[var(--muted-foreground)]">Contratistas 1–5 ★</div>
+          </div>
+          <div class="p-3 rounded-lg bg-[var(--card)] border border-[var(--border)]">
+            <div class="text-lg">💰</div>
+            <div class="text-xs font-bold mt-1">5. Finanzas</div>
+            <div class="text-xs text-[var(--muted-foreground)]">Ingresos vs. Gastos</div>
+          </div>
+          <div class="p-3 rounded-lg bg-[var(--card)] border border-[var(--border)]">
+            <div class="text-lg">📝</div>
+            <div class="text-xs font-bold mt-1">6. Actas y Cierre</div>
+            <div class="text-xs text-[var(--muted-foreground)]">PDF + Revisión final</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLIDE 2 -->
+    <section class="slide-card bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-10 shadow-sm">
+      <div class="flex items-center justify-between border-b border-[var(--border)] pb-4 mb-6">
+        <div>
+          <span class="text-xs font-mono uppercase tracking-widest font-semibold" style="color:#C85A32;">02 // Vista General de la Empresa</span>
+          <h2 class="text-2xl font-bold mt-1">Portafolio de Proyectos y 5 Métricas Clave en Tiempo Real</h2>
+        </div>
+        <span class="text-xs font-mono px-3 py-1 rounded-full border border-[var(--border)] text-[var(--muted-foreground)]">Pestaña: PROYECTOS & DISEÑO</span>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <div class="lg:col-span-5 space-y-4">
+          <h3 class="font-bold text-base">Resumen Ejecutivo desde la Primera Pantalla</h3>
+          <ul class="space-y-2.5 text-xs text-[var(--muted-foreground)] leading-relaxed">
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>5 Métricas Clave en Tiempo Real:</b> Proyectos Activos, Presupuesto Total Contratado (vs. monto ejecutado), Porcentaje de Avance de Diseño (%), Materiales por Aprobar (S/) y Pagos por Cobrar al Cliente (S/).</span></li>
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>Filtro Inteligente por Proyecto:</b> Permite ver los números globales de toda la empresa o seleccionar un solo proyecto para ver al instante sus cobros y su lista de materiales.</span></li>
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>Vista Unificada + Carpetas:</b> Pestaña <code>🗂️ TODOS LOS PROYECTOS (5)</code> más carpetas por unidad de negocio (<i>Comercial & Hospitality</i>, <i>Residencial VIP</i>, <i>Residencial</i>).</span></li>
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>Tarjetas Desplegables por Estado:</b> Proyectos agrupados en <i>En Proceso</i>, <i>Planificación</i> y <i>Completado</i> con barra de progreso y acceso directo a su expediente.</span></li>
+          </ul>
+
+          <div class="ss-instructions p-4 rounded-xl border border-[var(--border)] bg-[var(--background)]">
+            <div class="text-xs font-mono font-bold uppercase mb-1" style="color:#C85A32;">📸 Instrucción para Captura #1</div>
+            <ol class="text-xs text-[var(--muted-foreground)] list-decimal pl-4 space-y-1">
+              <li>Abre la pestaña principal <b>PROYECTOS & DISEÑO</b>.</li>
+              <li>Ubícate en <b>🗂️ TODOS LOS PROYECTOS (5)</b>.</li>
+              <li>Haz clic en <b>🏛️ CASA LA PLANICIE</b> para desplegar su ficha resumen.</li>
+              <li>Toma la captura abarcando las 5 métricas superiores y la lista de proyectos.</li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="lg:col-span-7">
+          <div id="slot-1" class="drop-zone relative rounded-xl border-2 border-dashed border-[var(--border)] bg-[var(--background)] p-6 flex flex-col items-center justify-center min-h-[340px] cursor-pointer transition text-center" onclick="triggerUpload(1)" ondragover="handleDragOver(event, 1)" ondragleave="handleDragLeave(event, 1)" ondrop="handleDrop(event, 1)">
+            <input type="file" id="file-1" accept="image/*" class="hidden" onchange="handleFileSelect(event, 1)" />
+            <div id="placeholder-1" class="space-y-2">
+              <div class="text-3xl">📸</div>
+              <div class="text-sm font-bold text-[var(--foreground)]">ESPACIO PARA CAPTURA #1: Portafolio y 5 Métricas Clave</div>
+              <p class="text-xs text-[var(--muted-foreground)] max-w-md">Haz clic aquí o arrastra tu captura de las 5 métricas superiores y la lista de proyectos.</p>
+            </div>
+            <img id="preview-1" class="hidden w-full rounded-lg object-contain max-h-[460px]" alt="Captura 1" />
+            <button id="remove-1" onclick="removeImage(event, 1)" class="no-print hidden absolute top-3 right-3 px-2.5 py-1 rounded bg-black/70 text-white text-xs font-semibold hover:bg-black">✕ Cambiar captura</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLIDE 3 -->
+    <section class="slide-card bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-10 shadow-sm">
+      <div class="flex items-center justify-between border-b border-[var(--border)] pb-4 mb-6">
+        <div>
+          <span class="text-xs font-mono uppercase tracking-widest font-semibold" style="color:#C85A32;">03 // Rentabilidad Global y Proveedores</span>
+          <h2 class="text-2xl font-bold mt-1">Finanzas Consolidadas de la Empresa y Directorio de Contratistas</h2>
+        </div>
+        <span class="text-xs font-mono px-3 py-1 rounded-full border border-[var(--border)] text-[var(--muted-foreground)]">Pestañas: FINANZAS + CONTRATISTAS</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="space-y-4">
+          <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--background)]">
+            <h3 class="font-bold text-sm mb-1" style="color:#4A7C59;">📊 Finanzas Consolidadas de la Empresa</h3>
+            <p class="text-xs text-[var(--muted-foreground)] leading-relaxed">
+              Calcula la <b>Liquidez Neta real</b>: <code>Total Cobrado a Clientes − (Pagos a Contratistas + Compra de Materiales + Gastos Menores)</code>, con gráfico comparativo por proyecto y descarga en Excel/CSV.
+            </p>
+            <div class="ss-instructions mt-3 pt-3 border-t border-[var(--border)] text-xs text-[var(--muted-foreground)]">
+              <b style="color:#C85A32;">📸 Captura #2:</b> Entra a <b>FINANZAS DEL ESTUDIO</b> y captura las 5 métricas financieras, el gráfico de barras y la tabla inferior.
+            </div>
+          </div>
+
+          <div id="slot-2" class="drop-zone relative rounded-xl border-2 border-dashed border-[var(--border)] bg-[var(--background)] p-5 flex flex-col items-center justify-center min-h-[260px] cursor-pointer transition text-center" onclick="triggerUpload(2)" ondragover="handleDragOver(event, 2)" ondragleave="handleDragLeave(event, 2)" ondrop="handleDrop(event, 2)">
+            <input type="file" id="file-2" accept="image/*" class="hidden" onchange="handleFileSelect(event, 2)" />
+            <div id="placeholder-2" class="space-y-1.5">
+              <div class="text-2xl">📸</div>
+              <div class="text-xs font-bold">ESPACIO PARA CAPTURA #2: Finanzas de la Empresa</div>
+              <p class="text-xs text-[var(--muted-foreground)]">Clic o arrastra aquí la captura de <code>FINANZAS DEL ESTUDIO</code></p>
+            </div>
+            <img id="preview-2" class="hidden w-full rounded-lg object-contain max-h-[360px]" alt="Captura 2" />
+            <button id="remove-2" onclick="removeImage(event, 2)" class="no-print hidden absolute top-3 right-3 px-2.5 py-1 rounded bg-black/70 text-white text-xs font-semibold">✕ Cambiar</button>
+          </div>
+        </div>
+
+        <div class="space-y-4">
+          <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--background)]">
+            <h3 class="font-bold text-sm mb-1" style="color:#C85A32;">🛠️ Directorio Inteligente de Contratistas (1–5 ★)</h3>
+            <p class="text-xs text-[var(--muted-foreground)] leading-relaxed">
+              Muestra automáticamente quién está <b>🔵 En Obra Hoy</b> o <b>🟢 Disponible</b> y su carga de trabajo para los próximos 7 días, con calificación en estrellas (⭐) e historial de Puntos a Favor <code>[+]</code> e Incidencias <code>[-]</code>.
+            </p>
+            <div class="ss-instructions mt-3 pt-3 border-t border-[var(--border)] text-xs text-[var(--muted-foreground)]">
+              <b style="color:#C85A32;">📸 Captura #3:</b> Entra a <b>BASE CONTRATISTAS</b> y captura el directorio con estrellas ⭐ y el historial inferior.
+            </div>
+          </div>
+
+          <div id="slot-3" class="drop-zone relative rounded-xl border-2 border-dashed border-[var(--border)] bg-[var(--background)] p-5 flex flex-col items-center justify-center min-h-[260px] cursor-pointer transition text-center" onclick="triggerUpload(3)" ondragover="handleDragOver(event, 3)" ondragleave="handleDragLeave(event, 3)" ondrop="handleDrop(event, 3)">
+            <input type="file" id="file-3" accept="image/*" class="hidden" onchange="handleFileSelect(event, 3)" />
+            <div id="placeholder-3" class="space-y-1.5">
+              <div class="text-2xl">📸</div>
+              <div class="text-xs font-bold">ESPACIO PARA CAPTURA #3: Directorio de Contratistas ⭐</div>
+              <p class="text-xs text-[var(--muted-foreground)]">Clic o arrastra aquí la captura de <code>BASE CONTRATISTAS</code></p>
+            </div>
+            <img id="preview-3" class="hidden w-full rounded-lg object-contain max-h-[360px]" alt="Captura 3" />
+            <button id="remove-3" onclick="removeImage(event, 3)" class="no-print hidden absolute top-3 right-3 px-2.5 py-1 rounded bg-black/70 text-white text-xs font-semibold">✕ Cambiar</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLIDE 4 -->
+    <section class="slide-card bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-10 shadow-sm">
+      <div class="flex items-center justify-between border-b border-[var(--border)] pb-4 mb-6">
+        <div>
+          <span class="text-xs font-mono uppercase tracking-widest font-semibold" style="color:#C85A32;">04 // Coordinación Semanal entre Socios</span>
+          <h2 class="text-2xl font-bold mt-1">Control Operativo Diario y Calendario Mensual de Actividades</h2>
+        </div>
+        <span class="text-xs font-mono px-3 py-1 rounded-full border border-[var(--border)] text-[var(--muted-foreground)]">Pestañas: OPERATIVO + CALENDARIO</span>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <div class="lg:col-span-5 space-y-4">
+          <h3 class="font-bold text-base">Operación Diaria del Equipo sin Fricciones</h3>
+          <ul class="space-y-2.5 text-xs text-[var(--muted-foreground)] leading-relaxed">
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>Columna 1 — Pendientes y Logística Diaria:</b> Tareas rápidas asignadas por socio (Compras de materiales, Pagos, Proveedores, Clientes) con botón <code>✓ LISTO</code> al completarlas.</span></li>
+            <li class="flex gap-2"><span style="color:#4A7C59;">■</span> <span><b>Columna 2 — En Ejecución (Hoy):</b> Qué trabajos de obra y qué contratistas están activos hoy mismo en cada proyecto.</span></li>
+            <li class="flex gap-2"><span style="color:#D98A2B;">■</span> <span><b>Columna 3 — Próximos Inicios (7 Días):</b> Alertas preventivas de los trabajos que arrancan esta semana para coordinar compras y permisos a tiempo.</span></li>
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>Calendario Mensual:</b> Vista mensual completa donde cada actividad se pinta con el color del proyecto correspondiente.</span></li>
+          </ul>
+
+          <div class="ss-instructions p-4 rounded-xl border border-[var(--border)] bg-[var(--background)]">
+            <div class="text-xs font-mono font-bold uppercase mb-1" style="color:#C85A32;">📸 Instrucción para Captura #4</div>
+            <p class="text-xs text-[var(--muted-foreground)] leading-relaxed">
+              Entra a la pestaña <b>CONTROL OPERATIVO</b> (vista de 3 columnas de tareas diarias) o a <b>CALENDARIO</b> (agenda mensual coloreada por proyecto) y toma una captura completa.
+            </p>
+          </div>
+        </div>
+
+        <div class="lg:col-span-7">
+          <div id="slot-4" class="drop-zone relative rounded-xl border-2 border-dashed border-[var(--border)] bg-[var(--background)] p-6 flex flex-col items-center justify-center min-h-[320px] cursor-pointer transition text-center" onclick="triggerUpload(4)" ondragover="handleDragOver(event, 4)" ondragleave="handleDragLeave(event, 4)" ondrop="handleDrop(event, 4)">
+            <input type="file" id="file-4" accept="image/*" class="hidden" onchange="handleFileSelect(event, 4)" />
+            <div id="placeholder-4" class="space-y-2">
+              <div class="text-3xl">📸</div>
+              <div class="text-sm font-bold">ESPACIO PARA CAPTURA #4: Control Operativo o Calendario Mensual</div>
+              <p class="text-xs text-[var(--muted-foreground)] max-w-md">Haz clic o arrastra tu captura de <code>CONTROL OPERATIVO</code> o <code>CALENDARIO</code>.</p>
+            </div>
+            <img id="preview-4" class="hidden w-full rounded-lg object-contain max-h-[440px]" alt="Captura 4" />
+            <button id="remove-4" onclick="removeImage(event, 4)" class="no-print hidden absolute top-3 right-3 px-2.5 py-1 rounded bg-black/70 text-white text-xs font-semibold">✕ Cambiar captura</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLIDE 5 -->
+    <section class="slide-card bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-10 shadow-sm">
+      <div class="flex items-center justify-between border-b border-[var(--border)] pb-4 mb-6">
+        <div>
+          <span class="text-xs font-mono uppercase tracking-widest font-semibold" style="color:#C85A32;">05 // Expediente del Proyecto (Módulos 01 y 02)</span>
+          <h2 class="text-2xl font-bold mt-1">Resumen del Proyecto, Requerimientos y Cronograma de las 8 Etapas</h2>
+        </div>
+        <span class="text-xs font-mono px-3 py-1 rounded-full border border-[var(--border)] text-[var(--muted-foreground)]">Módulos: 01. RESUMEN + 02. FASES</span>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <div class="lg:col-span-5 space-y-4">
+          <h3 class="font-bold text-base">8 Módulos Especializados por cada Proyecto</h3>
+          <ul class="space-y-2.5 text-xs text-[var(--muted-foreground)] leading-relaxed">
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>01. Resumen General:</b> 6 métricas financieras y de avance del proyecto (Presupuesto Total, Cobrado, Pagos Obra, Compra de Materiales, Saldo Caja Chica y % Etapas), datos técnicos y requerimientos del cliente.</span></li>
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>02. Etapas de Diseño (8 Pasos):</b> Desde el <i>01. Levantamiento Inicial</i> y <i>02. Concepto Visual</i> hasta el <i>08. Cierre y Entrega Final</i>.</span></li>
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>Cronograma Visual de Barras + Aprobación:</b> Línea de tiempo interactiva por fechas y casilla de verificación de <i>Aprobado por Cliente</i>.</span></li>
+          </ul>
+
+          <div class="ss-instructions p-4 rounded-xl border border-[var(--border)] bg-[var(--background)]">
+            <div class="text-xs font-mono font-bold uppercase mb-1" style="color:#C85A32;">📸 Instrucción para Captura #5</div>
+            <ol class="text-xs text-[var(--muted-foreground)] list-decimal pl-4 space-y-1">
+              <li>Abre el proyecto <b>Casa La Planicie</b> con el botón <b>ABRIR EXPEDIENTE →</b>.</li>
+              <li>Toma la captura en <b>01. RESUMEN</b> (6 métricas + Ficha Técnica + 8 barras de avance) o en <b>02. FASES DE DISEÑO</b> (Cronograma Visual de barras + tabla inferior).</li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="lg:col-span-7">
+          <div id="slot-5" class="drop-zone relative rounded-xl border-2 border-dashed border-[var(--border)] bg-[var(--background)] p-6 flex flex-col items-center justify-center min-h-[340px] cursor-pointer transition text-center" onclick="triggerUpload(5)" ondragover="handleDragOver(event, 5)" ondragleave="handleDragLeave(event, 5)" ondrop="handleDrop(event, 5)">
+            <input type="file" id="file-5" accept="image/*" class="hidden" onchange="handleFileSelect(event, 5)" />
+            <div id="placeholder-5" class="space-y-2">
+              <div class="text-3xl">📸</div>
+              <div class="text-sm font-bold">ESPACIO PARA CAPTURA #5: Resumen del Proyecto o Cronograma de Etapas</div>
+              <p class="text-xs text-[var(--muted-foreground)] max-w-md">Haz clic o arrastra tu captura de <code>01. RESUMEN</code> o <code>02. FASES DE DISEÑO</code>.</p>
+            </div>
+            <img id="preview-5" class="hidden w-full rounded-lg object-contain max-h-[460px]" alt="Captura 5" />
+            <button id="remove-5" onclick="removeImage(event, 5)" class="no-print hidden absolute top-3 right-3 px-2.5 py-1 rounded bg-black/70 text-white text-xs font-semibold">✕ Cambiar captura</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLIDE 6 -->
+    <section class="slide-card bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-10 shadow-sm">
+      <div class="flex items-center justify-between border-b border-[var(--border)] pb-4 mb-6">
+        <div>
+          <span class="text-xs font-mono uppercase tracking-widest font-semibold" style="color:#C85A32;">06 // Control de Compras y Documentos (Módulos 03 y 04)</span>
+          <h2 class="text-2xl font-bold mt-1">Presupuesto de Materiales y Mobiliario por Ambiente y Control de Planos</h2>
+        </div>
+        <span class="text-xs font-mono px-3 py-1 rounded-full border border-[var(--border)] text-[var(--muted-foreground)]">Módulos: 03. MATERIALES + 04. PLANOS</span>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <div class="lg:col-span-5 space-y-4">
+          <h3 class="font-bold text-base">Presupuesto de Materiales y Muebles por Habitación</h3>
+          <ul class="space-y-2.5 text-xs text-[var(--muted-foreground)] leading-relaxed">
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>03. Materiales, Mobiliario y Acabados (pestaña FF&E):</b> Planilla interactiva filtrable por Ambiente (<i>Sala, Comedor, Cocina, Dormitorio Principal, Terraza</i>) y por Categoría (<i>Muebles, Iluminación, Acabados</i>).</span></li>
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>Presupuesto Estimado vs. Costo Real:</b> Calcula automáticamente <code>Cantidad × Precio Unitario</code> y muestra el ahorro o sobrecosto en cada habitación.</span></li>
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>Seguimiento de Compra:</b> Estados desde <i>Propuesto</i> y <i>Cotizado</i> hasta <i>Aprobado por Cliente</i>, <i>En Fabricación</i> e <i>Instalado</i>.</span></li>
+            <li class="flex gap-2"><span style="color:#C85A32;">■</span> <span><b>04. Entregables y Planos:</b> Control de versiones de planos y vistas 3D, estado de aprobación y enlaces a la nube.</span></li>
+          </ul>
+
+          <div class="ss-instructions p-4 rounded-xl border border-[var(--border)] bg-[var(--background)]">
+            <div class="text-xs font-mono font-bold uppercase mb-1" style="color:#C85A32;">📸 Instrucción para Captura #6</div>
+            <ol class="text-xs text-[var(--muted-foreground)] list-decimal pl-4 space-y-1">
+              <li>Dentro de <b>Casa La Planicie</b>, entra a <b>03. ESPECIFICACIONES FF&E</b>.</li>
+              <li>Haz clic en <b>📊 Ver desglose de presupuesto FF&E por Ambiente</b>.</li>
+              <li>Toma la captura mostrando las 4 métricas superiores, el resumen por habitación y el listado de materiales.</li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="lg:col-span-7">
+          <div id="slot-6" class="drop-zone relative rounded-xl border-2 border-dashed border-[var(--border)] bg-[var(--background)] p-6 flex flex-col items-center justify-center min-h-[340px] cursor-pointer transition text-center" onclick="triggerUpload(6)" ondragover="handleDragOver(event, 6)" ondragleave="handleDragLeave(event, 6)" ondrop="handleDrop(event, 6)">
+            <input type="file" id="file-6" accept="image/*" class="hidden" onchange="handleFileSelect(event, 6)" />
+            <div id="placeholder-6" class="space-y-2">
+              <div class="text-3xl">📸</div>
+              <div class="text-sm font-bold">ESPACIO PARA CAPTURA #6: Lista de Materiales y Desglose por Ambiente</div>
+              <p class="text-xs text-[var(--muted-foreground)] max-w-md">Haz clic o arrastra tu captura de <code>03. ESPECIFICACIONES FF&E</code>.</p>
+            </div>
+            <img id="preview-6" class="hidden w-full rounded-lg object-contain max-h-[460px]" alt="Captura 6" />
+            <button id="remove-6" onclick="removeImage(event, 6)" class="no-print hidden absolute top-3 right-3 px-2.5 py-1 rounded bg-black/70 text-white text-xs font-semibold">✕ Cambiar captura</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLIDE 7 -->
+    <section class="slide-card bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-10 shadow-sm">
+      <div class="flex items-center justify-between border-b border-[var(--border)] pb-4 mb-6">
+        <div>
+          <span class="text-xs font-mono uppercase tracking-widest font-semibold" style="color:#C85A32;">07 // Ejecución de Obra, Finanzas y Cierre (Módulos 05 al 08)</span>
+          <h2 class="text-2xl font-bold mt-1">Control de Obra, Hitos de Cobro, Actas en PDF y Revisión de Entrega</h2>
+        </div>
+        <span class="text-xs font-mono px-3 py-1 rounded-full border border-[var(--border)] text-[var(--muted-foreground)]">Módulos: 05, 06, 07 y 08</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="space-y-4">
+          <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--background)]">
+            <h3 class="font-bold text-sm mb-1" style="color:#C85A32;">🏗️ 05. Ejecución de Obra y 06. Cobros / Caja Chica</h3>
+            <p class="text-xs text-[var(--muted-foreground)] leading-relaxed">
+              Control por rubro de obra (<i>Demolición, Carpintería, Pintura</i>) con etiquetas en tiempo real de <b>PACTADO / PAGADO / SALDO</b>, sugeridor automático de contratistas disponibles, cronograma de cobros al cliente y registro de <b>Caja Chica</b>.
+            </p>
+            <div class="ss-instructions mt-3 pt-3 border-t border-[var(--border)] text-xs text-[var(--muted-foreground)]">
+              <b style="color:#C85A32;">📸 Captura #7:</b> Abre <b>05. EJECUCIÓN & PARTIDAS</b> en <i>Casa La Planicie</i> mostrando las etiquetas de Pactado/Pagado/Saldo y tareas.
+            </div>
+          </div>
+
+          <div id="slot-7" class="drop-zone relative rounded-xl border-2 border-dashed border-[var(--border)] bg-[var(--background)] p-5 flex flex-col items-center justify-center min-h-[260px] cursor-pointer transition text-center" onclick="triggerUpload(7)" ondragover="handleDragOver(event, 7)" ondragleave="handleDragLeave(event, 7)" ondrop="handleDrop(event, 7)">
+            <input type="file" id="file-7" accept="image/*" class="hidden" onchange="handleFileSelect(event, 7)" />
+            <div id="placeholder-7" class="space-y-1.5">
+              <div class="text-2xl">📸</div>
+              <div class="text-xs font-bold">ESPACIO PARA CAPTURA #7: Rubros de Obra y Control de Pagos</div>
+              <p class="text-xs text-[var(--muted-foreground)]">Clic o arrastra aquí la captura de <code>05. EJECUCIÓN & PARTIDAS</code></p>
+            </div>
+            <img id="preview-7" class="hidden w-full rounded-lg object-contain max-h-[360px]" alt="Captura 7" />
+            <button id="remove-7" onclick="removeImage(event, 7)" class="no-print hidden absolute top-3 right-3 px-2.5 py-1 rounded bg-black/70 text-white text-xs font-semibold">✕ Cambiar</button>
+          </div>
+        </div>
+
+        <div class="space-y-4">
+          <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--background)]">
+            <h3 class="font-bold text-sm mb-1" style="color:#4A7C59;">📝 07. Actas en PDF Automático y 08. Revisión de Entrega</h3>
+            <p class="text-xs text-[var(--muted-foreground)] leading-relaxed">
+              Importa apuntes de reunión o Google Meet para ordenar asistentes y acuerdos automáticamente, generando un <b>Acta formal en PDF con membrete</b> en un clic. En el módulo 08 se registran las observaciones finales por habitación antes de la entrega.
+            </p>
+            <div class="ss-instructions mt-3 pt-3 border-t border-[var(--border)] text-xs text-[var(--muted-foreground)]">
+              <b style="color:#C85A32;">📸 Captura #8:</b> Abre <b>07. REUNIONES & ACTAS</b> mostrando la reunión y el botón <code>📥 EXPORTAR ACTA A PDF</code>.
+            </div>
+          </div>
+
+          <div id="slot-8" class="drop-zone relative rounded-xl border-2 border-dashed border-[var(--border)] bg-[var(--background)] p-5 flex flex-col items-center justify-center min-h-[260px] cursor-pointer transition text-center" onclick="triggerUpload(8)" ondragover="handleDragOver(event, 8)" ondragleave="handleDragLeave(event, 8)" ondrop="handleDrop(event, 8)">
+            <input type="file" id="file-8" accept="image/*" class="hidden" onchange="handleFileSelect(event, 8)" />
+            <div id="placeholder-8" class="space-y-1.5">
+              <div class="text-2xl">📸</div>
+              <div class="text-xs font-bold">ESPACIO PARA CAPTURA #8: Actas en PDF o Revisión de Entrega</div>
+              <p class="text-xs text-[var(--muted-foreground)]">Clic o arrastra aquí la captura de <code>07. REUNIONES & ACTAS</code></p>
+            </div>
+            <img id="preview-8" class="hidden w-full rounded-lg object-contain max-h-[360px]" alt="Captura 8" />
+            <button id="remove-8" onclick="removeImage(event, 8)" class="no-print hidden absolute top-3 right-3 px-2.5 py-1 rounded bg-black/70 text-white text-xs font-semibold">✕ Cambiar</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLIDE 8 -->
+    <section class="slide-card bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-10 shadow-sm">
+      <div class="flex items-center justify-between border-b border-[var(--border)] pb-4 mb-6">
+        <div>
+          <span class="text-xs font-mono uppercase tracking-widest font-semibold" style="color:#C85A32;">08 // Tecnología y Visión Estratégica</span>
+          <h2 class="text-2xl font-bold mt-1">Solidez Técnica Lograda y Hoja de Ruta con el Socio</h2>
+        </div>
+        <span class="text-xs font-mono px-3 py-1 rounded-full border border-[var(--border)] text-[var(--muted-foreground)]">Listo para Operar</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+        <div class="p-5 rounded-xl border border-[var(--border)] bg-[var(--background)] space-y-3">
+          <h3 class="font-bold text-base" style="color:#C85A32;">⚙️ Lo que ya está resuelto y funcionando hoy (v2.0)</h3>
+          <ul class="space-y-2 text-xs text-[var(--muted-foreground)] leading-relaxed">
+            <li>✅ <b>Base de Datos en la Nube + Respaldo en Excel:</b> Conecta en tiempo real con <b>Google Sheets</b> y soporta lectura/escritura directa en archivos <b>Excel (<code>.xlsx</code>) en Google Drive</b>.</li>
+            <li>✅ <b>Guardado Inteligente de Cambios:</b> El panel lateral detecta automáticamente qué tablas fueron editadas y sincroniza solo lo necesario.</li>
+            <li>✅ <b>Diseño Ejecutivo y Simétrico:</b> Interfaz limpia en tonos cálidos (<code>#F7F4EF</code> y terracota <code>#C85A32</code>), adaptable a cualquier resolución de pantalla.</li>
+            <li>✅ <b>Configuración Multi-Socio y Calidad Verificada:</b> Nombres de directores configurables desde el panel lateral y <b>22 pruebas automáticas</b> pasando al 100%.</li>
+          </ul>
+        </div>
+
+        <div class="p-5 rounded-xl border border-[var(--border)] bg-[var(--background)] space-y-3">
+          <h3 class="font-bold text-base" style="color:#4A7C59;">🤝 Hoja de Ruta Propuesta con el Socio</h3>
+          <div class="space-y-3 text-xs text-[var(--muted-foreground)] leading-relaxed">
+            <div class="p-3 rounded-lg bg-[var(--card)] border border-[var(--border)]">
+              <b class="text-[var(--foreground)]">Fase 1 — Implementación Interna Inmediata (Mes 1):</b>
+              <p class="mt-1">Gestionar el 100% de nuestros proyectos activos en la app, estandarizando presupuestos de materiales, control de contratistas y actas en PDF.</p>
+            </div>
+            <div class="p-3 rounded-lg bg-[var(--card)] border border-[var(--border)]">
+              <b class="text-[var(--foreground)]">Fase 2 — Portal de Consulta para el Cliente (Mes 2–3):</b>
+              <p class="mt-1">Habilitar una vista para que el cliente revise el avance de su proyecto en línea, apruebe compras de materiales y consulte su estado de cuenta.</p>
+            </div>
+            <div class="p-3 rounded-lg bg-[var(--card)] border border-[var(--border)]">
+              <b class="text-[var(--foreground)]">Fase 3 — Escalabilidad como Software por Suscripción (Mes 4+):</b>
+              <p class="mt-1">Comercializar el sistema mediante suscripción mensual para otros estudios de diseño, arquitectura y remodelación.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <script>
+    let currentSlide = 0;
+    let viewMode = 'all';
+    const slides = document.querySelectorAll('.slide-card');
+
+    function renderDots() {
+      const dotsContainer = document.getElementById('slideDots');
+      dotsContainer.innerHTML = '';
+      slides.forEach((_, idx) => {
+        const btn = document.createElement('button');
+        btn.className = `w-2.5 h-2.5 rounded-full transition ${idx === currentSlide ? 'scale-125' : 'opacity-40'}`;
+        btn.style.backgroundColor = idx === currentSlide ? '#C85A32' : '#8C8277';
+        btn.onclick = () => goToSlide(idx);
+        dotsContainer.appendChild(btn);
+      });
+    }
+
+    function updateView() {
+      const nav = document.getElementById('slideNav');
+      const btnSlide = document.getElementById('btnModeSlide');
+      const btnAll = document.getElementById('btnModeAll');
+
+      if (viewMode === 'slide') {
+        nav.style.display = 'flex';
+        btnSlide.style.borderColor = '#C85A32';
+        btnAll.style.borderColor = 'var(--border)';
+        slides.forEach((s, idx) => {
+          s.style.display = idx === currentSlide ? 'block' : 'none';
+        });
+        document.getElementById('slideCounter').textContent = `Diapositiva ${currentSlide + 1} de ${slides.length}`;
+        renderDots();
+      } else {
+        nav.style.display = 'none';
+        btnAll.style.borderColor = '#C85A32';
+        btnSlide.style.borderColor = 'var(--border)';
+        slides.forEach((s) => {
+          s.style.display = 'block';
+        });
+      }
+    }
+
+    function setViewMode(mode) {
+      viewMode = mode;
+      updateView();
+    }
+
+    function changeSlide(delta) {
+      currentSlide = (currentSlide + delta + slides.length) % slides.length;
+      updateView();
+    }
+
+    function goToSlide(idx) {
+      currentSlide = idx;
+      updateView();
+    }
+
+    function triggerUpload(slotId) {
+      document.getElementById(`file-${slotId}`).click();
+    }
+
+    function displayImageFile(file, slotId) {
+      if (!file || !file.type.startsWith('image/')) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = document.getElementById(`preview-${slotId}`);
+        const ph = document.getElementById(`placeholder-${slotId}`);
+        const rm = document.getElementById(`remove-${slotId}`);
+        img.src = e.target.result;
+        img.classList.remove('hidden');
+        ph.classList.add('hidden');
+        rm.classList.remove('hidden');
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function handleFileSelect(event, slotId) {
+      const file = event.target.files[0];
+      displayImageFile(file, slotId);
+    }
+
+    function handleDragOver(event, slotId) {
+      event.preventDefault();
+      document.getElementById(`slot-${slotId}`).classList.add('dragover');
+    }
+
+    function handleDragLeave(event, slotId) {
+      event.preventDefault();
+      document.getElementById(`slot-${slotId}`).classList.remove('dragover');
+    }
+
+    function handleDrop(event, slotId) {
+      event.preventDefault();
+      document.getElementById(`slot-${slotId}`).classList.remove('dragover');
+      if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
+        displayImageFile(event.dataTransfer.files[0], slotId);
+      }
+    }
+
+    function removeImage(event, slotId) {
+      event.stopPropagation();
+      const img = document.getElementById(`preview-${slotId}`);
+      const ph = document.getElementById(`placeholder-${slotId}`);
+      const rm = document.getElementById(`remove-${slotId}`);
+      const inp = document.getElementById(`file-${slotId}`);
+      img.src = '';
+      img.classList.add('hidden');
+      ph.classList.remove('hidden');
+      rm.classList.add('hidden');
+      inp.value = '';
+    }
+
+    updateView();
+  </script>
+</body>
+</html>

@@ -7,8 +7,16 @@ y contratistas para estudios de arquitectura e interiorismo medianos y pequeños
 import hashlib
 import hmac
 import importlib
+import os
 import pandas as pd
 import streamlit as st
+
+try:
+    if not os.path.exists(r"G:\My Drive\Cota App\Presentacion_Socio_COTA_App_Simple.pptx"):
+        import generar_presentacion
+        generar_presentacion.generar_archivos()
+except Exception:
+    pass
 
 import cota.config
 import cota.utils
