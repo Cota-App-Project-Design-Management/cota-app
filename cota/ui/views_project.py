@@ -38,6 +38,12 @@ from cota.db import (
     sembrar_fases_default,
     sincronizar_fases_proyecto,
 )
+from cota.cotizacion import (
+    aplicar_cotizacion_a_proyecto,
+    exportar_proyecto_a_formato_venti,
+    generar_plantilla_cotizacion_venti,
+    parsear_cotizacion_venti,
+)
 from cota.pdf import generar_pdf_minuta
 from cota.ui.components import render_metric_card
 from cota.utils import (
@@ -713,10 +719,12 @@ def _render_tab_entregables(proy_name, proy_data):
 def _render_tab_obra(proy_name, proy_data):
     """Pestaña 5: Ejecución de Obra, Partidas y Tareas Técnicas."""
     st.markdown("### 🏗️ EJECUCIÓN DE OBRA Y PARTIDAS")
-    st.caption("Control operativo de contratistas, tareas por sección y cronograma de obra.")
+    st.caption("Control operativo de contratistas, tareas por sección, presupuestos asignados e importación de cotización en Formato Venti.")
 
-    # Agregar Partida
-    col_ap1, _ = st.columns([3, 7])
+    cliente_proy = safe_str(proy_data.get('Cliente', ''))
+
+    # Barra de herramientas: Agregar Partida + Descargar Formato Cotización + Importar Presupuesto Venti
+    col_ap1, col_ap2, col_ap3, _ = st.columns([2.6, 2.9, 2.9, 1.6])
     with col_ap1:
         with st.popover("➕ AGREGAR PARTIDA DE OBRA", use_container_width=True):
             with st.form(f"f_new_part_{proy_name}", clear_on_submit=True):
@@ -726,6 +734,186 @@ def _render_tab_obra(proy_name, proy_data):
                     st.session_state.partidas = pd.concat([st.session_state.partidas, pd.DataFrame([{'Proyecto': proy_name, 'Nombre_Partida': n_pa}])], ignore_index=True)
                     st.session_state.p_info = pd.concat([st.session_state.p_info, pd.DataFrame([{'Proyecto': proy_name, 'Nombre_Partida': n_pa, 'Monto_Pactado': n_pac}])], ignore_index=True)
                     clear_base_dfs()
+                    st.rerun()
+
+    with col_ap2:
+        with st.popover("📥 FORMATO COTIZACIÓN (VENTI)", use_container_width=True):
+            st.markdown("##### 📄 Plantilla de Cotización (Formato Venti)")
+            st.caption("Descarga el formato Excel oficial con fórmulas automáticas (Partidas, Tareas, Metrados, Gastos Generales y Gestión/Utilidades) para llenar o enviar al cliente.")
+            tc_dl = st.number_input("Tipo de Cambio (TC) referencial", value=3.42, step=0.01, format="%.2f", key=f"tc_dl_{proy_name}")
+            xlsx_blank = generar_plantilla_cotizacion_venti(
+                proyecto=proy_name,
+                cliente=cliente_proy,
+                tc=tc_dl,
+            )
+            st.download_button(
+                "📥 DESCARGAR PLANTILLA EN BLANCO (.XLSX)",
+                data=xlsx_blank,
+                file_name=f"Formato_Cotizacion_{proy_name.replace(' ', '_')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                type="primary",
+                key=f"btn_dl_blank_venti_{proy_name}",
+            )
+            xlsx_actual = exportar_proyecto_a_formato_venti(proy_name)
+            st.download_button(
+                "📊 EXPORTAR PRESUPUESTO ACTUAL (.XLSX)",
+                data=xlsx_actual,
+                file_name=f"Presupuesto_Venti_{proy_name.replace(' ', '_')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=f"btn_dl_curr_venti_{proy_name}",
+            )
+
+    with col_ap3:
+        abrir_imp = st.button(
+            "📤 IMPORTAR PRESUPUESTO (VENTI)",
+            key=f"btn_toggle_imp_venti_{proy_name}",
+            use_container_width=True,
+        )
+        if abrir_imp:
+            st.session_state[f"show_imp_venti_{proy_name}"] = not st.session_state.get(f"show_imp_venti_{proy_name}", False)
+
+    # Panel interactivo de importación de Cotización / Presupuesto Venti
+    if st.session_state.get(f"show_imp_venti_{proy_name}", False):
+        with st.container(border=True):
+            c_hdr_i1, c_hdr_i2 = st.columns([8.5, 1.5])
+            with c_hdr_i1:
+                st.markdown("#### 📤 IMPORTADOR INTELIGENTE DE PRESUPUESTO (FORMATO VENTI)")
+                st.caption("Sube el archivo Excel (`.xlsx`) o CSV (`.csv`) llenado por el cliente o el estudio. El sistema detecta automáticamente las Partidas (1, 2, 3...), las Tareas (1.01, 1.02...) con sus presupuestos asignados, los Gastos Generales y las Utilidades (Gestión y Supervisión).")
+            with c_hdr_i2:
+                if st.button("✖ Cerrar", key=f"btn_close_imp_venti_{proy_name}", use_container_width=True):
+                    st.session_state[f"show_imp_venti_{proy_name}"] = False
+                    st.rerun()
+
+            up_cot = st.file_uploader(
+                "Selecciona el archivo de cotización (.xlsx o .csv)",
+                type=["xlsx", "xls", "csv"],
+                key=f"up_cot_venti_{proy_name}",
+            )
+
+            if up_cot is not None:
+                parsed = parsear_cotizacion_venti(up_cot)
+                k1, k2, k3, k4 = st.columns(4)
+                with k1:
+                    render_metric_card(
+                        "Sub Total (Casco)",
+                        format_currency(parsed["subtotal_casco"]),
+                        f"{len(parsed['partidas'])} partida(s) detectada(s)",
+                    )
+                with k2:
+                    render_metric_card(
+                        f"Gastos Generales ({parsed['gg_pct']:g}%)",
+                        format_currency(parsed["gg_monto"]),
+                        "Se asignará a Caja Chica / GG",
+                        border_color="#C85A32",
+                        text_color="#C85A32",
+                    )
+                with k3:
+                    render_metric_card(
+                        f"Gestión / Utilidades ({parsed['utilidades_pct']:g}%)",
+                        format_currency(parsed["utilidades_monto"]),
+                        "Se asignará a Utilidades del Proyecto",
+                        border_color="#4A7C59",
+                        text_color="#4A7C59",
+                    )
+                with k4:
+                    sub_usd = f"USD {parsed['presupuesto_dolares']:,.2f} (TC: {parsed['tc']:.2f})"
+                    if parsed["igv_monto"] > 0:
+                        sub_usd = f"Incl. IGV {format_currency(parsed['igv_monto'])} · {sub_usd}"
+                    render_metric_card(
+                        "TOTAL PRESUPUESTO",
+                        format_currency(parsed["presupuesto_total"]),
+                        sub_usd,
+                        border_color="#262320",
+                        text_color="#262320",
+                    )
+
+                st.markdown("##### 📋 Partidas y Tareas Detectadas en el Presupuesto")
+                st.caption("Puedes personalizar o completar el nombre de cada Partida antes de importar.")
+
+                nombres_override = {}
+                todas_vacias = all(
+                    (not p["tareas"] and p["monto_pactado"] == 0)
+                    for p in parsed["partidas"]
+                ) if parsed["partidas"] else True
+
+                for p_item in parsed["partidas"]:
+                    p_cod = p_item["codigo"]
+                    cp1, cp2, cp3 = st.columns([5, 2.5, 2.5])
+                    with cp1:
+                        nom_edit = st.text_input(
+                            f"Nombre de Partida {p_cod}",
+                            value=p_item["nombre_completo"],
+                            key=f"imp_pnom_{proy_name}_{p_cod}",
+                        )
+                        nombres_override[p_cod] = nom_edit
+                    with cp2:
+                        st.metric(f"Sub Total Partida {p_cod}", format_currency(p_item["monto_pactado"]))
+                    with cp3:
+                        st.metric("Mix (%)", f"{p_item['mix_pct']:.1f}%", f"{len(p_item['tareas'])} tarea(s)")
+
+                    if p_item["tareas"]:
+                        df_t_prev = pd.DataFrame(p_item["tareas"])[
+                            ["codigo", "descripcion", "moneda", "unidad", "metrado", "valor_unitario", "presupuesto_soles"]
+                        ].rename(columns={
+                            "codigo": "Ítem",
+                            "descripcion": "Tarea / Descripción",
+                            "moneda": "Moneda",
+                            "unidad": "Unidad",
+                            "metrado": "Metrado",
+                            "valor_unitario": "V. Unitario",
+                            "presupuesto_soles": "Presupuesto (S/)",
+                        })
+                        st.dataframe(df_t_prev, use_container_width=True, hide_index=True)
+                    else:
+                        st.caption(f"Sin tareas con presupuesto detalladas en la Partida {p_cod}.")
+
+                st.divider()
+                co_opt1, co_opt2 = st.columns(2)
+                with co_opt1:
+                    modo_imp = st.radio(
+                        "Modo de importación de Partidas y Tareas:",
+                        options=["reemplazar", "combinar"],
+                        format_func=lambda x: (
+                            "🔄 Reemplazar partidas y tareas actuales del proyecto"
+                            if x == "reemplazar"
+                            else "➕ Combinar / Agregar sobre las partidas existentes"
+                        ),
+                        key=f"modo_imp_venti_{proy_name}",
+                    )
+                with co_opt2:
+                    act_ficha = st.checkbox(
+                        "Actualizar Presupuesto Total, Utilidades y Gastos Generales en la Ficha del Proyecto",
+                        value=True,
+                        key=f"chk_ficha_venti_{proy_name}",
+                    )
+                    inc_vacias = st.checkbox(
+                        "Incluir estructura de partidas aunque tengan monto S/ 0.00",
+                        value=todas_vacias,
+                        key=f"chk_vacias_venti_{proy_name}",
+                    )
+
+                if st.button(
+                    "✅ CONFIRMAR E IMPORTAR PRESUPUESTO AL PROYECTO",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"btn_confirm_imp_venti_{proy_name}",
+                ):
+                    res_imp = aplicar_cotizacion_a_proyecto(
+                        proy_name=proy_name,
+                        parsed_data=parsed,
+                        modo=modo_imp,
+                        actualizar_ficha=act_ficha,
+                        nombres_partidas_override=nombres_override,
+                        incluir_partidas_vacias=inc_vacias,
+                    )
+                    st.session_state[f"show_imp_venti_{proy_name}"] = False
+                    st.success(
+                        f"Presupuesto importado exitosamente: {res_imp['partidas_importadas']} partida(s), "
+                        f"{res_imp['tareas_importadas']} tarea(s) · Total: {format_currency(res_imp['presupuesto_total'])} "
+                        f"(Utilidades: {format_currency(res_imp['utilidades_monto'])} · GG: {format_currency(res_imp['gg_monto'])})."
+                    )
                     st.rerun()
 
     parts_proy = st.session_state.partidas[st.session_state.partidas['Proyecto'] == proy_name]
@@ -805,28 +993,47 @@ def _render_tab_obra(proy_name, proy_data):
                     clear_base_dfs()
                     st.rerun()
 
+        # Editor de tareas de la partida
+        mask_t = (st.session_state.tasks['Proyecto'] == proy_name) & (st.session_state.tasks['Partida'] == p_nom)
+        df_tasks_p = st.session_state.tasks[mask_t].copy().reset_index(drop=True)
+        ppto_tareas_sum = pd.to_numeric(df_tasks_p['Presupuesto'], errors='coerce').fillna(0.0).sum() if not df_tasks_p.empty and 'Presupuesto' in df_tasks_p.columns else 0.0
+
         with col_b5:
             cls_s = 'cota-badge-saldo-ok' if saldo >= 0 else 'cota-badge-saldo-error'
+            badge_tareas_html = (
+                f"<span class='cota-badge cota-badge-pactado' style='background:#FAF8F5; border-color:#C85A32; color:#C85A32;'>PPTO. TAREAS: {format_currency(ppto_tareas_sum)}</span>"
+                if ppto_tareas_sum > 0
+                else ""
+            )
             st.markdown(f"""
                 <div class='cota-badge-container'>
+                    {badge_tareas_html}
                     <span class='cota-badge cota-badge-pactado'>PACTADO: {format_currency(monto_pactado)}</span>
                     <span class='cota-badge cota-badge-pagado'>PAGADO: {format_currency(monto_pagado)}</span>
                     <span class='cota-badge {cls_s}'>SALDO: {format_currency(saldo)}</span>
                 </div>
             """, unsafe_allow_html=True)
 
-        # Editor de tareas de la partida
-        mask_t = (st.session_state.tasks['Proyecto'] == proy_name) & (st.session_state.tasks['Partida'] == p_nom)
-        df_tasks_p = st.session_state.tasks[mask_t].copy().reset_index(drop=True)
-
         base_t_key = f"base_df_tasks_{proy_name}_{p_nom}_{idx_part}"
         counter_key = f"c_{base_t_key}"
         c_val = st.session_state.get(counter_key, 0)
         w_key = f"t_{proy_name}_{p_nom}_{idx_part}_{c_val}"
 
-        display_t = df_tasks_p[['Tarea', 'Especialidad', 'Contratista', 'Estado', 'Inicio', 'Fin', 'Causa_Cumplimiento', 'Dependencia', 'Notas']].copy() if not df_tasks_p.empty else pd.DataFrame(columns=['Tarea', 'Especialidad', 'Contratista', 'Estado', 'Inicio', 'Fin', 'Causa_Cumplimiento', 'Dependencia', 'Notas'])
+        cols_task_ed = [
+            'Tarea', 'Unidad', 'Metrado', 'Valor_Unitario', 'Presupuesto',
+            'Especialidad', 'Contratista', 'Estado', 'Inicio', 'Fin',
+            'Causa_Cumplimiento', 'Dependencia', 'Notas'
+        ]
+        for c_req in cols_task_ed:
+            if c_req not in df_tasks_p.columns:
+                df_tasks_p[c_req] = 0.0 if c_req in ['Metrado', 'Valor_Unitario', 'Presupuesto'] else ""
+
+        display_t = df_tasks_p[cols_task_ed].copy() if not df_tasks_p.empty else pd.DataFrame(columns=cols_task_ed)
         display_t['Inicio'] = display_t['Inicio'].apply(lambda x: parse_date(x))
         display_t['Fin'] = display_t['Fin'].apply(lambda x: parse_date(x))
+        display_t['Metrado'] = pd.to_numeric(display_t['Metrado'], errors='coerce').fillna(0.0)
+        display_t['Valor_Unitario'] = pd.to_numeric(display_t['Valor_Unitario'], errors='coerce').fillna(0.0)
+        display_t['Presupuesto'] = pd.to_numeric(display_t['Presupuesto'], errors='coerce').fillna(0.0)
 
         if base_t_key not in st.session_state:
             st.session_state[base_t_key] = display_t.copy()
@@ -839,6 +1046,10 @@ def _render_tab_obra(proy_name, proy_data):
             key=w_key,
             column_config={
                 "Tarea": st.column_config.TextColumn("Tarea / Actividad", width="large", required=True),
+                "Unidad": st.column_config.SelectboxColumn("Und.", options=UNIDADES_MEDIDA, width="small"),
+                "Metrado": st.column_config.NumberColumn("Metrado", format="%.2f", width="small"),
+                "Valor_Unitario": st.column_config.NumberColumn("V. Unit. (S/)", format="S/ %.2f", width="small"),
+                "Presupuesto": st.column_config.NumberColumn("Presupuesto (S/)", format="S/ %.2f", width="medium"),
                 "Especialidad": st.column_config.SelectboxColumn("Especialidad", options=extraer_esp(st.session_state.maestro)),
                 "Contratista": st.column_config.SelectboxColumn("Contratista", options=st.session_state.maestro['ID_Contratista'].tolist() if not st.session_state.maestro.empty else []),
                 "Estado": st.column_config.SelectboxColumn("Estado", options=STATUS_TASKS),
@@ -854,9 +1065,9 @@ def _render_tab_obra(proy_name, proy_data):
                 ['Proyecto', 'Partida'],
                 [proy_name, p_nom],
                 ['Inicio', 'Fin'],
-                ['Tarea', 'Especialidad', 'Contratista', 'Estado', 'Causa_Cumplimiento', 'Dependencia', 'Notas'],
+                ['Tarea', 'Unidad', 'Especialidad', 'Contratista', 'Estado', 'Causa_Cumplimiento', 'Dependencia', 'Notas'],
                 None,
-                None,
+                ['Metrado', 'Valor_Unitario', 'Presupuesto'],
                 None
             )
         )

@@ -27,7 +27,8 @@ COLS_PROY = [
 COLS_TASKS = [
     'Proyecto', 'Partida', 'Orden', 'Tarea', 'Especialidad', 'Contratista',
     'Estado', 'Inicio', 'Fin', 'Causa_Cumplimiento', 'Culpa_Contratista',
-    'Permitir_Cruce', 'Dependencia', 'Notas'
+    'Permitir_Cruce', 'Dependencia', 'Notas',
+    'Unidad', 'Metrado', 'Valor_Unitario', 'Presupuesto'
 ]
 
 COLS_MAESTRO = ['ID_Contratista', 'Especialidad', 'Ubicación_Base', 'Notas']
@@ -714,6 +715,21 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
             p_unit = float(row.get('Precio_Unit_Estimado') or 0.0)
             if c_est == 0.0 and cant > 0 and p_unit > 0:
                 df_new.at[i, 'Costo_Estimado'] = round(cant * p_unit, 2)
+
+    # Recalcular Presupuesto automáticamente en tasks si cambian Metrado o Valor_Unitario
+    if master_state_key == 'tasks' and 'Metrado' in df_new.columns and 'Valor_Unitario' in df_new.columns and 'Presupuesto' in df_new.columns:
+        for idx, cols in edits.get("edited_rows", {}).items():
+            r_idx = int(idx)
+            if r_idx in df_new.index and ('Metrado' in cols or 'Valor_Unitario' in cols) and 'Presupuesto' not in cols:
+                df_new.at[r_idx, 'Presupuesto'] = round(
+                    float(df_new.at[r_idx, 'Metrado'] or 0.0) * float(df_new.at[r_idx, 'Valor_Unitario'] or 0.0), 2
+                )
+        for i, row in df_new.iterrows():
+            p_est = float(row.get('Presupuesto') or 0.0)
+            met = float(row.get('Metrado') or 0.0)
+            v_unit = float(row.get('Valor_Unitario') or 0.0)
+            if p_est == 0.0 and met > 0 and v_unit > 0:
+                df_new.at[i, 'Presupuesto'] = round(met * v_unit, 2)
 
     st.session_state[base_key] = df_new
 

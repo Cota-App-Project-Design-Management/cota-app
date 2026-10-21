@@ -31,6 +31,11 @@ from cota.db import (
     sembrar_fases_default,
     sincronizar_fases_proyecto,
 )
+from cota.cotizacion import (
+    aplicar_cotizacion_a_proyecto,
+    generar_plantilla_cotizacion_venti,
+    parsear_cotizacion_venti,
+)
 from cota.ui.components import render_metric_card, render_metric_row
 from cota.utils import (
     analizar_tareas_proyecto,
@@ -270,8 +275,8 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
 
     st.divider()
 
-    # 2. Barra de herramientas: Nuevo Proyecto + Buscador (alineados simétricamente)
-    col_new, col_search = st.columns([3, 7])
+    # 2. Barra de herramientas: Nuevo Proyecto + Cotización / Importar Presupuesto + Buscador
+    col_new, col_cot, col_search = st.columns([2.6, 2.8, 4.6])
     banco_fases_estudio = obtener_banco_fases()
     nombres_banco_all = [f["Fase"] for f in banco_fases_estudio]
     nombres_banco_def = [f["Fase"] for f in banco_fases_estudio if f.get("Por_Defecto", True)]
@@ -348,12 +353,153 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                         st.success(f"Proyecto '{pn}' creado exitosamente con {len(fases_a_sembrar)} fase(s) activa(s).")
                         st.rerun()
 
+    with col_cot:
+        if st.button("📄 COTIZACIÓN / IMPORTAR PPTO.", use_container_width=True, key="btn_open_cot_portafolio"):
+            st.session_state["show_cot_portafolio"] = not st.session_state.get("show_cot_portafolio", False)
+
     with col_search:
         search_q = st.text_input(
             "Buscar proyecto o cliente:",
             placeholder="🔍 Filtrar por nombre de proyecto, cliente, tipo o ubicación...",
             label_visibility="collapsed"
         )
+
+    # Panel desplegable en Portafolio: Plantilla Formato Venti e Importador Inteligente
+    if st.session_state.get("show_cot_portafolio", False):
+        with st.container(border=True):
+            ch_c1, ch_c2 = st.columns([8.5, 1.5])
+            with ch_c1:
+                st.markdown("#### 📄 FORMATO DE COTIZACIÓN (VENTI) E IMPORTADOR DE PRESUPUESTO")
+                st.caption("Descarga la plantilla oficial de cotización para que el cliente o el estudio la llene, e impórtala directamente a un proyecto para cargar automáticamente Partidas, Tareas, Presupuestos asignados, Gastos Generales y Utilidades.")
+            with ch_c2:
+                if st.button("✖ Cerrar", key="btn_close_cot_portafolio", use_container_width=True):
+                    st.session_state["show_cot_portafolio"] = False
+                    st.rerun()
+
+            col_dl_p, col_imp_p = st.columns([1, 1.4])
+            with col_dl_p:
+                st.markdown("##### 1. Descargar Plantilla de Cotización")
+                dl_p_nom = st.text_input("Nombre del Proyecto (opcional para cabecera)", placeholder="ej. Remodelación Venti", key="dl_p_nom_port")
+                dl_c_nom = st.text_input("Cliente (opcional para cabecera)", placeholder="ej. Venti", key="dl_c_nom_port")
+                dl_tc = st.number_input("Tipo de Cambio (TC)", value=3.42, step=0.01, format="%.2f", key="dl_tc_port")
+                xlsx_template_bytes = generar_plantilla_cotizacion_venti(
+                    proyecto=dl_p_nom,
+                    cliente=dl_c_nom,
+                    tc=dl_tc,
+                )
+                fname_clean = dl_p_nom.strip().replace(" ", "_") if dl_p_nom.strip() else "Cliente_Venti"
+                st.download_button(
+                    "📥 DESCARGAR FORMATO COTIZACIÓN (.XLSX)",
+                    data=xlsx_template_bytes,
+                    file_name=f"Formato_Cotizacion_{fname_clean}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_dl_template_portafolio",
+                )
+
+            with col_imp_p:
+                st.markdown("##### 2. Importar Presupuesto Llenado (.xlsx o .csv)")
+                up_port_file = st.file_uploader(
+                    "Sube el archivo de presupuesto llenado:",
+                    type=["xlsx", "xls", "csv"],
+                    key="up_cot_file_portafolio",
+                )
+                if up_port_file is not None:
+                    parsed_p = parsear_cotizacion_venti(up_port_file)
+                    st.markdown(
+                        f"**Resumen detectado:** Sub Total Casco: `{format_currency(parsed_p['subtotal_casco'])}` · "
+                        f"Gastos Generales ({parsed_p['gg_pct']:g}%): `{format_currency(parsed_p['gg_monto'])}` · "
+                        f"Gestión/Utilidades ({parsed_p['utilidades_pct']:g}%): `{format_currency(parsed_p['utilidades_monto'])}` · "
+                        f"**TOTAL: `{format_currency(parsed_p['presupuesto_total'])}`**"
+                    )
+
+                    destino_opt = st.radio(
+                        "Destino de la importación:",
+                        options=["existente", "nuevo"] if nombres_act else ["nuevo"],
+                        format_func=lambda x: "🔄 Importar en un proyecto existente" if x == "existente" else "➕ Crear un proyecto nuevo con este presupuesto",
+                        horizontal=True,
+                        key="rad_dest_imp_port",
+                    )
+
+                    if destino_opt == "existente" and nombres_act:
+                        proy_dest = st.selectbox("Selecciona el Proyecto:", nombres_act, key="sel_proy_dest_port")
+                    else:
+                        proy_dest = st.text_input(
+                            "Nombre del Nuevo Proyecto:",
+                            value=parsed_p.get("proyecto") or "",
+                            placeholder="ej. Proyecto Venti",
+                            key="txt_new_proy_dest_port",
+                        ).strip()
+                        cli_dest = st.text_input(
+                            "Cliente:",
+                            value=parsed_p.get("cliente") or "",
+                            key="txt_new_cli_dest_port",
+                        ).strip()
+
+                    # Permitir nombrar las partidas detectadas antes de importar
+                    nombres_ov_port = {}
+                    for p_it in parsed_p["partidas"]:
+                        p_c = p_it["codigo"]
+                        nombres_ov_port[p_c] = st.text_input(
+                            f"Partida {p_c} ({format_currency(p_it['monto_pactado'])} · {len(p_it['tareas'])} tareas):",
+                            value=p_it["nombre_completo"],
+                            key=f"port_pnom_{p_c}",
+                        )
+
+                    todas_vac_p = all(
+                        (not p["tareas"] and p["monto_pactado"] == 0)
+                        for p in parsed_p["partidas"]
+                    ) if parsed_p["partidas"] else True
+
+                    if st.button("✅ IMPORTAR PRESUPUESTO AHORA", type="primary", use_container_width=True, key="btn_exec_imp_port"):
+                        if not proy_dest:
+                            st.error("Indica el nombre del proyecto para importar el presupuesto.")
+                        else:
+                            if destino_opt == "nuevo" or proy_dest not in st.session_state.proyectos["Nombre"].tolist():
+                                n_proy_df = pd.DataFrame([{
+                                    "Nombre": proy_dest,
+                                    "Encargado": lista_socios[0] if lista_socios else "Alvaro",
+                                    "Ubicación": "Lima",
+                                    "Estado": STATUS_PROYECTOS[0],
+                                    "Inicio": parsed_p.get("fecha") or fecha_hoy.strftime("%Y-%m-%d"),
+                                    "Fin": (fecha_hoy + datetime.timedelta(days=90)).strftime("%Y-%m-%d"),
+                                    "Color": "#C85A32",
+                                    "Presupuesto": parsed_p["presupuesto_total"],
+                                    "Utilidades": parsed_p["utilidades_monto"],
+                                    "GG_Presupuesto": parsed_p["gg_monto"],
+                                    "Archivado": False,
+                                    "Metodologia": "Diseño Interior",
+                                    "Division": "General",
+                                    "Tipo_Proyecto": TIPOS_PROYECTO[0],
+                                    "Num_Pisos": 0,
+                                    "Num_Sotanos": 0,
+                                    "Presupuesto_FFE": 0.0,
+                                    "Honorarios_Diseno": 0.0,
+                                    "Cliente": cli_dest if destino_opt == "nuevo" else parsed_p.get("cliente", ""),
+                                }])
+                                st.session_state.proyectos = pd.concat([st.session_state.proyectos, n_proy_df[COLS_PROY]], ignore_index=True)
+                                nuevas_f = sembrar_fases_default(proy_dest, fecha_hoy, fases_seleccionadas=nombres_banco_def)
+                                if "fases" not in st.session_state or st.session_state.fases.empty:
+                                    st.session_state.fases = nuevas_f
+                                else:
+                                    st.session_state.fases = pd.concat([st.session_state.fases, nuevas_f], ignore_index=True)
+
+                            res_p = aplicar_cotizacion_a_proyecto(
+                                proy_name=proy_dest,
+                                parsed_data=parsed_p,
+                                modo="reemplazar",
+                                actualizar_ficha=True,
+                                nombres_partidas_override=nombres_ov_port,
+                                incluir_partidas_vacias=todas_vac_p,
+                            )
+                            st.session_state["show_cot_portafolio"] = False
+                            st.session_state.proy_activo = proy_dest
+                            st.session_state.vista_actual = "proyecto"
+                            st.success(
+                                f"Presupuesto importado en '{proy_dest}': {res_p['partidas_importadas']} partidas y {res_p['tareas_importadas']} tareas."
+                            )
+                            st.rerun()
 
     p_vis = p_kpi_df.copy()
 

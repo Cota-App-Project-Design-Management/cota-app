@@ -263,4 +263,114 @@ def test_banco_y_sincronizar_fases():
     assert bool(f1['Aprobado_Cliente']) is True
 
 
+def test_generar_y_parsear_cotizacion_venti():
+    import streamlit as st
+    from cota.cotizacion import (
+        generar_plantilla_cotizacion_venti,
+        parsear_cotizacion_venti,
+        aplicar_cotizacion_a_proyecto,
+    )
+    from cota.db import COLS_PROY, COLS_P_INFO, COLS_TASKS
+
+    # 1. Generar plantilla en blanco y verificar que es un .xlsx válido
+    xlsx_blank = generar_plantilla_cotizacion_venti(proyecto="Venti Surco", cliente="Grupo Venti", tc=3.42)
+    assert isinstance(xlsx_blank, bytes)
+    assert xlsx_blank[:4] == b"PK\x03\x04"
+
+    parsed_blank = parsear_cotizacion_venti(xlsx_blank)
+    assert parsed_blank["proyecto"] == "Venti Surco"
+    assert parsed_blank["cliente"] == "Grupo Venti"
+    assert parsed_blank["tc"] == 3.42
+    assert len(parsed_blank["partidas"]) == 3
+    assert parsed_blank["gg_pct"] == 2.0
+    assert parsed_blank["utilidades_pct"] == 15.0
+
+    # 2. Parsear un presupuesto CSV en formato Venti con datos llenados por el cliente
+    csv_venti_lleno = """
+,,,,,,,,,
+,Proyecto ,Local Venti Miraflores,,,,,,2026-10-20,
+,,,,,,,,,
+,Cliente:,Inversiones Venti SAC,,,,,,TC:,"3,42"
+,,Descripción,Moneda,Unidad,Metrado,"Valor
+Unitario","Valor
+Parcial",Sub Total (S/.),Mix
+,1,Obras Civiles,,,,,,0,#DIV/0!
+,1.01,Demolición y desmontaje,Soles,glb,1,3500,3500,,
+,1.02,Tabiquería Drywall RF,Soles,m2,20,125,2500,,
+,1.03,,Soles,glb,1,,0,,
+,2,Instalaciones Eléctricas y Sanitarias,,,,,,0,#DIV/0!
+,2.01,Cableado y tableros eléctricos,Soles,glb,1,4000,4000,,
+,2.02,Equipos especiales importados,Dólares,und,2,500,1000,,
+,3,Carpintería y Mobiliario,,,,,,0,#DIV/0!
+,3.01,Barra principal en enchape de madera,Soles,glb,1,6580,6580,,
+,,SUB TOTAL (Casco),Soles,,,, ,0,#DIV/0!
+,,Gastos generales,Soles,,0.02,,0,,
+,,Gestión y supervisión de obras,Soles,,0.15,,0,,
+,,IGV,Soles,,-%,,0,,
+,,TOTAL,Soles,,,,,0,#DIV/0!
+,,,Dólares,,,,,0,
+"""
+    parsed = parsear_cotizacion_venti(csv_venti_lleno)
+    assert parsed["proyecto"] == "Local Venti Miraflores"
+    assert parsed["cliente"] == "Inversiones Venti SAC"
+    assert parsed["tc"] == 3.42
+    assert len(parsed["partidas"]) == 3
+
+    # Partida 1: 3500 + 2500 = 6000
+    p1 = parsed["partidas"][0]
+    assert p1["nombre_completo"] == "01. Obras Civiles"
+    assert p1["monto_pactado"] == 6000.0
+    assert len(p1["tareas"]) == 2
+
+    # Partida 2: 4000 + (1000 * 3.42 = 3420) = 7420
+    p2 = parsed["partidas"][1]
+    assert p2["nombre_completo"] == "02. Instalaciones Eléctricas y Sanitarias"
+    assert p2["monto_pactado"] == 7420.0
+    assert len(p2["tareas"]) == 2
+    assert p2["tareas"][1]["presupuesto_soles"] == 3420.0
+
+    # Partida 3: 6580
+    p3 = parsed["partidas"][2]
+    assert p3["monto_pactado"] == 6580.0
+
+    # Subtotal Casco: 6000 + 7420 + 6580 = 20000
+    assert parsed["subtotal_casco"] == 20000.0
+    # Gastos generales (2%): 400.0
+    assert parsed["gg_pct"] == 2.0
+    assert parsed["gg_monto"] == 400.0
+    # Gestión y supervisión / Utilidades (15%): 3000.0
+    assert parsed["utilidades_pct"] == 15.0
+    assert parsed["utilidades_monto"] == 3000.0
+    # Total: 20000 + 400 + 3000 = 23400.0
+    assert parsed["presupuesto_total"] == 23400.0
+
+    # 3. Aplicar cotización a un proyecto en session_state
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": "Local Venti Miraflores",
+        "Cliente": "",
+        "Presupuesto": 0.0,
+        "Utilidades": 0.0,
+        "GG_Presupuesto": 0.0,
+        "Archivado": False,
+    }])
+    st.session_state["partidas"] = pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
+    st.session_state["p_info"] = pd.DataFrame(columns=COLS_P_INFO)
+    st.session_state["tasks"] = pd.DataFrame(columns=COLS_TASKS)
+
+    res = aplicar_cotizacion_a_proyecto("Local Venti Miraflores", parsed, modo="reemplazar", actualizar_ficha=True)
+    assert res["partidas_importadas"] == 3
+    assert res["tareas_importadas"] == 5
+
+    proy_row = st.session_state["proyectos"].iloc[0]
+    assert proy_row["Presupuesto"] == 23400.0
+    assert proy_row["Utilidades"] == 3000.0
+    assert proy_row["GG_Presupuesto"] == 400.0
+    assert proy_row["Cliente"] == "Inversiones Venti SAC"
+
+    tasks_proy = st.session_state["tasks"]
+    assert len(tasks_proy) == 5
+    assert tasks_proy["Presupuesto"].sum() == 20000.0
+
+
+
 
