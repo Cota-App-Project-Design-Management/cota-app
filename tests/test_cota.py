@@ -272,18 +272,26 @@ def test_generar_y_parsear_cotizacion_venti():
     )
     from cota.db import COLS_PROY, COLS_P_INFO, COLS_TASKS
 
-    # 1. Generar plantilla en blanco y verificar que es un .xlsx válido
-    xlsx_blank = generar_plantilla_cotizacion_venti(proyecto="Venti Surco", cliente="Grupo Venti", tc=3.42)
+    # 1. Generar plantilla en blanco y verificar que es un .xlsx válido (con % personalizados e IGV 18%)
+    xlsx_blank = generar_plantilla_cotizacion_venti(
+        proyecto="Proyecto Galeon 129",
+        cliente="Nano Salazar",
+        tc=3.43,
+        gg_pct=0.03,
+        gestion_pct=0.18,
+        incluir_igv=True,
+    )
     assert isinstance(xlsx_blank, bytes)
     assert xlsx_blank[:4] == b"PK\x03\x04"
 
     parsed_blank = parsear_cotizacion_venti(xlsx_blank)
-    assert parsed_blank["proyecto"] == "Venti Surco"
-    assert parsed_blank["cliente"] == "Grupo Venti"
-    assert parsed_blank["tc"] == 3.42
+    assert parsed_blank["proyecto"] == "Proyecto Galeon 129"
+    assert parsed_blank["cliente"] == "Nano Salazar"
+    assert parsed_blank["tc"] == 3.43
     assert len(parsed_blank["partidas"]) == 3
-    assert parsed_blank["gg_pct"] == 2.0
-    assert parsed_blank["utilidades_pct"] == 15.0
+    assert parsed_blank["gg_pct"] == 3.0
+    assert parsed_blank["utilidades_pct"] == 18.0
+    assert parsed_blank["igv_pct"] == 18.0
 
     # 2. Parsear un presupuesto CSV en formato Venti con datos llenados por el cliente
     csv_venti_lleno = """

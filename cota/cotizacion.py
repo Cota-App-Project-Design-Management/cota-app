@@ -1,9 +1,10 @@
 """
-Módulo de Cotización y Presupuesto (Formato Venti / COTA).
+Módulo de Cotización y Presupuesto de COTA APP.
 Permite:
-1. Generar la plantilla oficial en Excel (.xlsx) con fórmulas automáticas (Hoja 1: Presupuesto, Hoja 2: Control y Cuentas)
-   para que el cliente o el estudio la llene.
-2. Leer e interpretar archivos Excel (.xlsx, .xls) o CSV (.csv) en formato Venti,
+1. Generar la plantilla oficial en Excel (.xlsx) con fórmulas automáticas (Hoja 1: Presupuesto, Hoja 2: Control de Pagos)
+   para que el cliente o el estudio la llene, configurando previamente desde COTA los porcentajes de Gastos Generales,
+   Gestión y Supervisión (Utilidades) y si aplica IGV (18%).
+2. Leer e interpretar archivos Excel (.xlsx, .xls) o CSV (.csv) del formato de cotización,
    identificando automáticamente:
    - Cabecera: Proyecto, Cliente, Fecha y Tipo de Cambio (TC)
    - Partidas principales (1, 2, 3...) y sus Sub-totales / Mix
@@ -21,26 +22,18 @@ from openpyxl.utils import get_column_letter
 import pandas as pd
 import streamlit as st
 
-from cota.db import COLS_P_INFO, COLS_PROY, COLS_TASKS, clear_base_dfs, sembrar_fases_default
+from cota.db import COLS_P_INFO, COLS_PROY, COLS_TASKS, clear_base_dfs
 from cota.utils import safe_float, safe_str
 
 
 # ==========================================
-# 1. GENERADOR DE PLANTILLA EXCEL (FORMATO VENTI)
+# 1. GENERADOR DE PLANTILLA EXCEL DE COTIZACIÓN
 # ==========================================
 
-ESTRUCTURA_VENTI_DEFAULT = [
+ESTRUCTURA_COTIZACION_DEFAULT = [
     {"codigo": "1", "nombre": "", "subitems": ["1.01", "1.02", "1.03", "1.04", "1.05", "1.06"]},
     {"codigo": "2", "nombre": "", "subitems": ["2.01", "2.02", "2.03", "2.04", "2.05", "2.06", "2.07"]},
     {"codigo": "3", "nombre": "", "subitems": ["3.01", "3.02", "3.03"]},
-]
-
-CUENTAS_VENTI_DEFAULT = [
-    {"Partida": "Obras Civiles", "Beneficiario": "", "Banco": "", "CC": "", "CCI": "", "DNI_RUC": ""},
-    {"Partida": "Inst Eléctricas/Sanitarias", "Beneficiario": "Jesús Villar", "Banco": "BCP", "CC": "19413458106045", "CCI": "", "DNI_RUC": "10130166"},
-    {"Partida": "", "Beneficiario": "", "Banco": "Scotiabank", "CC": "9460091425", "CCI": "00913520946009142554", "DNI_RUC": ""},
-    {"Partida": "Gastos Generales/Gestión", "Beneficiario": "Alvaro Merino", "Banco": "BCP", "CC": "19492915292027", "CCI": "00219419291529202797", "DNI_RUC": "75424519"},
-    {"Partida": "Gastos Generales/Gestión", "Beneficiario": "Rodrigo Merino", "Banco": "BCP", "CC": "19434663631067", "CCI": "00219413466363106790", "DNI_RUC": ""},
 ]
 
 
@@ -52,39 +45,48 @@ def generar_plantilla_cotizacion_venti(
     partidas_precargadas: list = None,
     gg_pct: float = 0.02,
     gestion_pct: float = 0.15,
-    igv_val: str = "-%",
+    incluir_igv: bool = False,
 ) -> bytes:
     """
-    Construye un archivo Excel (.xlsx) con el Formato de Cotización Venti / COTA.
+    Construye un archivo Excel (.xlsx) con el Formato Oficial de Cotización COTA.
     Incluye:
     - Hoja 1 ('Presupuesto'): Partidas (1, 2, 3...), Tareas (1.01, 1.02...), fórmulas de Valor Parcial,
-      Sub Total (S/.), Mix (%), SUB TOTAL (Casco), Gastos generales, Gestión y supervisión de obras, IGV y TOTAL.
-    - Hoja 2 ('Control y Cuentas'): Cronograma de desembolsos por semanas y Números de Cuenta.
+      Sub Total (S/.), Mix (%), SUB TOTAL (Casco), Gastos generales, Gestión y supervisión de obras,
+      IGV (18% si incluir_igv=True o 0% / -% si False) y TOTAL integrado en Soles y Dólares.
+    - Hoja 2 ('Control de Pagos'): Cronograma de desembolsos por semanas integrado simétricamente
+      (sin cuadro de números de cuenta).
     """
     if not fecha:
         fecha = datetime.date.today().strftime("%Y-%m-%d")
 
+    # Si el usuario pasa porcentajes como 2 o 15 en lugar de 0.02 o 0.15, normalizar a decimal
+    gg_dec = float(gg_pct) / 100.0 if float(gg_pct) > 1.0 else float(gg_pct)
+    ges_dec = float(gestion_pct) / 100.0 if float(gestion_pct) > 1.0 else float(gestion_pct)
+
     wb = openpyxl.Workbook()
 
-    # Estilos consistentes con COTA / Venti
+    # Estilos consistentes con COTA
     font_family = "Calibri"
     f_title = Font(name=font_family, size=11, bold=True, color="262320")
     f_header = Font(name=font_family, size=10, bold=True, color="FFFFFF")
     f_partida = Font(name=font_family, size=10, bold=True, color="262320")
     f_task = Font(name=font_family, size=10, bold=False, color="262320")
     f_footer = Font(name=font_family, size=10, bold=True, color="262320")
-    f_total = Font(name=font_family, size=11, bold=True, color="FFFFFF")
+    f_total = Font(name=font_family, size=10, bold=True, color="FFFFFF")
+    f_usd = Font(name=font_family, size=10, bold=True, color="262320")
 
     fill_header = PatternFill(start_color="262320", end_color="262320", fill_type="solid")
     fill_partida = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
     fill_subtotal = PatternFill(start_color="DFD9CE", end_color="DFD9CE", fill_type="solid")
     fill_total = PatternFill(start_color="C85A32", end_color="C85A32", fill_type="solid")
+    fill_usd = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
     fill_input = PatternFill(start_color="FAF8F5", end_color="FAF8F5", fill_type="solid")
 
     thin_side = Side(border_style="thin", color="D0C9BD")
     med_bottom = Side(border_style="medium", color="262320")
     border_cell = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
     border_partida = Border(left=thin_side, right=thin_side, top=thin_side, bottom=med_bottom)
+    border_closing = Border(left=thin_side, right=thin_side, top=thin_side, bottom=med_bottom)
 
     align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     align_left = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -98,7 +100,7 @@ def generar_plantilla_cotizacion_venti(
     ws1.views.sheetView[0].showGridLines = True
 
     # Fila 2: Proyecto y Fecha
-    ws1["B2"] = "Proyecto "
+    ws1["B2"] = "Proyecto"
     ws1["B2"].font = f_title
     ws1["C2"] = proyecto
     ws1["C2"].font = f_title
@@ -121,7 +123,7 @@ def generar_plantilla_cotizacion_venti(
 
     # Fila 5: Cabecera de tabla
     headers_h1 = [
-        ("B", ""),
+        ("B", "Ítem"),
         ("C", "Descripción"),
         ("D", "Moneda"),
         ("E", "Unidad"),
@@ -140,7 +142,7 @@ def generar_plantilla_cotizacion_venti(
         cell.alignment = align_center
         cell.border = border_cell
 
-    estructura = partidas_precargadas if partidas_precargadas else ESTRUCTURA_VENTI_DEFAULT
+    estructura = partidas_precargadas if partidas_precargadas else ESTRUCTURA_COTIZACION_DEFAULT
 
     curr_row = 6
     partida_rows = []
@@ -152,7 +154,6 @@ def generar_plantilla_cotizacion_venti(
         p_nom = part.get("nombre", "")
         subitems = part.get("subitems", [])
 
-        # Calcular rango de tareas hijas
         first_task_row = p_row + 1
         last_task_row = p_row + len(subitems)
 
@@ -197,9 +198,13 @@ def generar_plantilla_cotizacion_venti(
                 t_met = 1
                 t_vu = None
 
-            ws1[f"B{t_row}"] = t_cod
+            # Escribir código numérico con formato 0.00 para evitar triángulo verde de advertencia en Excel
+            try:
+                ws1[f"B{t_row}"] = float(t_cod)
+                ws1[f"B{t_row}"].number_format = "0.00"
+            except ValueError:
+                ws1[f"B{t_row}"] = t_cod
             ws1[f"B{t_row}"].alignment = align_center
-            ws1[f"B{t_row}"].number_format = "@"
 
             ws1[f"C{t_row}"] = t_desc
             ws1[f"C{t_row}"].alignment = align_left
@@ -236,7 +241,6 @@ def generar_plantilla_cotizacion_venti(
 
     # Fila de SUB TOTAL (Casco)
     row_subtotal_casco = curr_row
-    # Completar fórmula Mix en cada fila de Partida ahora que conocemos row_subtotal_casco
     for p_r in partida_rows:
         ws1[f"J{p_r}"] = f"=IFERROR(I{p_r}/$I${row_subtotal_casco},0)"
 
@@ -262,8 +266,8 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"C{row_gg}"] = "Gastos generales"
     ws1[f"D{row_gg}"] = "Soles"
     ws1[f"D{row_gg}"].alignment = align_center
-    ws1[f"F{row_gg}"] = float(gg_pct)
-    ws1[f"F{row_gg}"].number_format = "0.00"
+    ws1[f"F{row_gg}"] = gg_dec
+    ws1[f"F{row_gg}"].number_format = "0.0%"
     ws1[f"F{row_gg}"].alignment = align_center
     ws1[f"H{row_gg}"] = f"=I{row_subtotal_casco}*F{row_gg}"
     ws1[f"H{row_gg}"].number_format = "#,##0.00"
@@ -278,8 +282,8 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"C{row_gestion}"] = "Gestión y supervisión de obras"
     ws1[f"D{row_gestion}"] = "Soles"
     ws1[f"D{row_gestion}"].alignment = align_center
-    ws1[f"F{row_gestion}"] = float(gestion_pct)
-    ws1[f"F{row_gestion}"].number_format = "0.00"
+    ws1[f"F{row_gestion}"] = ges_dec
+    ws1[f"F{row_gestion}"].number_format = "0.0%"
     ws1[f"F{row_gestion}"].alignment = align_center
     ws1[f"H{row_gestion}"] = f"=I{row_subtotal_casco}*F{row_gestion}"
     ws1[f"H{row_gestion}"].number_format = "#,##0.00"
@@ -289,12 +293,17 @@ def generar_plantilla_cotizacion_venti(
         ws1[f"{c_let}{row_gestion}"].font = f_footer
         ws1[f"{c_let}{row_gestion}"].border = border_cell
 
-    # Fila de IGV
+    # Fila de IGV (18% si se marca la casilla en COTA, o 0% / -% si no se marca)
     row_igv = row_gestion + 1
     ws1[f"C{row_igv}"] = "IGV"
     ws1[f"D{row_igv}"] = "Soles"
     ws1[f"D{row_igv}"].alignment = align_center
-    ws1[f"F{row_igv}"] = igv_val
+    if incluir_igv:
+        ws1[f"F{row_igv}"] = 0.18
+        ws1[f"F{row_igv}"].number_format = "0%"
+    else:
+        ws1[f"F{row_igv}"] = 0.0
+        ws1[f"F{row_igv}"].number_format = "0%"
     ws1[f"F{row_igv}"].alignment = align_center
     ws1[f"H{row_igv}"] = f"=IF(ISNUMBER(F{row_igv}),(I{row_subtotal_casco}+H{row_gg}+H{row_gestion})*F{row_igv},0)"
     ws1[f"H{row_igv}"].number_format = "#,##0.00"
@@ -321,15 +330,19 @@ def generar_plantilla_cotizacion_venti(
         ws1[f"{c_let}{row_total}"].fill = fill_total
         ws1[f"{c_let}{row_total}"].border = border_cell
 
-    # Fila TOTAL Dólares
+    # Fila TOTAL Dólares (integrada simétricamente al cuadro con bordes y relleno)
     row_usd = row_total + 1
+    ws1[f"C{row_usd}"] = "TOTAL (USD)"
     ws1[f"D{row_usd}"] = "Dólares"
     ws1[f"D{row_usd}"].alignment = align_center
-    ws1[f"D{row_usd}"].font = f_footer
     ws1[f"I{row_usd}"] = f"=IFERROR(I{row_total}/J4,0)"
     ws1[f"I{row_usd}"].number_format = "#,##0.00"
     ws1[f"I{row_usd}"].alignment = align_right
-    ws1[f"I{row_usd}"].font = f_footer
+    for c_idx in range(2, 11):
+        c_let = get_column_letter(c_idx)
+        ws1[f"{c_let}{row_usd}"].font = f_usd
+        ws1[f"{c_let}{row_usd}"].fill = fill_usd
+        ws1[f"{c_let}{row_usd}"].border = border_closing
 
     # Anchos de columna Hoja 1
     col_widths_h1 = {
@@ -348,12 +361,12 @@ def generar_plantilla_cotizacion_venti(
         ws1.column_dimensions[col_l].width = w
 
     # ==========================================
-    # HOJA 2: CONTROL Y CUENTAS (CRONOGRAMA SEMANAL)
+    # HOJA 2: CONTROL DE PAGOS (CRONOGRAMA SEMANAL SIN CUADRO DE CUENTAS)
     # ==========================================
-    ws2 = wb.create_sheet(title="Control y Cuentas")
+    ws2 = wb.create_sheet(title="Control de Pagos")
     ws2.views.sheetView[0].showGridLines = True
 
-    ws2["B1"] = "Proyecto "
+    ws2["B1"] = "Proyecto"
     ws2["B1"].font = f_title
     ws2["C1"] = "=Presupuesto!C2"
     ws2["C1"].font = f_title
@@ -410,6 +423,8 @@ def generar_plantilla_cotizacion_venti(
     # SUB TOTAL Contratistas
     row_sub_h2 = r_c
     ws2[f"B{row_sub_h2}"] = "SUB TOTAL"
+    ws2[f"C{row_sub_h2}"] = "Soles"
+    ws2[f"C{row_sub_h2}"].alignment = align_center
     for c_i in range(4, 13):
         c_l = get_column_letter(c_i)
         ws2[f"{c_l}{row_sub_h2}"] = f"=SUM({c_l}{first_c_row}:{c_l}{last_c_row})"
@@ -452,7 +467,7 @@ def generar_plantilla_cotizacion_venti(
         ws2[f"{c_l}{row_gg_h2}"].font = f_task
         ws2[f"{c_l}{row_gg_h2}"].border = border_cell
 
-    # TOTAL Hoja 2 (Soles y Dólares)
+    # TOTAL Hoja 2 (Soles)
     row_tot_h2 = row_gg_h2 + 1
     ws2[f"B{row_tot_h2}"] = "TOTAL"
     ws2[f"C{row_tot_h2}"] = "Soles"
@@ -467,57 +482,29 @@ def generar_plantilla_cotizacion_venti(
         ws2[f"{c_l}{row_tot_h2}"].fill = fill_total
         ws2[f"{c_l}{row_tot_h2}"].border = border_cell
 
+    # TOTAL Hoja 2 (Dólares) integrado simétricamente al cuadro
     row_usd_h2 = row_tot_h2 + 1
+    ws2[f"B{row_usd_h2}"] = "TOTAL (USD)"
     ws2[f"C{row_usd_h2}"] = "Dólares"
     ws2[f"C{row_usd_h2}"].alignment = align_center
-    ws2[f"C{row_usd_h2}"].font = f_footer
     for c_i in range(4, 13):
         c_l = get_column_letter(c_i)
         ws2[f"{c_l}{row_usd_h2}"] = f"=IFERROR({c_l}{row_tot_h2}/Presupuesto!$J$4,0)"
         ws2[f"{c_l}{row_usd_h2}"].number_format = "#,##0.00"
-        ws2[f"{c_l}{row_usd_h2}"].font = f_footer
-
-    # Sección Números de Cuenta
-    row_cta_tit = row_usd_h2 + 2
-    ws2[f"B{row_cta_tit}"] = "Numeros de Cuenta"
-    ws2[f"B{row_cta_tit}"].font = f_title
-
-    row_cta_hdr = row_cta_tit + 1
-    cta_headers = [
-        ("B", "Partida"),
-        ("C", "Beneficiario"),
-        ("D", "Banco"),
-        ("E", "CC"),
-        ("G", "CCI"),
-        ("I", "DNI/RUC"),
-    ]
-    for col_let, text in cta_headers:
-        ws2[f"{col_let}{row_cta_hdr}"] = text
-        ws2[f"{col_let}{row_cta_hdr}"].font = f_partida
-        ws2[f"{col_let}{row_cta_hdr}"].fill = fill_partida
-        ws2[f"{col_let}{row_cta_hdr}"].border = border_cell
-
-    r_cta = row_cta_hdr + 1
-    for cta in CUENTAS_VENTI_DEFAULT:
-        ws2[f"B{r_cta}"] = cta["Partida"]
-        ws2[f"C{r_cta}"] = cta["Beneficiario"]
-        ws2[f"D{r_cta}"] = cta["Banco"]
-        ws2[f"E{r_cta}"] = cta["CC"]
-        ws2[f"G{r_cta}"] = cta["CCI"]
-        ws2[f"I{r_cta}"] = cta["DNI_RUC"]
-        for col_let in ["B", "C", "D", "E", "G", "I"]:
-            ws2[f"{col_let}{r_cta}"].font = f_task
-            ws2[f"{col_let}{r_cta}"].border = border_cell
-        r_cta += 1
+    for c_i in range(2, 13):
+        c_l = get_column_letter(c_i)
+        ws2[f"{c_l}{row_usd_h2}"].font = f_usd
+        ws2[f"{c_l}{row_usd_h2}"].fill = fill_usd
+        ws2[f"{c_l}{row_usd_h2}"].border = border_closing
 
     col_widths_h2 = {
         "A": 3,
         "B": 32,
-        "C": 18,
+        "C": 14,
         "D": 15,
-        "E": 18,
+        "E": 15,
         "F": 14,
-        "G": 22,
+        "G": 14,
         "H": 14,
         "I": 14,
         "J": 14,
@@ -532,9 +519,15 @@ def generar_plantilla_cotizacion_venti(
     return out.getvalue()
 
 
-def exportar_proyecto_a_formato_venti(proy_name: str) -> bytes:
+def exportar_proyecto_a_formato_venti(
+    proy_name: str,
+    tc: float = 3.42,
+    gg_pct_override: float = None,
+    gestion_pct_override: float = None,
+    incluir_igv: bool = False,
+) -> bytes:
     """
-    Genera el archivo Excel en Formato Venti a partir de los datos actuales de un proyecto
+    Genera el archivo Excel de Cotización a partir de los datos actuales de un proyecto
     en st.session_state (o con la estructura vacía si el proyecto aún no tiene partidas).
     """
     df_p = st.session_state.get("proyectos", pd.DataFrame())
@@ -553,7 +546,6 @@ def exportar_proyecto_a_formato_venti(proy_name: str) -> bytes:
     if not parts_proy.empty:
         for idx_p, (_, p_r) in enumerate(parts_proy.iterrows(), start=1):
             p_nom_raw = safe_str(p_r.get("Nombre_Partida", f"Partida {idx_p}"))
-            # Limpiar prefijo numérico si ya viene como "01. Obras Civiles"
             p_nom_clean = re.sub(r"^\d+[\.\-\s]+", "", p_nom_raw).strip() or p_nom_raw
 
             pinfo_m = df_pinfo[(df_pinfo["Proyecto"] == proy_name) & (df_pinfo["Nombre_Partida"] == p_nom_raw)] if not df_pinfo.empty else pd.DataFrame()
@@ -583,7 +575,6 @@ def exportar_proyecto_a_formato_venti(proy_name: str) -> bytes:
                         "valor_unitario": t_vu,
                     })
             else:
-                # Si la partida no tiene tareas detalladas aún, crear 1 subitem con el monto pactado y 3 filas libres
                 subitems.append({
                     "codigo": f"{idx_p}.01",
                     "descripcion": p_nom_clean if monto_pact > 0 else "",
@@ -602,7 +593,6 @@ def exportar_proyecto_a_formato_venti(proy_name: str) -> bytes:
                 "subitems": subitems,
             })
 
-    # Calcular porcentajes de GG y Utilidades respecto al casco si existen
     subtotal_casco = 0.0
     if partidas_precargadas:
         for pp in partidas_precargadas:
@@ -613,22 +603,30 @@ def exportar_proyecto_a_formato_venti(proy_name: str) -> bytes:
     gg_ppto = safe_float(proy_row.get("GG_Presupuesto", 0.0), 0.0)
     util_ppto = safe_float(proy_row.get("Utilidades", 0.0), 0.0)
 
-    gg_pct = round(gg_ppto / subtotal_casco, 4) if subtotal_casco > 0 and gg_ppto > 0 else 0.02
-    gestion_pct = round(util_ppto / subtotal_casco, 4) if subtotal_casco > 0 and util_ppto > 0 else 0.15
+    if gg_pct_override is not None:
+        gg_pct = gg_pct_override
+    else:
+        gg_pct = round(gg_ppto / subtotal_casco, 4) if subtotal_casco > 0 and gg_ppto > 0 else 0.02
+
+    if gestion_pct_override is not None:
+        gestion_pct = gestion_pct_override
+    else:
+        gestion_pct = round(util_ppto / subtotal_casco, 4) if subtotal_casco > 0 and util_ppto > 0 else 0.15
 
     return generar_plantilla_cotizacion_venti(
         proyecto=proy_name,
         cliente=cliente,
-        tc=3.42,
+        tc=tc,
         fecha=fecha,
         partidas_precargadas=partidas_precargadas if partidas_precargadas else None,
         gg_pct=gg_pct,
         gestion_pct=gestion_pct,
+        incluir_igv=incluir_igv,
     )
 
 
 # ==========================================
-# 2. LECTOR E INTERPRETADOR INTELIGENTE (PARSER FORMATO VENTI)
+# 2. LECTOR E INTERPRETADOR INTELIGENTE DE PRESUPUESTO
 # ==========================================
 
 def _clean_cell_str(val) -> str:
@@ -654,7 +652,6 @@ def _parse_number_or_pct(val, default=0.0):
         return default, False
 
     is_pct = "%" in s
-    # Limpiar símbolos de moneda y espacios
     s_clean = re.sub(r"[S/\$\s%USDsolesdólares]", "", s, flags=re.IGNORECASE).strip()
     if not s_clean or s_clean in ["-", "."]:
         return default, is_pct
@@ -684,7 +681,6 @@ def _classify_item_code(raw_val) -> tuple:
     if isinstance(raw_val, float):
         if raw_val <= 0 or raw_val >= 1000:
             return None, None, None
-        # Verificar si es entero exacto (ej. 1.0, 2.0) vs decimal (1.01, 1.1)
         if abs(raw_val - round(raw_val)) < 1e-6:
             return "partida", str(int(round(raw_val))), None
         else:
@@ -696,16 +692,13 @@ def _classify_item_code(raw_val) -> tuple:
     if not s:
         return None, None, None
 
-    # Normalizar coma decimal si existe en código (ej. "1,01" -> "1.01")
     if re.match(r"^\d+,\d+$", s):
         s = s.replace(",", ".")
 
-    # Caso Partida Principal: "1", "01", "1."
     m_part = re.match(r"^0*(\d+)\.?$", s)
     if m_part:
         return "partida", m_part.group(1), None
 
-    # Caso Tarea / Sub-partida: "1.01", "1.1", "02.03", "1.01.01"
     m_task = re.match(r"^0*(\d+)\.(\d+(?:\.\d+)?)$", s)
     if m_task:
         p_code = m_task.group(1)
@@ -721,7 +714,6 @@ def _rows_from_input(file_or_df) -> list:
     """
     Convierte cualquier fuente de entrada (UploadedFile, bytes, ruta str, io.BytesIO o DataFrame)
     en una lista de filas (listas de valores de celda).
-    Si es un archivo .xlsx, lee la hoja de Presupuesto con openpyxl (data_only=True con fallback).
     """
     if isinstance(file_or_df, pd.DataFrame):
         return file_or_df.values.tolist()
@@ -740,7 +732,6 @@ def _rows_from_input(file_or_df) -> list:
     elif isinstance(file_or_df, (bytes, bytearray)):
         raw_bytes = bytes(file_or_df)
     elif isinstance(file_or_df, str):
-        # Puede ser contenido CSV directo o ruta a archivo
         if "\n" in file_or_df or "," in file_or_df and not file_or_df.lower().endswith((".xlsx", ".xls", ".csv")):
             df_csv = pd.read_csv(io.StringIO(file_or_df), header=None, dtype=object)
             return df_csv.values.tolist()
@@ -752,7 +743,6 @@ def _rows_from_input(file_or_df) -> list:
     if raw_bytes is None:
         return []
 
-    # Intentar como Excel (.xlsx) primero si corresponde
     if filename.endswith((".xlsx", ".xlsm")) or raw_bytes[:4] == b"PK\x03\x04":
         wb_val = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
         wb_f = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=False)
@@ -770,23 +760,12 @@ def _rows_from_input(file_or_df) -> list:
             for c_idx in range(1, ws_v.max_column + 1):
                 v = ws_v.cell(r_idx, c_idx).value
                 f_val = ws_f.cell(r_idx, c_idx).value
-                # Si data_only=True devuelve None pero no era fórmula, usar f_val
                 if v is None and f_val is not None and not str(f_val).startswith("="):
                     v = f_val
                 row_vals.append(v)
             rows.append(row_vals)
-
-        # Si hay una segunda hoja (Control y Cuentas), agregar sus filas al final para extraer cuentas/nombres si aplica
-        if len(wb_val.sheetnames) > 1:
-            for sn2 in wb_val.sheetnames:
-                if sn2 != sheet_name:
-                    ws2_v = wb_val[sn2]
-                    rows.append([None] * ws_v.max_column)
-                    for r_idx in range(1, ws2_v.max_row + 1):
-                        rows.append([ws2_v.cell(r_idx, c_idx).value for c_idx in range(1, ws2_v.max_column + 1)])
         return rows
 
-    # Caso CSV / texto plano
     for enc in ["utf-8-sig", "utf-8", "latin-1", "cp1252"]:
         try:
             text = raw_bytes.decode(enc)
@@ -800,7 +779,7 @@ def _rows_from_input(file_or_df) -> list:
 
 def parsear_cotizacion_venti(file_or_df) -> dict:
     """
-    Lee e interpreta un archivo Excel (.xlsx) o CSV en el formato de presupuesto Venti / COTA.
+    Lee e interpreta un archivo Excel (.xlsx) o CSV con el formato de presupuesto de COTA.
     Retorna un diccionario estructurado con:
       - 'proyecto': str
       - 'cliente': str
@@ -816,7 +795,6 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
       - 'igv_monto': float
       - 'presupuesto_total': float (TOTAL en Soles)
       - 'presupuesto_dolares': float (TOTAL en Dólares)
-      - 'cuentas': list of dicts [{'Partida', 'Beneficiario', 'Banco', 'CC', 'CCI', 'DNI_RUC'}]
     """
     rows = _rows_from_input(file_or_df)
 
@@ -835,13 +813,11 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
         "igv_monto": 0.0,
         "presupuesto_total": 0.0,
         "presupuesto_dolares": 0.0,
-        "cuentas": [],
     }
 
     if not rows:
         return resultado
 
-    # 1. Localizar fila de cabecera de la tabla principal ("Descripción", "Moneda", "Unidad", "Metrado")
     header_row_idx = None
     col_map = {
         "codigo": 1,
@@ -885,7 +861,7 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
     if header_row_idx is None:
         header_row_idx = 4
 
-    # 2. Extraer metadatos de las filas superiores (Proyecto, Cliente, Fecha, TC)
+    # Extraer metadatos de las filas superiores (Proyecto, Cliente, Fecha, TC)
     for r_i in range(0, min(header_row_idx + 1, len(rows))):
         row = rows[r_i]
         for c_i, cell in enumerate(row):
@@ -894,27 +870,24 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
                 continue
             s_low = s.lower()
 
-            # Detectar Proyecto
             if s_low.startswith("proyecto"):
-                 inline_val = re.sub(r"^proyecto\s*:?\s*", "", s, flags=re.IGNORECASE).strip()
-                 if inline_val:
-                     resultado["proyecto"] = inline_val
-                 else:
-                     for next_c in range(c_i + 1, len(row)):
-                         cand = _clean_cell_str(row[next_c])
-                         if not cand:
-                             continue
-                         if re.match(r"^\d{4}-\d{2}-\d{2}", cand) or re.match(r"^\d{2}/\d{2}/\d{4}", cand):
-                             resultado["fecha"] = cand.split(" ")[0]
-                         elif not cand.lower().startswith("tc") and not resultado["proyecto"]:
-                             resultado["proyecto"] = cand
+                inline_val = re.sub(r"^proyecto\s*:?\s*", "", s, flags=re.IGNORECASE).strip()
+                if inline_val:
+                    resultado["proyecto"] = inline_val
+                else:
+                    for next_c in range(c_i + 1, len(row)):
+                        cand = _clean_cell_str(row[next_c])
+                        if not cand:
+                            continue
+                        if re.match(r"^\d{4}-\d{2}-\d{2}", cand) or re.match(r"^\d{2}/\d{2}/\d{4}", cand):
+                            resultado["fecha"] = cand.split(" ")[0]
+                        elif not cand.lower().startswith("tc") and not resultado["proyecto"]:
+                            resultado["proyecto"] = cand
 
-            # Detectar Fecha suelta en la cabecera
             if re.match(r"^\d{4}-\d{2}-\d{2}", s) or re.match(r"^\d{2}/\d{2}/\d{4}", s):
                 if not resultado["fecha"]:
                     resultado["fecha"] = s.split(" ")[0]
 
-            # Detectar Cliente
             if s_low.startswith("cliente"):
                 inline_cli = re.sub(r"^cliente\s*:?\s*", "", s, flags=re.IGNORECASE).strip()
                 if inline_cli:
@@ -930,7 +903,6 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
                             resultado["cliente"] = cand
                             break
 
-            # Detectar Tipo de Cambio (TC)
             if s_low in ["tc", "tc:", "t.c.", "t.c:", "tipo de cambio", "tipo de cambio:"]:
                 for next_c in range(c_i + 1, len(row)):
                     tc_val, _ = _parse_number_or_pct(row[next_c], default=0.0)
@@ -940,12 +912,9 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
 
     tc = resultado["tc"] if resultado["tc"] > 0 else 3.42
 
-    # 3. Recorrer filas de la tabla principal: Partidas, Tareas y Resumen Financiero
     partidas_dict = {}
     partidas_order = []
-    current_partida_code = None
     in_footer = False
-    in_cuentas = False
 
     raw_subtotal_casco = 0.0
     raw_gg_factor_or_val = None
@@ -973,38 +942,13 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
         if not any(_clean_cell_str(x) for x in row):
             continue
 
-        # Verificar si entramos a la sección de "Numeros de Cuenta" o segunda tabla
         row_joined = " ".join(_clean_cell_str(x) for x in row).lower()
         if "numeros de cuenta" in row_joined or "números de cuenta" in row_joined:
-            in_cuentas = True
-            continue
-
-        if in_cuentas:
-            c_part = _clean_cell_str(row[1] if len(row) > 1 else None)
-            c_ben = _clean_cell_str(row[2] if len(row) > 2 else None)
-            c_ban = _clean_cell_str(row[3] if len(row) > 3 else None)
-            c_cc = _clean_cell_str(row[4] if len(row) > 4 else None)
-            c_cci = _clean_cell_str(row[6] if len(row) > 6 else (row[5] if len(row) > 5 else None))
-            c_dni = _clean_cell_str(row[8] if len(row) > 8 else (row[7] if len(row) > 7 else None))
-            if c_part.lower() == "partida" and c_ben.lower() == "beneficiario":
-                continue
-            if any([c_part, c_ben, c_ban, c_cc, c_cci]):
-                resultado["cuentas"].append({
-                    "Partida": c_part,
-                    "Beneficiario": c_ben,
-                    "Banco": c_ban,
-                    "CC": c_cc,
-                    "CCI": c_cci,
-                    "DNI_RUC": c_dni,
-                })
-            continue
-
-        # Si encontramos la cabecera de la segunda tabla (Cronograma de Pagos), detener lectura de tabla 1
+            break
         if "adelanto 1" in row_joined and "semana 1" in row_joined:
-            in_footer = True
-            continue
+            break
         if "trabajos contratistas" in row_joined:
-            continue
+            break
 
         raw_code = _get_col(row, "codigo")
         desc = _clean_cell_str(_get_col(row, "descripcion"))
@@ -1013,7 +957,6 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
 
         desc_low = desc.lower()
 
-        # Verificar si es una fila de resumen al pie de la tabla (SUB TOTAL, Gastos generales, Gestión, IGV, TOTAL)
         if any(
             kw in desc_low
             for kw in [
@@ -1027,6 +970,7 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
                 "utilidad",
                 "honorario",
                 "igv",
+                "total (usd)",
             ]
         ) or desc_low == "total":
             in_footer = True
@@ -1060,7 +1004,7 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
                 if factor_cand > 0:
                     raw_igv_factor_or_val = factor_cand
                     raw_igv_is_pct = is_pct_cand
-            elif desc_low == "total":
+            elif desc_low == "total" and not any(d in moneda.lower() for d in ["dolar", "dólar", "usd"]):
                 if raw_total_soles == 0.0 and best_amount > 0:
                     raw_total_soles = best_amount
             continue
@@ -1068,11 +1012,9 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
         if in_footer:
             continue
 
-        # Clasificar código de ítem (Partida vs Tarea)
         item_type, p_code, t_code = _classify_item_code(raw_code)
 
         if item_type == "partida":
-            current_partida_code = p_code
             st_val, _ = _parse_number_or_pct(_get_col(row, "subtotal"), 0.0)
             vp_val, _ = _parse_number_or_pct(_get_col(row, "valor_parcial"), 0.0)
             sub_directo = st_val if st_val > 0 else vp_val
@@ -1092,7 +1034,6 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
                     partidas_dict[p_code]["subtotal_celda"] = sub_directo
 
         elif item_type == "tarea":
-            # Asegurar que la partida padre exista
             if p_code not in partidas_dict:
                 partidas_dict[p_code] = {
                     "codigo": p_code,
@@ -1101,14 +1042,12 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
                     "tareas": [],
                 }
                 partidas_order.append(p_code)
-            current_partida_code = p_code
 
             met_val, _ = _parse_number_or_pct(_get_col(row, "metrado"), 0.0)
             vu_val, _ = _parse_number_or_pct(_get_col(row, "valor_unitario"), 0.0)
             vp_val, _ = _parse_number_or_pct(_get_col(row, "valor_parcial"), 0.0)
             st_val, _ = _parse_number_or_pct(_get_col(row, "subtotal"), 0.0)
 
-            # Si la fila está vacía en descripción y no tiene montos asignados, es una fila libre de plantilla
             has_content = bool(desc) or vu_val > 0 or vp_val > 0 or st_val > 0
             if not has_content:
                 continue
@@ -1116,7 +1055,6 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
             if met_val <= 0:
                 met_val = 1.0
 
-            # Calcular Valor Parcial si no está pre-calculado
             if vp_val > 0:
                 parcial_calc = vp_val
             elif vu_val > 0:
@@ -1146,26 +1084,17 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
                 "presupuesto_soles": presupuesto_soles,
             })
 
-    # 4. Consolidar Partidas y calcular Sub Total (Casco)
-    nombres_sugeridos_cuentas = [
-        c["Partida"] for c in resultado["cuentas"]
-        if c.get("Partida") and "gasto" not in c["Partida"].lower() and "gesti" not in c["Partida"].lower()
-    ]
-
     partidas_final = []
     suma_partidas = 0.0
 
-    for idx_p, p_code in enumerate(partidas_order):
+    for p_code in partidas_order:
         p_info = partidas_dict[p_code]
         suma_tareas = round(sum(t["presupuesto_soles"] for t in p_info["tareas"]), 2)
         monto_pactado = suma_tareas if suma_tareas > 0 else round(p_info["subtotal_celda"], 2)
 
         nombre_base = p_info["nombre"].strip()
         if not nombre_base:
-            if idx_p < len(nombres_sugeridos_cuentas):
-                nombre_base = nombres_sugeridos_cuentas[idx_p]
-            else:
-                nombre_base = f"Partida {p_code}"
+            nombre_base = f"Partida {p_code}"
 
         p_num_fmt = f"{int(p_code):02d}" if p_code.isdigit() else p_code
         if re.match(r"^\d+[\.\-\s]", nombre_base):
@@ -1186,13 +1115,12 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
     subtotal_casco = round(suma_partidas if suma_partidas > 0 else raw_subtotal_casco, 2)
     resultado["subtotal_casco"] = subtotal_casco
 
-    # Calcular Mix (%) de cada partida
     for p_item in partidas_final:
         if subtotal_casco > 0:
             p_item["mix_pct"] = round((p_item["monto_pactado"] / subtotal_casco) * 100.0, 2)
     resultado["partidas"] = partidas_final
 
-    # 5. Calcular Gastos Generales (GG)
+    # Calcular Gastos Generales (GG)
     if raw_gg_amount > 0:
         gg_monto = round(raw_gg_amount, 2)
         gg_pct = round((raw_gg_factor_or_val * 100.0) if (raw_gg_factor_or_val and raw_gg_is_pct) else ((gg_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else 0.0), 2)
@@ -1210,7 +1138,7 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
     resultado["gg_pct"] = gg_pct
     resultado["gg_monto"] = gg_monto
 
-    # 6. Calcular Gestión y Supervisión de Obras (Utilidades)
+    # Calcular Gestión y Supervisión de Obras (Utilidades)
     if raw_util_amount > 0:
         util_monto = round(raw_util_amount, 2)
         util_pct = round((raw_util_factor_or_val * 100.0) if (raw_util_factor_or_val and raw_util_is_pct) else ((util_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else 0.0), 2)
@@ -1228,7 +1156,7 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
     resultado["utilidades_pct"] = util_pct
     resultado["utilidades_monto"] = util_monto
 
-    # 7. Calcular IGV
+    # Calcular IGV
     base_imponible = subtotal_casco + gg_monto + util_monto
     if raw_igv_amount > 0:
         igv_monto = round(raw_igv_amount, 2)
@@ -1247,7 +1175,6 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
     resultado["igv_pct"] = igv_pct
     resultado["igv_monto"] = igv_monto
 
-    # 8. Calcular Presupuesto TOTAL (Soles y Dólares)
     total_calc = round(subtotal_casco + gg_monto + util_monto + igv_monto, 2)
     presupuesto_total = total_calc if total_calc > 0 else round(raw_total_soles, 2)
     resultado["presupuesto_total"] = presupuesto_total
@@ -1270,10 +1197,6 @@ def aplicar_cotizacion_a_proyecto(
 ) -> dict:
     """
     Importa los datos leídos por `parsear_cotizacion_venti` en `st.session_state` para el proyecto `proy_name`.
-    - Actualiza `Presupuesto`, `Utilidades` y `GG_Presupuesto` en `st.session_state.proyectos` (si `actualizar_ficha=True`).
-    - Crea/actualiza las Partidas en `st.session_state.p_info` y `st.session_state.partidas` con su `Monto_Pactado`.
-    - Crea las Tareas en `st.session_state.tasks` con su `Unidad`, `Metrado`, `Valor_Unitario` y `Presupuesto` asignado.
-    Retorna resumen de conteo: {'partidas_importadas': int, 'tareas_importadas': int, 'presupuesto_total': float}.
     """
     if "proyectos" not in st.session_state:
         st.session_state.proyectos = pd.DataFrame(columns=COLS_PROY)
@@ -1284,7 +1207,6 @@ def aplicar_cotizacion_a_proyecto(
     if "partidas" not in st.session_state:
         st.session_state.partidas = pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
 
-    # Garantizar todas las columnas de COLS_TASKS en st.session_state.tasks
     for col in COLS_TASKS:
         if col not in st.session_state.tasks.columns:
             st.session_state.tasks[col] = ""
@@ -1293,7 +1215,6 @@ def aplicar_cotizacion_a_proyecto(
         if col not in st.session_state.p_info.columns:
             st.session_state.p_info[col] = ""
 
-    # 1. Actualizar Ficha Financiera del Proyecto (Presupuesto Total, Utilidades, GG_Presupuesto, Cliente)
     mask_proy = st.session_state.proyectos["Nombre"] == proy_name
     if actualizar_ficha and mask_proy.any():
         idx_p = st.session_state.proyectos[mask_proy].index[0]
@@ -1307,7 +1228,6 @@ def aplicar_cotizacion_a_proyecto(
         if cli_parsed and not safe_str(st.session_state.proyectos.at[idx_p, "Cliente"]):
             st.session_state.proyectos.at[idx_p, "Cliente"] = cli_parsed
 
-    # 2. Si el modo es reemplazar, limpiar partidas y tareas previas del proyecto
     if modo == "reemplazar":
         st.session_state.partidas = st.session_state.partidas[st.session_state.partidas["Proyecto"] != proy_name].reset_index(drop=True)
         st.session_state.p_info = st.session_state.p_info[st.session_state.p_info["Proyecto"] != proy_name].reset_index(drop=True)
@@ -1333,7 +1253,6 @@ def aplicar_cotizacion_a_proyecto(
         )
         monto_pactado = float(p.get("monto_pactado", 0.0))
 
-        # Si el modo es combinar/actualizar y la partida ya existe, actualizar su Monto_Pactado
         mask_pi_exist = (st.session_state.p_info["Proyecto"] == proy_name) & (st.session_state.p_info["Nombre_Partida"] == p_nom_final)
         if mask_pi_exist.any():
             st.session_state.p_info.loc[mask_pi_exist, "Monto_Pactado"] = monto_pactado

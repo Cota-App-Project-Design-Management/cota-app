@@ -364,12 +364,12 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
             label_visibility="collapsed"
         )
 
-    # Panel desplegable en Portafolio: Plantilla Formato Venti e Importador Inteligente
+    # Panel desplegable en Portafolio: Plantilla de Cotización e Importador Inteligente
     if st.session_state.get("show_cot_portafolio", False):
         with st.container(border=True):
             ch_c1, ch_c2 = st.columns([8.5, 1.5])
             with ch_c1:
-                st.markdown("#### 📄 FORMATO DE COTIZACIÓN (VENTI) E IMPORTADOR DE PRESUPUESTO")
+                st.markdown("#### 📄 FORMATO DE COTIZACIÓN E IMPORTADOR DE PRESUPUESTO")
                 st.caption("Descarga la plantilla oficial de cotización para que el cliente o el estudio la llene, e impórtala directamente a un proyecto para cargar automáticamente Partidas, Tareas, Presupuestos asignados, Gastos Generales y Utilidades.")
             with ch_c2:
                 if st.button("✖ Cerrar", key="btn_close_cot_portafolio", use_container_width=True):
@@ -379,15 +379,28 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
             col_dl_p, col_imp_p = st.columns([1, 1.4])
             with col_dl_p:
                 st.markdown("##### 1. Descargar Plantilla de Cotización")
-                dl_p_nom = st.text_input("Nombre del Proyecto (opcional para cabecera)", placeholder="ej. Remodelación Venti", key="dl_p_nom_port")
-                dl_c_nom = st.text_input("Cliente (opcional para cabecera)", placeholder="ej. Venti", key="dl_c_nom_port")
-                dl_tc = st.number_input("Tipo de Cambio (TC)", value=3.42, step=0.01, format="%.2f", key="dl_tc_port")
+                dl_p_nom = st.text_input("Nombre del Proyecto (opcional para cabecera)", placeholder="ej. Proyecto Galeon 129", key="dl_p_nom_port")
+                dl_c_nom = st.text_input("Cliente (opcional para cabecera)", placeholder="ej. Nano Salazar", key="dl_c_nom_port")
+
+                c_p1, c_p2, c_p3 = st.columns(3)
+                with c_p1:
+                    dl_tc = st.number_input("Tipo de Cambio (TC)", value=3.42, step=0.01, format="%.2f", key="dl_tc_port")
+                with c_p2:
+                    dl_gg_pct = st.number_input("% Gastos Generales", value=2.0, min_value=0.0, max_value=100.0, step=0.5, format="%.1f", key="dl_gg_pct_port")
+                with c_p3:
+                    dl_ges_pct = st.number_input("% Gestión y Superv.", value=15.0, min_value=0.0, max_value=100.0, step=0.5, format="%.1f", key="dl_ges_pct_port")
+
+                dl_igv = st.checkbox("Incluir IGV (18%)", value=False, help="Si se marca, la plantilla aplicará 18% de IGV; si no, quedará en 0%.", key="dl_igv_port")
+
                 xlsx_template_bytes = generar_plantilla_cotizacion_venti(
                     proyecto=dl_p_nom,
                     cliente=dl_c_nom,
                     tc=dl_tc,
+                    gg_pct=dl_gg_pct / 100.0,
+                    gestion_pct=dl_ges_pct / 100.0,
+                    incluir_igv=dl_igv,
                 )
-                fname_clean = dl_p_nom.strip().replace(" ", "_") if dl_p_nom.strip() else "Cliente_Venti"
+                fname_clean = dl_p_nom.strip().replace(" ", "_") if dl_p_nom.strip() else "COTA"
                 st.download_button(
                     "📥 DESCARGAR FORMATO COTIZACIÓN (.XLSX)",
                     data=xlsx_template_bytes,
@@ -428,7 +441,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                         proy_dest = st.text_input(
                             "Nombre del Nuevo Proyecto:",
                             value=parsed_p.get("proyecto") or "",
-                            placeholder="ej. Proyecto Venti",
+                            placeholder="ej. Proyecto Galeon 129",
                             key="txt_new_proy_dest_port",
                         ).strip()
                         cli_dest = st.text_input(

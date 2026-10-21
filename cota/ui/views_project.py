@@ -719,11 +719,11 @@ def _render_tab_entregables(proy_name, proy_data):
 def _render_tab_obra(proy_name, proy_data):
     """Pestaña 5: Ejecución de Obra, Partidas y Tareas Técnicas."""
     st.markdown("### 🏗️ EJECUCIÓN DE OBRA Y PARTIDAS")
-    st.caption("Control operativo de contratistas, tareas por sección, presupuestos asignados e importación de cotización en Formato Venti.")
+    st.caption("Control operativo de contratistas, tareas por sección, presupuestos asignados e importación de cotización.")
 
     cliente_proy = safe_str(proy_data.get('Cliente', ''))
 
-    # Barra de herramientas: Agregar Partida + Descargar Formato Cotización + Importar Presupuesto Venti
+    # Barra de herramientas: Agregar Partida + Descargar Formato Cotización + Importar Presupuesto
     col_ap1, col_ap2, col_ap3, _ = st.columns([2.6, 2.9, 2.9, 1.6])
     with col_ap1:
         with st.popover("➕ AGREGAR PARTIDA DE OBRA", use_container_width=True):
@@ -737,14 +737,26 @@ def _render_tab_obra(proy_name, proy_data):
                     st.rerun()
 
     with col_ap2:
-        with st.popover("📥 FORMATO COTIZACIÓN (VENTI)", use_container_width=True):
-            st.markdown("##### 📄 Plantilla de Cotización (Formato Venti)")
-            st.caption("Descarga el formato Excel oficial con fórmulas automáticas (Partidas, Tareas, Metrados, Gastos Generales y Gestión/Utilidades) para llenar o enviar al cliente.")
-            tc_dl = st.number_input("Tipo de Cambio (TC) referencial", value=3.42, step=0.01, format="%.2f", key=f"tc_dl_{proy_name}")
+        with st.popover("📥 FORMATO DE COTIZACIÓN", use_container_width=True):
+            st.markdown("##### 📄 Plantilla de Cotización")
+            st.caption("Configura los porcentajes de Gastos Generales, Gestión/Supervisión e IGV antes de generar el formato Excel con fórmulas automáticas.")
+            cp_tc, cp_gg, cp_ges = st.columns(3)
+            with cp_tc:
+                tc_dl = st.number_input("TC referencial", value=3.42, step=0.01, format="%.2f", key=f"tc_dl_{proy_name}")
+            with cp_gg:
+                gg_pct_dl = st.number_input("% Gastos Gen.", value=2.0, min_value=0.0, max_value=100.0, step=0.5, format="%.1f", key=f"gg_pct_dl_{proy_name}")
+            with cp_ges:
+                ges_pct_dl = st.number_input("% Supervisión", value=15.0, min_value=0.0, max_value=100.0, step=0.5, format="%.1f", key=f"ges_pct_dl_{proy_name}")
+
+            igv_dl = st.checkbox("Incluir IGV (18%)", value=False, help="Si marcas esta casilla, coloca 18% de IGV; si no, lo deja en 0%.", key=f"igv_dl_{proy_name}")
+
             xlsx_blank = generar_plantilla_cotizacion_venti(
                 proyecto=proy_name,
                 cliente=cliente_proy,
                 tc=tc_dl,
+                gg_pct=gg_pct_dl / 100.0,
+                gestion_pct=ges_pct_dl / 100.0,
+                incluir_igv=igv_dl,
             )
             st.download_button(
                 "📥 DESCARGAR PLANTILLA EN BLANCO (.XLSX)",
@@ -755,11 +767,17 @@ def _render_tab_obra(proy_name, proy_data):
                 type="primary",
                 key=f"btn_dl_blank_venti_{proy_name}",
             )
-            xlsx_actual = exportar_proyecto_a_formato_venti(proy_name)
+            xlsx_actual = exportar_proyecto_a_formato_venti(
+                proy_name,
+                tc=tc_dl,
+                gg_pct_override=gg_pct_dl / 100.0,
+                gestion_pct_override=ges_pct_dl / 100.0,
+                incluir_igv=igv_dl,
+            )
             st.download_button(
                 "📊 EXPORTAR PRESUPUESTO ACTUAL (.XLSX)",
                 data=xlsx_actual,
-                file_name=f"Presupuesto_Venti_{proy_name.replace(' ', '_')}.xlsx",
+                file_name=f"Presupuesto_{proy_name.replace(' ', '_')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
                 key=f"btn_dl_curr_venti_{proy_name}",
@@ -767,19 +785,19 @@ def _render_tab_obra(proy_name, proy_data):
 
     with col_ap3:
         abrir_imp = st.button(
-            "📤 IMPORTAR PRESUPUESTO (VENTI)",
+            "📤 IMPORTAR PRESUPUESTO",
             key=f"btn_toggle_imp_venti_{proy_name}",
             use_container_width=True,
         )
         if abrir_imp:
             st.session_state[f"show_imp_venti_{proy_name}"] = not st.session_state.get(f"show_imp_venti_{proy_name}", False)
 
-    # Panel interactivo de importación de Cotización / Presupuesto Venti
+    # Panel interactivo de importación de Cotización / Presupuesto
     if st.session_state.get(f"show_imp_venti_{proy_name}", False):
         with st.container(border=True):
             c_hdr_i1, c_hdr_i2 = st.columns([8.5, 1.5])
             with c_hdr_i1:
-                st.markdown("#### 📤 IMPORTADOR INTELIGENTE DE PRESUPUESTO (FORMATO VENTI)")
+                st.markdown("#### 📤 IMPORTADOR INTELIGENTE DE PRESUPUESTO")
                 st.caption("Sube el archivo Excel (`.xlsx`) o CSV (`.csv`) llenado por el cliente o el estudio. El sistema detecta automáticamente las Partidas (1, 2, 3...), las Tareas (1.01, 1.02...) con sus presupuestos asignados, los Gastos Generales y las Utilidades (Gestión y Supervisión).")
             with c_hdr_i2:
                 if st.button("✖ Cerrar", key=f"btn_close_imp_venti_{proy_name}", use_container_width=True):
