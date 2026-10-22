@@ -380,5 +380,133 @@ Parcial",Sub Total (S/.),Mix
     assert tasks_proy["Presupuesto"].sum() == 20000.0
 
 
+def test_in_app_budget_builder():
+    import streamlit as st
+    from cota.cotizacion import (
+        asegurar_estructura_presupuesto_proyecto,
+        ajustar_cantidad_partidas_proyecto,
+        ajustar_cantidad_tareas_partida,
+        renombrar_partida_presupuesto,
+        recalcular_totales_presupuesto_proyecto,
+        exportar_proyecto_a_formato_venti,
+    )
+    from cota.db import COLS_PROY, COLS_P_INFO, COLS_TASKS
+
+    # Inicializar tablas para el test
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": "Casa Bosque",
+        "Cliente": "Cliente Prueba",
+        "Presupuesto": 0.0,
+        "Utilidades": 0.0,
+        "GG_Presupuesto": 0.0,
+        "TC_Presupuesto": 3.42,
+        "GG_Pct": 2.0,
+        "Utilidades_Pct": 15.0,
+        "Incluir_IGV": False,
+        "Archivado": False,
+    }])
+    st.session_state["partidas"] = pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
+    st.session_state["p_info"] = pd.DataFrame(columns=COLS_P_INFO)
+    st.session_state["tasks"] = pd.DataFrame(columns=COLS_TASKS)
+
+    # 1. Asegurar estructura por defecto: 3 partidas con 3 tareas cada una
+    asegurar_estructura_presupuesto_proyecto("Casa Bosque", n_partidas_default=3, n_tareas_default=3)
+    assert len(st.session_state["partidas"]) == 3
+    assert len(st.session_state["tasks"]) == 9
+
+    # 2. Renombrar partida 1
+    renombrar_partida_presupuesto("Casa Bosque", "01. Partida 1", "01. Demoliciones y Albañilería")
+    p1 = st.session_state["partidas"].iloc[0]["Nombre_Partida"]
+    assert p1 == "01. Demoliciones y Albañilería"
+    assert all(st.session_state["tasks"].iloc[0:3]["Partida"] == "01. Demoliciones y Albañilería")
+
+    # 3. Ajustar cantidad de tareas en partida 1 (de 3 a 4)
+    ajustar_cantidad_tareas_partida("Casa Bosque", 1, "01. Demoliciones y Albañilería", 4)
+    tasks_p1 = st.session_state["tasks"][st.session_state["tasks"]["Partida"] == "01. Demoliciones y Albañilería"]
+    assert len(tasks_p1) == 4
+
+    # 4. Ajustar cantidad de partidas (de 3 a 4)
+    ajustar_cantidad_partidas_proyecto("Casa Bosque", 4, n_tareas_default=2)
+    assert len(st.session_state["partidas"]) == 4
+
+    # 5. Fijar presupuestos en tareas y recalcular totales
+    st.session_state["tasks"].loc[0, "Metrado"] = 10.0
+    st.session_state["tasks"].loc[0, "Valor_Unitario"] = 100.0
+    st.session_state["tasks"].loc[0, "Presupuesto"] = 1000.0
+
+    totales = recalcular_totales_presupuesto_proyecto("Casa Bosque", sincronizar_pactado=True)
+    assert totales["subtotal_casco"] == 1000.0
+    assert totales["gg_monto"] == 20.0
+    assert totales["utilidades_monto"] == 150.0
+    assert totales["presupuesto_total"] == 1170.0
+
+    # 6. Exportar a formato Excel (.xlsx)
+    xlsx_bytes = exportar_proyecto_a_formato_venti("Casa Bosque")
+    assert isinstance(xlsx_bytes, bytes)
+    assert xlsx_bytes[:4] == b"PK\x03\x04"
+
+
+def test_views_project_imports():
+    from cota.config import AMBIENTES_DEFAULT
+    assert isinstance(AMBIENTES_DEFAULT, list)
+    assert len(AMBIENTES_DEFAULT) > 0
+    import cota.ui.views_project as vp
+    assert hasattr(vp, "_render_tab_presupuesto")
+    assert hasattr(vp, "_render_tab_obra")
+    assert hasattr(vp, "_render_tab_punch")
+
+
+def test_normalizar_supervisado():
+    from cota.db import _normalizar_supervisado, COLS_TASKS
+    assert "Supervisado" in COLS_TASKS
+
+    assert _normalizar_supervisado(True) == "Sí"
+    assert _normalizar_supervisado("True") == "Sí"
+    assert _normalizar_supervisado("Sí") == "Sí"
+    assert _normalizar_supervisado("si") == "Sí"
+    assert _normalizar_supervisado("1") == "Sí"
+    assert _normalizar_supervisado(1) == "Sí"
+
+    assert _normalizar_supervisado(False) == "No"
+    assert _normalizar_supervisado("False") == "No"
+    assert _normalizar_supervisado("No") == "No"
+    assert _normalizar_supervisado("0") == "No"
+    assert _normalizar_supervisado(0) == "No"
+    assert _normalizar_supervisado(None) == "No"
+    assert _normalizar_supervisado("") == "No"
+
+
+def test_proy_tiene_anio():
+    from cota.ui.views_main import _proy_tiene_anio
+    r1 = {"Inicio": "2025-01-10", "Fin": "2025-11-20"}
+    assert _proy_tiene_anio(r1, "2025") is True
+    assert _proy_tiene_anio(r1, "2026") is False
+    assert _proy_tiene_anio(r1, "🌐 Todos los Años") is True
+
+    r2 = {"Inicio": "2024-06-01", "Fin": "2026-03-15"}
+    assert _proy_tiene_anio(r2, "2024") is True
+    assert _proy_tiene_anio(r2, "2025") is True
+    assert _proy_tiene_anio(r2, "2026") is True
+    assert _proy_tiene_anio(r2, "2027") is False
+
+
+def test_kpi_proyectos_activos_calculo():
+    df = pd.DataFrame([
+        {"Nombre": "P1", "Estado": "🟡 Planificación"},
+        {"Nombre": "P2", "Estado": "🔵 En Proceso"},
+        {"Nombre": "P3", "Estado": "🟢 Completado"},
+        {"Nombre": "P4", "Estado": "🔵 En Proceso"},
+    ])
+    n_plan = len(df[df['Estado'].astype(str).str.contains('Planificación', case=False, na=False)])
+    n_en_proc = len(df[df['Estado'].astype(str).str.contains('Proceso', case=False, na=False)])
+    n_activos = n_plan + n_en_proc
+    assert n_plan == 1
+    assert n_en_proc == 2
+    assert n_activos == 3
+    subtitle = f"{n_en_proc} en proceso · {n_plan} en planificación"
+    assert subtitle == "2 en proceso · 1 en planificación"
+
+
+
 
 

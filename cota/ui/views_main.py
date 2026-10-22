@@ -106,41 +106,97 @@ def render_main_view(conn, sheet_url, nube_ok, lista_socios):
 # SUB-RENDERERS PARA CADA SECCIÓN PRINCIPAL
 # ====================================================
 
+def _proy_tiene_anio(row, anio_str: str) -> bool:
+    """Verifica si el año especificado coincide con las fechas de Inicio o Fin del proyecto."""
+    if not anio_str or str(anio_str).startswith("🌐"):
+        return True
+    try:
+        target_year = int(anio_str)
+    except (ValueError, TypeError):
+        return True
+
+    d_ini = parse_date(row.get('Inicio')) if hasattr(row, 'get') else None
+    d_fin = parse_date(row.get('Fin')) if hasattr(row, 'get') else None
+
+    if d_ini is not None and d_ini.year == target_year:
+        return True
+    if d_fin is not None and d_fin.year == target_year:
+        return True
+    if d_ini is not None and d_fin is not None and d_ini.year <= target_year <= d_fin.year:
+        return True
+    return False
+
+
 def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
     """Portafolio de proyectos activos con KPIs ejecutivos filtrables por proyecto, carpetas y estados."""
     p_vis_all = get_proyectos_activos(st.session_state.proyectos)
     nombres_act = p_vis_all['Nombre'].tolist()
 
-    # 1. Selector de Filtro por Proyecto para los Widgets de Resumen Ejecutivo
-    OPCION_TODOS = "🌐 Todos los Proyectos Activos (Resumen Estudio)"
-    opciones_filtro_proy = [OPCION_TODOS] + nombres_act
+    # 1. Filtros del Resumen Ejecutivo en 3 columnas: Proyecto, Año y Ubicación
+    OPCION_TODOS_PROY = "🌐 Todos los Proyectos Activos (Resumen Estudio)"
+    opciones_filtro_proy = [OPCION_TODOS_PROY] + nombres_act
 
-    col_f_kpi, col_f_action = st.columns([7, 3])
-    with col_f_kpi:
+    anios_set = set()
+    for _, r_p in p_vis_all.iterrows():
+        d_i = parse_date(r_p.get('Inicio'))
+        if d_i:
+            anios_set.add(str(d_i.year))
+        d_f = parse_date(r_p.get('Fin'))
+        if d_f:
+            anios_set.add(str(d_f.year))
+    if not anios_set:
+        anios_set.add(str(fecha_hoy.year))
+    anios_disponibles = sorted(list(anios_set), reverse=True)
+
+    OPCION_TODOS_ANIOS = "🌐 Todos los Años"
+    opciones_filtro_anio = [OPCION_TODOS_ANIOS] + anios_disponibles
+
+    OPCION_TODAS_UBIS = "🌐 Todas las Ubicaciones"
+    ubis_en_proy = sorted(list(set([safe_str(u) for u in p_vis_all['Ubicación'].dropna().unique().tolist() if safe_str(u)])))
+    if not ubis_en_proy:
+        ubis_en_proy = [u for u in exist_ubis if u]
+    opciones_filtro_ubi = [OPCION_TODAS_UBIS] + ubis_en_proy
+
+    col_f_proy, col_f_anio, col_f_ubi = st.columns([4.2, 2.9, 2.9])
+    with col_f_proy:
         proy_kpi_sel = st.selectbox(
             "🎯 Filtrar Resumen Ejecutivo por Proyecto:",
             options=opciones_filtro_proy,
             index=0,
             key="filtro_kpi_proyecto"
         )
-    es_proy_unico = (proy_kpi_sel != OPCION_TODOS) and (proy_kpi_sel in nombres_act)
+    with col_f_anio:
+        anio_kpi_sel = st.selectbox(
+            "📅 Filtrar por Año:",
+            options=opciones_filtro_anio,
+            index=0,
+            key="filtro_kpi_anio"
+        )
+    with col_f_ubi:
+        ubi_kpi_sel = st.selectbox(
+            "📍 Filtrar por Ubicación:",
+            options=opciones_filtro_ubi,
+            index=0,
+            key="filtro_kpi_ubicacion"
+        )
 
-    with col_f_action:
-        if es_proy_unico:
-            st.markdown("<div style='padding-top: 26px;'></div>", unsafe_allow_html=True)
-            if st.button(f"📂 ABRIR {proy_kpi_sel.upper()} →", key="btn_open_kpi_proy", type="primary", use_container_width=True):
-                st.session_state.proy_activo = proy_kpi_sel
-                st.session_state.vista_actual = 'proyecto'
-                clear_base_dfs()
-                st.rerun()
+    es_proy_unico = (proy_kpi_sel != OPCION_TODOS_PROY) and (proy_kpi_sel in nombres_act)
 
-    # Subconjunto de proyectos sobre el cual se calculan los KPIs
-    p_kpi_df = p_vis_all[p_vis_all['Nombre'] == proy_kpi_sel].copy() if es_proy_unico else p_vis_all.copy()
-    nombres_kpi = [proy_kpi_sel] if es_proy_unico else nombres_act
+    # Subconjunto de proyectos aplicando los 3 filtros combinados
+    p_kpi_df = p_vis_all.copy()
+    if es_proy_unico:
+        p_kpi_df = p_kpi_df[p_kpi_df['Nombre'] == proy_kpi_sel]
+    if anio_kpi_sel != OPCION_TODOS_ANIOS:
+        p_kpi_df = p_kpi_df[p_kpi_df.apply(lambda r: _proy_tiene_anio(r, anio_kpi_sel), axis=1)]
+    if ubi_kpi_sel != OPCION_TODAS_UBIS:
+        p_kpi_df = p_kpi_df[p_kpi_df['Ubicación'].astype(str) == ubi_kpi_sel]
+
+    nombres_kpi = p_kpi_df['Nombre'].tolist()
 
     # 1.A Cartera y Gastos
-    n_activos = len(p_kpi_df)
+    n_plan = len(p_kpi_df[p_kpi_df['Estado'].astype(str).str.contains('Planificación', case=False, na=False)])
     n_en_proc = len(p_kpi_df[p_kpi_df['Estado'].astype(str).str.contains('Proceso', case=False, na=False)])
+    n_activos = n_plan + n_en_proc
     tot_cartera = sum(safe_float(v) for v in p_kpi_df.get('Presupuesto', []))
 
     gastado_pagos = 0.0
@@ -213,7 +269,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
         card_1 = {
             "title": "Proyectos Activos",
             "value": str(n_activos),
-            "subtitle": f"{n_en_proc} en ejecución actual",
+            "subtitle": f"{n_en_proc} en proceso · {n_plan} en planificación",
         }
 
     sub_cartera = (
@@ -243,30 +299,39 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
 
     # Detalle rápido desplegable cuando se filtra un proyecto específico
     if es_proy_unico:
-        with st.expander(f"📋 Ver detalle de Hitos de Cobro y Partidas de Presupuesto de '{proy_kpi_sel}'", expanded=False):
-            cd1, cd2 = st.columns(2)
-            with cd1:
-                st.markdown("##### 💰 Hitos de Cobro del Proyecto")
-                df_c_det = st.session_state.cobros[st.session_state.cobros['Proyecto'] == proy_kpi_sel] if 'cobros' in st.session_state else pd.DataFrame()
-                if not df_c_det.empty:
-                    st.dataframe(
-                        df_c_det[['Hito', 'Monto_Pactado', 'Monto_Cobrado', 'Fecha_Vencimiento', 'Estado']],
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                else:
-                    st.caption("Sin hitos de cobro registrados para este proyecto.")
-            with cd2:
-                st.markdown("##### 📐 Partidas de Presupuesto del Proyecto")
-                df_pi_det = st.session_state.p_info[st.session_state.p_info['Proyecto'] == proy_kpi_sel] if 'p_info' in st.session_state else pd.DataFrame()
-                if not df_pi_det.empty:
-                    st.dataframe(
-                        df_pi_det[['Nombre_Partida', 'Monto_Pactado']].rename(columns={'Nombre_Partida': 'Partida', 'Monto_Pactado': 'Sub Total (S/)'}),
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                else:
-                    st.caption("Sin partidas de presupuesto registradas para este proyecto.")
+        col_det_exp, col_det_btn = st.columns([7.8, 2.2])
+        with col_det_exp:
+            with st.expander(f"📋 Ver detalle de Hitos de Cobro y Partidas de Presupuesto de '{proy_kpi_sel}'", expanded=False):
+                cd1, cd2 = st.columns(2)
+                with cd1:
+                    st.markdown("##### 💰 Hitos de Cobro del Proyecto")
+                    df_c_det = st.session_state.cobros[st.session_state.cobros['Proyecto'] == proy_kpi_sel] if 'cobros' in st.session_state else pd.DataFrame()
+                    if not df_c_det.empty:
+                        st.dataframe(
+                            df_c_det[['Hito', 'Monto_Pactado', 'Monto_Cobrado', 'Fecha_Vencimiento', 'Estado']],
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    else:
+                        st.caption("Sin hitos de cobro registrados para este proyecto.")
+                with cd2:
+                    st.markdown("##### 📐 Partidas de Presupuesto del Proyecto")
+                    df_pi_det = st.session_state.p_info[st.session_state.p_info['Proyecto'] == proy_kpi_sel] if 'p_info' in st.session_state else pd.DataFrame()
+                    if not df_pi_det.empty:
+                        st.dataframe(
+                            df_pi_det[['Nombre_Partida', 'Monto_Pactado']].rename(columns={'Nombre_Partida': 'Partida', 'Monto_Pactado': 'Sub Total (S/)'}),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    else:
+                        st.caption("Sin partidas de presupuesto registradas para este proyecto.")
+        with col_det_btn:
+            st.markdown("<div style='padding-top: 5px;'></div>", unsafe_allow_html=True)
+            if st.button(f"📂 ABRIR {proy_kpi_sel.upper()} →", key="btn_open_kpi_proy", type="primary", use_container_width=True):
+                st.session_state.proy_activo = proy_kpi_sel
+                st.session_state.vista_actual = 'proyecto'
+                clear_base_dfs()
+                st.rerun()
 
     st.divider()
 
@@ -547,13 +612,29 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
 
                 indices_mostrados.update(p_est.index.tolist())
                 col_st = "#D98A2B" if "Planificación" in est else ("#4A7C59" if "Completado" in est else "#C85A32")
-                st.markdown(
-                    f"<h4 class='cota-status-header' style='color: {col_st} !important;'>"
-                    f"<span class='cota-status-header-bar' style='background-color: {col_st};'></span>"
-                    f"ESTADO: {est.upper()} ({len(p_est)})"
-                    f"</h4>",
-                    unsafe_allow_html=True
-                )
+
+                state_key = f"est_open_{est_clean}"
+                if state_key not in st.session_state:
+                    st.session_state[state_key] = True
+                is_open = st.session_state[state_key]
+
+                col_head, col_tog = st.columns([8.0, 2.0])
+                with col_head:
+                    st.markdown(
+                        f"<h4 class='cota-status-header' style='color: {col_st} !important; margin: 0; padding-top: 6px;'>"
+                        f"<span class='cota-status-header-bar' style='background-color: {col_st};'></span>"
+                        f"ESTADO: {est.upper()} ({len(p_est)})"
+                        f"</h4>",
+                        unsafe_allow_html=True
+                    )
+                with col_tog:
+                    label_btn = f"🔼 Ocultar ({len(p_est)})" if is_open else f"🔽 Desplegar ({len(p_est)})"
+                    if st.button(label_btn, key=f"btn_toggle_est_{d_key}_{est_clean}", use_container_width=True):
+                        st.session_state[state_key] = not is_open
+                        st.rerun()
+
+                if not is_open:
+                    continue
 
                 for idx_p, proy in p_est.iterrows():
                     p_nom = proy['Nombre']

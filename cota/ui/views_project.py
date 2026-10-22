@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from cota.config import (
+    AMBIENTES_DEFAULT,
     ESPECIALIDADES_DEFAULT,
     PRIORIDADES_PUNCH,
     STATUS_COBROS,
@@ -27,6 +28,8 @@ from cota.db import (
     COLS_FASES,
     COLS_PAGOS,
     COLS_PUNCH,
+    COLS_TASKS,
+    _normalizar_supervisado,
     agregar_fase_banco,
     clear_base_dfs,
     obtener_banco_fases,
@@ -1043,14 +1046,15 @@ def _render_tab_obra(proy_name, proy_data):
                 if ppto_tareas_sum > 0
                 else ""
             )
-            st.markdown(f"""
-                <div class='cota-badge-container'>
-                    {badge_tareas_html}
-                    <span class='cota-badge cota-badge-pactado'>PACTADO: {format_currency(monto_pactado)}</span>
-                    <span class='cota-badge cota-badge-pagado'>PAGADO: {format_currency(monto_pagado)}</span>
-                    <span class='cota-badge {cls_s}'>SALDO: {format_currency(saldo)}</span>
-                </div>
-            """, unsafe_allow_html=True)
+            html_badges = (
+                f"<div class='cota-badge-container'>"
+                f"{badge_tareas_html}"
+                f"<span class='cota-badge cota-badge-pactado'>PACTADO: {format_currency(monto_pactado)}</span>"
+                f"<span class='cota-badge cota-badge-pagado'>PAGADO: {format_currency(monto_pagado)}</span>"
+                f"<span class='cota-badge {cls_s}'>SALDO: {format_currency(saldo)}</span>"
+                f"</div>"
+            )
+            st.markdown(html_badges, unsafe_allow_html=True)
 
         base_t_key = f"base_df_tasks_{proy_name}_{p_nom}_{idx_part}"
         counter_key = f"c_{base_t_key}"
@@ -1059,7 +1063,7 @@ def _render_tab_obra(proy_name, proy_data):
 
         cols_task_ed = [
             'Codigo_Item', 'Tarea', 'Moneda', 'Unidad', 'Metrado', 'Valor_Unitario', 'Presupuesto',
-            'Especialidad', 'Contratista', 'Estado', 'Inicio', 'Fin',
+            'Especialidad', 'Contratista', 'Estado', 'Supervisado', 'Inicio', 'Fin',
             'Causa_Cumplimiento', 'Dependencia', 'Notas'
         ]
         for c_req in cols_task_ed:
@@ -1068,6 +1072,8 @@ def _render_tab_obra(proy_name, proy_data):
                     df_tasks_p[c_req] = 0.0
                 elif c_req == 'Moneda':
                     df_tasks_p[c_req] = "Soles"
+                elif c_req == 'Supervisado':
+                    df_tasks_p[c_req] = "No"
                 else:
                     df_tasks_p[c_req] = ""
 
@@ -1077,6 +1083,8 @@ def _render_tab_obra(proy_name, proy_data):
         display_t['Metrado'] = pd.to_numeric(display_t['Metrado'], errors='coerce').fillna(0.0)
         display_t['Valor_Unitario'] = pd.to_numeric(display_t['Valor_Unitario'], errors='coerce').fillna(0.0)
         display_t['Presupuesto'] = pd.to_numeric(display_t['Presupuesto'], errors='coerce').fillna(0.0)
+        if 'Supervisado' in display_t.columns:
+            display_t['Supervisado'] = display_t['Supervisado'].apply(_normalizar_supervisado)
 
         if base_t_key not in st.session_state:
             st.session_state[base_t_key] = display_t.copy()
@@ -1098,6 +1106,7 @@ def _render_tab_obra(proy_name, proy_data):
                 "Especialidad": st.column_config.SelectboxColumn("Especialidad", options=extraer_esp(st.session_state.maestro)),
                 "Contratista": st.column_config.SelectboxColumn("Contratista", options=st.session_state.maestro['ID_Contratista'].tolist() if not st.session_state.maestro.empty else []),
                 "Estado": st.column_config.SelectboxColumn("Estado", options=STATUS_TASKS),
+                "Supervisado": st.column_config.SelectboxColumn("Supervisado ✓", options=["No", "Sí"], default="No", width="small"),
                 "Inicio": st.column_config.DateColumn("Inicio", format="DD/MM/YYYY"),
                 "Fin": st.column_config.DateColumn("Fin", format="DD/MM/YYYY"),
                 "Notas": st.column_config.TextColumn("Notas")
@@ -1110,7 +1119,7 @@ def _render_tab_obra(proy_name, proy_data):
                 ['Proyecto', 'Partida'],
                 [proy_name, p_nom],
                 ['Inicio', 'Fin'],
-                ['Codigo_Item', 'Tarea', 'Moneda', 'Unidad', 'Especialidad', 'Contratista', 'Estado', 'Causa_Cumplimiento', 'Dependencia', 'Notas'],
+                ['Codigo_Item', 'Tarea', 'Moneda', 'Unidad', 'Especialidad', 'Contratista', 'Estado', 'Supervisado', 'Causa_Cumplimiento', 'Dependencia', 'Notas'],
                 None,
                 ['Metrado', 'Valor_Unitario', 'Presupuesto'],
                 None
@@ -1363,18 +1372,19 @@ def _render_tab_actas(proy_name, proy_data):
     with col_s2:
         if sel_id:
             r_ses = proj_sessions[proj_sessions['ID_Sesion'] == sel_id].iloc[0]
-            st.markdown(f"""
-            <div style='background-color: #FFFFFF; border: 1px solid #DFD9CE; border-left: 4px solid #C85A32; border-radius: 6px; padding: 14px;'>
-                <div style='color: #C85A32; font-weight: 700; font-size: 15px; margin-bottom: 6px;'>{r_ses['Nombre_Sesion']}</div>
-                <div style='display: grid; grid-template-columns: repeat(3, 1fr); font-size: 12px; color: #262320; gap: 8px;'>
-                    <div><b style='color:#6E665E;'>Fecha:</b> {r_ses['Fecha_Real']}</div>
-                    <div><b style='color:#6E665E;'>Hora:</b> {r_ses['Hora']}</div>
-                    <div><b style='color:#6E665E;'>Tipo:</b> {r_ses.get('Tipo_Reunion', 'Coordinación')}</div>
-                    <div><b style='color:#6E665E;'>Organizador:</b> {r_ses['Organizador']}</div>
-                    <div><b style='color:#6E665E;'>Fase:</b> {r_ses['Etapa']}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            html_acta = (
+                f"<div style='background-color: #FFFFFF; border: 1px solid #DFD9CE; border-left: 4px solid #C85A32; border-radius: 6px; padding: 14px;'>"
+                f"<div style='color: #C85A32; font-weight: 700; font-size: 15px; margin-bottom: 6px;'>{r_ses['Nombre_Sesion']}</div>"
+                f"<div style='display: grid; grid-template-columns: repeat(3, 1fr); font-size: 12px; color: #262320; gap: 8px;'>"
+                f"<div><b style='color:#6E665E;'>Fecha:</b> {r_ses['Fecha_Real']}</div>"
+                f"<div><b style='color:#6E665E;'>Hora:</b> {r_ses['Hora']}</div>"
+                f"<div><b style='color:#6E665E;'>Tipo:</b> {r_ses.get('Tipo_Reunion', 'Coordinación')}</div>"
+                f"<div><b style='color:#6E665E;'>Organizador:</b> {r_ses['Organizador']}</div>"
+                f"<div><b style='color:#6E665E;'>Fase:</b> {r_ses['Etapa']}</div>"
+                f"</div>"
+                f"</div>"
+            )
+            st.markdown(html_acta, unsafe_allow_html=True)
 
     if sel_id:
         st.divider()

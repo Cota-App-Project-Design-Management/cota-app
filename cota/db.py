@@ -27,7 +27,7 @@ COLS_PROY = [
 
 COLS_TASKS = [
     'Proyecto', 'Partida', 'Orden', 'Codigo_Item', 'Tarea', 'Especialidad', 'Contratista',
-    'Estado', 'Inicio', 'Fin', 'Causa_Cumplimiento', 'Culpa_Contratista',
+    'Estado', 'Supervisado', 'Inicio', 'Fin', 'Causa_Cumplimiento', 'Culpa_Contratista',
     'Permitir_Cruce', 'Dependencia', 'Notas',
     'Moneda', 'Unidad', 'Metrado', 'Valor_Unitario', 'Presupuesto'
 ]
@@ -117,6 +117,19 @@ def get_proyectos_archivados(df_proy):
 
 import io
 import re
+
+
+def _normalizar_supervisado(val):
+    """Normaliza el campo Supervisado a 'Sí' o 'No'."""
+    if val is True:
+        return "Sí"
+    if val is False or val is None or pd.isna(val):
+        return "No"
+    s = str(val).strip().lower()
+    if s in ["sí", "si", "true", "1", "s", "yes"]:
+        return "Sí"
+    return "No"
+
 
 
 def _get_local_excel_path():
@@ -327,6 +340,8 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
                 df[col] = 15.0
             elif col == 'Moneda' and pestaña == 'tasks':
                 df[col] = "Soles"
+            elif col == 'Supervisado' and pestaña == 'tasks':
+                df[col] = "No"
             elif col in ['Orden', 'Num_Pisos', 'Num_Sotanos', 'Avance_Pct']:
                 df[col] = 0
             elif col == 'Division':
@@ -349,6 +364,13 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
                 df[col] = "Con Cliente"
             else:
                 df[col] = ""
+
+    # Normalizar Supervisado en tareas
+    if pestaña == 'tasks':
+        if 'Supervisado' not in df.columns:
+            df['Supervisado'] = "No"
+        else:
+            df['Supervisado'] = df['Supervisado'].apply(_normalizar_supervisado)
 
     st.session_state.original_tables[pestaña] = df.copy()
     return df
@@ -740,6 +762,10 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
             v_unit = float(row.get('Valor_Unitario') or 0.0)
             if p_est == 0.0 and met > 0 and v_unit > 0:
                 df_new.at[i, 'Presupuesto'] = round(met * v_unit, 2)
+
+    # Normalizar Supervisado en tasks ("Sí" / "No")
+    if master_state_key == 'tasks' and 'Supervisado' in df_new.columns:
+        df_new['Supervisado'] = df_new['Supervisado'].apply(_normalizar_supervisado)
 
     st.session_state[base_key] = df_new
 
