@@ -612,6 +612,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                     continue
 
                 indices_mostrados.update(p_est.index.tolist())
+                col_st = "#D98A2B" if "Planificación" in est else ("#4A7C59" if "Completado" in est else "#C85A32")
 
                 state_key = f"est_open_{est_clean}"
                 if state_key not in st.session_state:
