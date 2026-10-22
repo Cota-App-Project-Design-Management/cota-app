@@ -1,16 +1,17 @@
 """
-Módulo de Cotización y Presupuesto de COTA APP.
+Módulo de Presupuesto y Cotización All-in-One de COTA APP.
 Permite:
-1. Generar la plantilla oficial en Excel (.xlsx) con fórmulas automáticas (Hoja 1: Presupuesto, Hoja 2: Control de Pagos)
-   para que el cliente o el estudio la llene, configurando previamente desde COTA los porcentajes de Gastos Generales,
-   Gestión y Supervisión (Utilidades) y si aplica IGV (18%).
-2. Leer e interpretar archivos Excel (.xlsx, .xls) o CSV (.csv) del formato de cotización,
-   identificando automáticamente:
-   - Cabecera: Proyecto, Cliente, Fecha y Tipo de Cambio (TC)
-   - Partidas principales (1, 2, 3...) y sus Sub-totales / Mix
-   - Tareas por partida (1.01, 1.02, 2.01...) con Moneda, Unidad, Metrado, Valor Unitario y Presupuesto asignado
-   - Resumen financiero: Sub Total (Casco), Gastos Generales (GG), Gestión y Supervisión de Obras (Utilidades), IGV y TOTAL.
-3. Importar la cotización directamente a un proyecto nuevo o existente en COTA APP.
+1. Construir y editar el presupuesto del proyecto 100% dentro de COTA (Pestaña 03. PRESUPUESTO):
+   - Definir dinámicamente la cantidad de Partidas (1, 2, 3, 4...) y sus nombres.
+   - Definir dinámicamente la cantidad de Tareas por cada Partida (1.01, 1.02, 1.03...) y editar
+     constantemente su Descripción, Moneda, Unidad, Metrado y Valor Unitario.
+   - Configurar Tipo de Cambio (TC), % de Gastos Generales, % de Gestión y Supervisión (Utilidades)
+     y casilla de IGV (18% o 0%).
+2. Sincronizar automáticamente todas las Partidas, Tareas y sus Presupuestos asignados hacia
+   la pestaña 05. EJECUCIÓN & PARTIDAS y hacia la Ficha Financiera del Proyecto (Presupuesto Total,
+   Utilidades y Caja Chica / Gastos Generales), preservando contratistas, estados y fechas de obra.
+3. Exportar el presupuesto en cualquier momento a un archivo Excel (.xlsx) profesional con fórmulas
+   automáticas para compartirlo con el cliente.
 """
 
 import datetime
@@ -23,19 +24,522 @@ import pandas as pd
 import streamlit as st
 
 from cota.db import COLS_P_INFO, COLS_PROY, COLS_TASKS, clear_base_dfs
-from cota.utils import safe_float, safe_str
+from cota.utils import safe_float, safe_str, to_bool
 
 
 # ==========================================
-# 1. GENERADOR DE PLANTILLA EXCEL DE COTIZACIÓN
+# 1. GESTIÓN EN VIVO DEL PRESUPUESTO DENTRO DE COTA (ALL-IN-ONE)
 # ==========================================
 
 ESTRUCTURA_COTIZACION_DEFAULT = [
-    {"codigo": "1", "nombre": "", "subitems": ["1.01", "1.02", "1.03", "1.04", "1.05", "1.06"]},
-    {"codigo": "2", "nombre": "", "subitems": ["2.01", "2.02", "2.03", "2.04", "2.05", "2.06", "2.07"]},
-    {"codigo": "3", "nombre": "", "subitems": ["3.01", "3.02", "3.03"]},
+    {"codigo": "1", "nombre": "Partida 1", "subitems": ["1.01", "1.02", "1.03"]},
+    {"codigo": "2", "nombre": "Partida 2", "subitems": ["2.01", "2.02", "2.03"]},
+    {"codigo": "3", "nombre": "Partida 3", "subitems": ["3.01", "3.02", "3.03"]},
 ]
 
+
+def limpiar_nombre_partida(nombre_raw: str, idx_fallback: int = 1) -> str:
+    """Extrae el nombre limpio de una partida sin el prefijo numérico '01. '."""
+    s = safe_str(nombre_raw)
+    clean = re.sub(r"^\d+[\.\-\s]+", "", s).strip()
+    return clean if clean else f"Partida {idx_fallback}"
+
+
+def formatear_nombre_partida(idx_1based: int, nombre_limpio: str) -> str:
+    """Formatea el nombre canónico de la partida con prefijo de 2 dígitos: '01. Nombre'."""
+    clean = limpiar_nombre_partida(nombre_limpio, idx_1based)
+    return f"{idx_1based:02d}. {clean}"
+
+
+def extraer_descripcion_tarea(tarea_raw: str, codigo_item: str = "") -> str:
+    """Extrae la descripción limpia de una tarea quitando el prefijo '1.01 ' si lo tiene."""
+    s = safe_str(tarea_raw)
+    if not s:
+        return ""
+    if codigo_item and s.startswith(codigo_item):
+        s = s[len(codigo_item):].lstrip(" -:")
+    else:
+        s = re.sub(r"^\d+\.\d+[\s\-:]*", "", s).strip()
+    return s
+
+
+def obtener_parametros_presupuesto_proyecto(proy_name: str) -> dict:
+    """Obtiene TC, % Gastos Generales, % Gestión/Supervisión e IGV del proyecto."""
+    params = {
+        "tc": 3.42,
+        "gg_pct": 2.0,
+        "utilidades_pct": 15.0,
+        "incluir_igv": False,
+    }
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if df_p is None or df_p.empty or proy_name not in df_p["Nombre"].values:
+        return params
+
+    row = df_p[df_p["Nombre"] == proy_name].iloc[0]
+
+    tc_val = safe_float(row.get("TC_Presupuesto"), 0.0)
+    if tc_val > 0:
+        params["tc"] = tc_val
+
+    gg_raw = row.get("GG_Pct")
+    if gg_raw is not None and str(gg_raw).strip() not in ["", "nan", "None"]:
+        params["gg_pct"] = safe_float(gg_raw, 2.0)
+
+    util_raw = row.get("Utilidades_Pct")
+    if util_raw is not None and str(util_raw).strip() not in ["", "nan", "None"]:
+        params["utilidades_pct"] = safe_float(util_raw, 15.0)
+
+    igv_raw = row.get("Incluir_IGV")
+    if igv_raw is not None and str(igv_raw).strip() not in ["", "nan", "None"]:
+        params["incluir_igv"] = to_bool(igv_raw)
+
+    return params
+
+
+def guardar_parametros_presupuesto_proyecto(
+    proy_name: str,
+    tc: float = 3.42,
+    gg_pct: float = 2.0,
+    utilidades_pct: float = 15.0,
+    incluir_igv: bool = False,
+):
+    """Guarda los parámetros globales del presupuesto en la fila del proyecto y recalcula montos."""
+    if "proyectos" not in st.session_state or st.session_state.proyectos.empty:
+        return
+    for col in COLS_PROY:
+        if col not in st.session_state.proyectos.columns:
+            st.session_state.proyectos[col] = ""
+
+    mask = st.session_state.proyectos["Nombre"] == proy_name
+    if mask.any():
+        idx = st.session_state.proyectos[mask].index[0]
+        st.session_state.proyectos.at[idx, "TC_Presupuesto"] = float(tc)
+        st.session_state.proyectos.at[idx, "GG_Pct"] = float(gg_pct)
+        st.session_state.proyectos.at[idx, "Utilidades_Pct"] = float(utilidades_pct)
+        st.session_state.proyectos.at[idx, "Incluir_IGV"] = bool(incluir_igv)
+
+    recalcular_totales_presupuesto_proyecto(proy_name)
+
+
+def asegurar_estructura_presupuesto_proyecto(
+    proy_name: str,
+    n_partidas_default: int = 3,
+    n_tareas_default: int = 3,
+):
+    """
+    Garantiza que el proyecto tenga una estructura de Partidas y Tareas lista para editarse
+    en '03. PRESUPUESTO' y sincronizada con '05. EJECUCIÓN & PARTIDAS'.
+    """
+    if "partidas" not in st.session_state:
+        st.session_state.partidas = pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
+    if "p_info" not in st.session_state:
+        st.session_state.p_info = pd.DataFrame(columns=COLS_P_INFO)
+    if "tasks" not in st.session_state:
+        st.session_state.tasks = pd.DataFrame(columns=COLS_TASKS)
+
+    for col in COLS_P_INFO:
+        if col not in st.session_state.p_info.columns:
+            st.session_state.p_info[col] = ""
+    for col in COLS_TASKS:
+        if col not in st.session_state.tasks.columns:
+            st.session_state.tasks[col] = ""
+
+    parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name]
+
+    # Si el proyecto aún no tiene ninguna partida, inicializar con n_partidas_default (ej. Partida 1, 2, 3)
+    if parts_proy.empty:
+        ajustar_cantidad_partidas_proyecto(proy_name, n_partidas_default, n_tareas_default)
+        return
+
+    # Si ya tiene partidas, asegurar que cada partida tenga al menos 1 tarea en tasks
+    nuevas_tasks = []
+    for idx_p, (_, p_row) in enumerate(parts_proy.reset_index(drop=True).iterrows(), start=1):
+        p_nom = safe_str(p_row["Nombre_Partida"])
+        mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == p_nom)
+        df_t_p = st.session_state.tasks[mask_t]
+
+        if df_t_p.empty:
+            # Verificar si tenía un Monto_Pactado previo en p_info
+            mask_pi = (st.session_state.p_info["Proyecto"] == proy_name) & (st.session_state.p_info["Nombre_Partida"] == p_nom)
+            monto_prev = safe_float(st.session_state.p_info.loc[mask_pi, "Monto_Pactado"].iloc[0], 0.0) if mask_pi.any() else 0.0
+
+            for idx_t in range(1, n_tareas_default + 1):
+                cod_t = f"{idx_p}.{idx_t:02d}"
+                vu_init = monto_prev if (idx_t == 1 and monto_prev > 0) else 0.0
+                desc_init = limpiar_nombre_partida(p_nom, idx_p) if (idx_t == 1 and monto_prev > 0) else ""
+                tarea_txt = f"{cod_t} {desc_init}".strip() if desc_init else cod_t
+                nuevas_tasks.append({
+                    "Proyecto": proy_name,
+                    "Partida": p_nom,
+                    "Orden": idx_t,
+                    "Codigo_Item": cod_t,
+                    "Tarea": tarea_txt,
+                    "Especialidad": "Ninguna",
+                    "Contratista": "",
+                    "Estado": "🟡 Planificado",
+                    "Inicio": datetime.date.today().strftime("%Y-%m-%d"),
+                    "Fin": "",
+                    "Causa_Cumplimiento": "",
+                    "Culpa_Contratista": False,
+                    "Permitir_Cruce": False,
+                    "Dependencia": "",
+                    "Notas": "",
+                    "Moneda": "Soles",
+                    "Unidad": "glb",
+                    "Metrado": 1.0,
+                    "Valor_Unitario": vu_init,
+                    "Presupuesto": vu_init,
+                })
+        else:
+            # Asegurar numeración Codigo_Item en tareas existentes
+            for idx_t, r_idx in enumerate(df_t_p.index, start=1):
+                cod_t = f"{idx_p}.{idx_t:02d}"
+                st.session_state.tasks.at[r_idx, "Orden"] = idx_t
+                st.session_state.tasks.at[r_idx, "Codigo_Item"] = cod_t
+                if not safe_str(st.session_state.tasks.at[r_idx, "Moneda"]):
+                    st.session_state.tasks.at[r_idx, "Moneda"] = "Soles"
+                if not safe_str(st.session_state.tasks.at[r_idx, "Unidad"]):
+                    st.session_state.tasks.at[r_idx, "Unidad"] = "glb"
+                if safe_float(st.session_state.tasks.at[r_idx, "Metrado"], 0.0) <= 0:
+                    st.session_state.tasks.at[r_idx, "Metrado"] = 1.0
+
+    if nuevas_tasks:
+        st.session_state.tasks = pd.concat(
+            [st.session_state.tasks, pd.DataFrame(nuevas_tasks)[COLS_TASKS]],
+            ignore_index=True,
+        )
+        clear_base_dfs()
+
+
+def recalcular_totales_presupuesto_proyecto(proy_name: str) -> dict:
+    """
+    Recalcula en cascada:
+    1. El Valor Parcial (Presupuesto en S/) de cada tarea según su Metrado, Valor Unitario, Moneda y TC.
+    2. El Sub Total (Monto_Pactado) de cada Partida en st.session_state.p_info.
+    3. El Sub Total (Casco), Gastos Generales, Gestión/Supervisión (Utilidades), IGV y TOTAL del proyecto
+       en st.session_state.proyectos.
+    """
+    params = obtener_parametros_presupuesto_proyecto(proy_name)
+    tc = params["tc"] if params["tc"] > 0 else 3.42
+    gg_pct = params["gg_pct"]
+    util_pct = params["utilidades_pct"]
+    incluir_igv = params["incluir_igv"]
+
+    parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name] if "partidas" in st.session_state else pd.DataFrame()
+
+    subtotal_casco = 0.0
+    subtotales_por_partida = {}
+
+    for _, p_row in parts_proy.iterrows():
+        p_nom = safe_str(p_row["Nombre_Partida"])
+        mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == p_nom)
+        df_t_p = st.session_state.tasks[mask_t]
+
+        sub_p = 0.0
+        for r_idx, t_row in df_t_p.iterrows():
+            mon = safe_str(t_row.get("Moneda", "Soles")) or "Soles"
+            met = safe_float(t_row.get("Metrado", 1.0), 1.0)
+            if met <= 0:
+                met = 1.0
+            vu = safe_float(t_row.get("Valor_Unitario", 0.0), 0.0)
+            es_usd = any(d in mon.lower() for d in ["dolar", "dólar", "usd", "$"])
+            factor_tc = tc if es_usd else 1.0
+            parcial_soles = round(met * vu * factor_tc, 2)
+            st.session_state.tasks.at[r_idx, "Presupuesto"] = parcial_soles
+            sub_p += parcial_soles
+
+        sub_p = round(sub_p, 2)
+        subtotales_por_partida[p_nom] = sub_p
+        subtotal_casco += sub_p
+
+        # Actualizar Monto_Pactado en p_info
+        mask_pi = (st.session_state.p_info["Proyecto"] == proy_name) & (st.session_state.p_info["Nombre_Partida"] == p_nom)
+        if mask_pi.any():
+            st.session_state.p_info.loc[mask_pi, "Monto_Pactado"] = sub_p
+        else:
+            nueva_pi = pd.DataFrame([{
+                "Proyecto": proy_name,
+                "Nombre_Partida": p_nom,
+                "Monto_Pactado": sub_p,
+                "Nivel_Actual": "",
+                "Contratista": "",
+                "Inicio": "",
+                "Fin": "",
+                "Estado": "🟡 Planificado",
+                "Etapa": "Construcción",
+                "Nivel_Inicio": "",
+                "Nivel_Fin": "",
+            }])
+            st.session_state.p_info = pd.concat([st.session_state.p_info, nueva_pi[COLS_P_INFO]], ignore_index=True)
+
+    subtotal_casco = round(subtotal_casco, 2)
+    gg_monto = round(subtotal_casco * (gg_pct / 100.0), 2)
+    util_monto = round(subtotal_casco * (util_pct / 100.0), 2)
+    base_imp = subtotal_casco + gg_monto + util_monto
+    igv_monto = round(base_imp * 0.18, 2) if incluir_igv else 0.0
+    total_soles = round(base_imp + igv_monto, 2)
+    total_usd = round(total_soles / tc, 2) if tc > 0 else 0.0
+
+    # Actualizar fila del proyecto en st.session_state.proyectos
+    if "proyectos" in st.session_state and not st.session_state.proyectos.empty:
+        mask_p = st.session_state.proyectos["Nombre"] == proy_name
+        if mask_p.any():
+            idx_p = st.session_state.proyectos[mask_p].index[0]
+            st.session_state.proyectos.at[idx_p, "Presupuesto"] = total_soles
+            st.session_state.proyectos.at[idx_p, "GG_Presupuesto"] = gg_monto
+            st.session_state.proyectos.at[idx_p, "Utilidades"] = util_monto
+
+    clear_base_dfs()
+
+    return {
+        "tc": tc,
+        "subtotal_casco": subtotal_casco,
+        "gg_pct": gg_pct,
+        "gg_monto": gg_monto,
+        "utilidades_pct": util_pct,
+        "utilidades_monto": util_monto,
+        "incluir_igv": incluir_igv,
+        "igv_pct": 18.0 if incluir_igv else 0.0,
+        "igv_monto": igv_monto,
+        "presupuesto_total": total_soles,
+        "presupuesto_dolares": total_usd,
+        "subtotales_por_partida": subtotales_por_partida,
+    }
+
+
+def ajustar_cantidad_partidas_proyecto(proy_name: str, nueva_cantidad: int, n_tareas_default: int = 3):
+    """
+    Ajusta dinámicamente el número de Partidas del proyecto (ej. de 3 a 4 partidas -> crea Partida 4
+    con sus tareas iniciales; si disminuye, conserva las primeras `nueva_cantidad` partidas).
+    """
+    nueva_cantidad = max(1, int(nueva_cantidad))
+    parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
+    actual_cant = len(parts_proy)
+
+    if nueva_cantidad > actual_cant:
+        nuevas_p = []
+        nuevas_pi = []
+        nuevas_t = []
+        for idx_p in range(actual_cant + 1, nueva_cantidad + 1):
+            p_nom = formatear_nombre_partida(idx_p, f"Partida {idx_p}")
+            nuevas_p.append({"Proyecto": proy_name, "Nombre_Partida": p_nom})
+            nuevas_pi.append({
+                "Proyecto": proy_name,
+                "Nombre_Partida": p_nom,
+                "Monto_Pactado": 0.0,
+                "Nivel_Actual": "",
+                "Contratista": "",
+                "Inicio": "",
+                "Fin": "",
+                "Estado": "🟡 Planificado",
+                "Etapa": "Construcción",
+                "Nivel_Inicio": "",
+                "Nivel_Fin": "",
+            })
+            for idx_t in range(1, n_tareas_default + 1):
+                cod_t = f"{idx_p}.{idx_t:02d}"
+                nuevas_t.append({
+                    "Proyecto": proy_name,
+                    "Partida": p_nom,
+                    "Orden": idx_t,
+                    "Codigo_Item": cod_t,
+                    "Tarea": cod_t,
+                    "Especialidad": "Ninguna",
+                    "Contratista": "",
+                    "Estado": "🟡 Planificado",
+                    "Inicio": datetime.date.today().strftime("%Y-%m-%d"),
+                    "Fin": "",
+                    "Causa_Cumplimiento": "",
+                    "Culpa_Contratista": False,
+                    "Permitir_Cruce": False,
+                    "Dependencia": "",
+                    "Notas": "",
+                    "Moneda": "Soles",
+                    "Unidad": "glb",
+                    "Metrado": 1.0,
+                    "Valor_Unitario": 0.0,
+                    "Presupuesto": 0.0,
+                })
+        st.session_state.partidas = pd.concat([st.session_state.partidas, pd.DataFrame(nuevas_p)], ignore_index=True)
+        st.session_state.p_info = pd.concat([st.session_state.p_info, pd.DataFrame(nuevas_pi)[COLS_P_INFO]], ignore_index=True)
+        st.session_state.tasks = pd.concat([st.session_state.tasks, pd.DataFrame(nuevas_t)[COLS_TASKS]], ignore_index=True)
+
+    elif nueva_cantidad < actual_cant:
+        partidas_a_eliminar = parts_proy.iloc[nueva_cantidad:]["Nombre_Partida"].tolist()
+        st.session_state.partidas = st.session_state.partidas[
+            ~((st.session_state.partidas["Proyecto"] == proy_name) & (st.session_state.partidas["Nombre_Partida"].isin(partidas_a_eliminar)))
+        ].reset_index(drop=True)
+        st.session_state.p_info = st.session_state.p_info[
+            ~((st.session_state.p_info["Proyecto"] == proy_name) & (st.session_state.p_info["Nombre_Partida"].isin(partidas_a_eliminar)))
+        ].reset_index(drop=True)
+        st.session_state.tasks = st.session_state.tasks[
+            ~((st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"].isin(partidas_a_eliminar)))
+        ].reset_index(drop=True)
+
+    recalcular_totales_presupuesto_proyecto(proy_name)
+
+
+def renombrar_partida_presupuesto(
+    proy_name: str,
+    idx_partida_1based: int,
+    nombre_actual_completo: str,
+    nuevo_nombre_limpio: str,
+):
+    """
+    Renombra una Partida en el presupuesto y propaga el nuevo nombre automáticamente
+    a partidas, p_info, tasks (05. Ejecución & Partidas) y pagos.
+    """
+    nuevo_completo = formatear_nombre_partida(idx_partida_1based, nuevo_nombre_limpio)
+    if nuevo_completo == nombre_actual_completo:
+        return nuevo_completo
+
+    st.session_state.partidas.loc[
+        (st.session_state.partidas["Proyecto"] == proy_name) & (st.session_state.partidas["Nombre_Partida"] == nombre_actual_completo),
+        "Nombre_Partida",
+    ] = nuevo_completo
+
+    st.session_state.p_info.loc[
+        (st.session_state.p_info["Proyecto"] == proy_name) & (st.session_state.p_info["Nombre_Partida"] == nombre_actual_completo),
+        "Nombre_Partida",
+    ] = nuevo_completo
+
+    st.session_state.tasks.loc[
+        (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_actual_completo),
+        "Partida",
+    ] = nuevo_completo
+
+    if "pagos" in st.session_state and not st.session_state.pagos.empty:
+        st.session_state.pagos.loc[
+            (st.session_state.pagos["Proyecto"] == proy_name) & (st.session_state.pagos["Partida"] == nombre_actual_completo),
+            "Partida",
+        ] = nuevo_completo
+
+    clear_base_dfs()
+    return nuevo_completo
+
+
+def ajustar_cantidad_tareas_partida(
+    proy_name: str,
+    idx_partida_1based: int,
+    nombre_partida_completo: str,
+    nueva_cant_tareas: int,
+):
+    """
+    Ajusta dinámicamente la cantidad de tareas (1.01, 1.02, 1.03...) dentro de una Partida,
+    preservando las tareas existentes y sincronizando con 05. Ejecución & Partidas.
+    """
+    nueva_cant_tareas = max(1, int(nueva_cant_tareas))
+    mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
+    df_t_p = st.session_state.tasks[mask_t].copy().reset_index(drop=True)
+    actual_cant = len(df_t_p)
+
+    if nueva_cant_tareas > actual_cant:
+        nuevas_filas = []
+        for idx_t in range(actual_cant + 1, nueva_cant_tareas + 1):
+            cod_t = f"{idx_partida_1based}.{idx_t:02d}"
+            nuevas_filas.append({
+                "Proyecto": proy_name,
+                "Partida": nombre_partida_completo,
+                "Orden": idx_t,
+                "Codigo_Item": cod_t,
+                "Tarea": cod_t,
+                "Especialidad": "Ninguna",
+                "Contratista": "",
+                "Estado": "🟡 Planificado",
+                "Inicio": datetime.date.today().strftime("%Y-%m-%d"),
+                "Fin": "",
+                "Causa_Cumplimiento": "",
+                "Culpa_Contratista": False,
+                "Permitir_Cruce": False,
+                "Dependencia": "",
+                "Notas": "",
+                "Moneda": "Soles",
+                "Unidad": "glb",
+                "Metrado": 1.0,
+                "Valor_Unitario": 0.0,
+                "Presupuesto": 0.0,
+            })
+        st.session_state.tasks = pd.concat(
+            [st.session_state.tasks, pd.DataFrame(nuevas_filas)[COLS_TASKS]],
+            ignore_index=True,
+        )
+    elif nueva_cant_tareas < actual_cant:
+        df_keep = df_t_p.iloc[:nueva_cant_tareas].copy()
+        df_rest = st.session_state.tasks[~mask_t].copy()
+        st.session_state.tasks = pd.concat([df_rest, df_keep[COLS_TASKS]], ignore_index=True)
+
+    recalcular_totales_presupuesto_proyecto(proy_name)
+
+
+def aplicar_edicion_tabla_presupuesto_partida(
+    base_key: str,
+    widget_key: str,
+    proy_name: str,
+    idx_partida_1based: int,
+    nombre_partida_completo: str,
+):
+    """
+    Callback on_change para el st.data_editor de cada Partida en '03. PRESUPUESTO'.
+    Actualiza Descripción, Moneda, Unidad, Metrado, Valor Unitario y Presupuesto en st.session_state.tasks
+    preservando Contratista, Especialidad, Estado, Inicio, Fin y Dependencia de '05. EJECUCIÓN & PARTIDAS'.
+    """
+    if widget_key not in st.session_state or base_key not in st.session_state:
+        return
+
+    edits = st.session_state[widget_key]
+    edited_rows = edits.get("edited_rows", {})
+    if not edited_rows:
+        return
+
+    df_base = st.session_state[base_key].copy()
+    for r_str, changes in edited_rows.items():
+        r_i = int(r_str)
+        if r_i in df_base.index:
+            for col_k, val in changes.items():
+                df_base.at[r_i, col_k] = val
+
+    params = obtener_parametros_presupuesto_proyecto(proy_name)
+    tc = params["tc"] if params["tc"] > 0 else 3.42
+
+    mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
+    indices_tasks = st.session_state.tasks[mask_t].index.tolist()
+
+    for pos_i, (_, row_ed) in enumerate(df_base.iterrows()):
+        if pos_i >= len(indices_tasks):
+            break
+        t_idx_global = indices_tasks[pos_i]
+        cod_t = f"{idx_partida_1based}.{pos_i + 1:02d}"
+        desc_limpia = safe_str(row_ed.get("Descripcion", "")).strip()
+        tarea_completa = f"{cod_t} {desc_limpia}".strip() if desc_limpia else cod_t
+        moneda = safe_str(row_ed.get("Moneda", "Soles")) or "Soles"
+        unidad = safe_str(row_ed.get("Unidad", "glb")) or "glb"
+        metrado = safe_float(row_ed.get("Metrado", 1.0), 1.0)
+        if metrado <= 0:
+            metrado = 1.0
+        v_unit = safe_float(row_ed.get("Valor_Unitario", 0.0), 0.0)
+        es_usd = any(d in moneda.lower() for d in ["dolar", "dólar", "usd", "$"])
+        ppto_soles = round(metrado * v_unit * (tc if es_usd else 1.0), 2)
+
+        st.session_state.tasks.at[t_idx_global, "Orden"] = pos_i + 1
+        st.session_state.tasks.at[t_idx_global, "Codigo_Item"] = cod_t
+        st.session_state.tasks.at[t_idx_global, "Tarea"] = tarea_completa
+        st.session_state.tasks.at[t_idx_global, "Moneda"] = moneda
+        st.session_state.tasks.at[t_idx_global, "Unidad"] = unidad
+        st.session_state.tasks.at[t_idx_global, "Metrado"] = metrado
+        st.session_state.tasks.at[t_idx_global, "Valor_Unitario"] = v_unit
+        st.session_state.tasks.at[t_idx_global, "Presupuesto"] = ppto_soles
+
+    if base_key in st.session_state:
+        del st.session_state[base_key]
+    c_key = f"c_{base_key}"
+    st.session_state[c_key] = st.session_state.get(c_key, 0) + 1
+
+    recalcular_totales_presupuesto_proyecto(proy_name)
+
+
+# ==========================================
+# 2. GENERADOR Y EXPORTADOR A EXCEL (.XLSX) PARA CLIENTES
+# ==========================================
 
 def generar_plantilla_cotizacion_venti(
     proyecto: str = "",
@@ -52,20 +556,17 @@ def generar_plantilla_cotizacion_venti(
     Incluye:
     - Hoja 1 ('Presupuesto'): Partidas (1, 2, 3...), Tareas (1.01, 1.02...), fórmulas de Valor Parcial,
       Sub Total (S/.), Mix (%), SUB TOTAL (Casco), Gastos generales, Gestión y supervisión de obras,
-      IGV (18% si incluir_igv=True o 0% / -% si False) y TOTAL integrado en Soles y Dólares.
-    - Hoja 2 ('Control de Pagos'): Cronograma de desembolsos por semanas integrado simétricamente
-      (sin cuadro de números de cuenta).
+      IGV (18% si incluir_igv=True o 0% si False) y TOTAL integrado en Soles y Dólares.
+    - Hoja 2 ('Control de Pagos'): Cronograma de desembolsos por semanas integrado simétricamente.
     """
     if not fecha:
         fecha = datetime.date.today().strftime("%Y-%m-%d")
 
-    # Si el usuario pasa porcentajes como 2 o 15 en lugar de 0.02 o 0.15, normalizar a decimal
     gg_dec = float(gg_pct) / 100.0 if float(gg_pct) > 1.0 else float(gg_pct)
     ges_dec = float(gestion_pct) / 100.0 if float(gestion_pct) > 1.0 else float(gestion_pct)
 
     wb = openpyxl.Workbook()
 
-    # Estilos consistentes con COTA
     font_family = "Calibri"
     f_title = Font(name=font_family, size=11, bold=True, color="262320")
     f_header = Font(name=font_family, size=10, bold=True, color="FFFFFF")
@@ -99,7 +600,6 @@ def generar_plantilla_cotizacion_venti(
     ws1.title = "Presupuesto"
     ws1.views.sheetView[0].showGridLines = True
 
-    # Fila 2: Proyecto y Fecha
     ws1["B2"] = "Proyecto"
     ws1["B2"].font = f_title
     ws1["C2"] = proyecto
@@ -108,7 +608,6 @@ def generar_plantilla_cotizacion_venti(
     ws1["I2"].font = f_task
     ws1["I2"].alignment = align_center
 
-    # Fila 4: Cliente y Tipo de Cambio (TC)
     ws1["B4"] = "Cliente:"
     ws1["B4"].font = f_title
     ws1["C4"] = cliente
@@ -121,7 +620,6 @@ def generar_plantilla_cotizacion_venti(
     ws1["J4"].number_format = "0.00"
     ws1["J4"].alignment = align_center
 
-    # Fila 5: Cabecera de tabla
     headers_h1 = [
         ("B", "Ítem"),
         ("C", "Descripción"),
@@ -180,7 +678,6 @@ def generar_plantilla_cotizacion_venti(
 
         curr_row += 1
 
-        # Filas de tareas (1.01, 1.02...)
         for sub in subitems:
             t_row = curr_row
             if isinstance(sub, dict):
@@ -198,7 +695,6 @@ def generar_plantilla_cotizacion_venti(
                 t_met = 1
                 t_vu = None
 
-            # Escribir código numérico con formato 0.00 para evitar triángulo verde de advertencia en Excel
             try:
                 ws1[f"B{t_row}"] = float(t_cod)
                 ws1[f"B{t_row}"].number_format = "0.00"
@@ -227,7 +723,6 @@ def generar_plantilla_cotizacion_venti(
             ws1[f"G{t_row}"].number_format = "#,##0.00"
             ws1[f"G{t_row}"].fill = fill_input
 
-            # Valor Parcial: convierte a Soles si Moneda es Dólares, sino Metrado * Valor Unitario
             ws1[f"H{t_row}"] = f'=IF(OR(UPPER(TRIM(D{t_row}))="DÓLARES",UPPER(TRIM(D{t_row}))="DOLARES",UPPER(TRIM(D{t_row}))="USD"),F{t_row}*G{t_row}*$J$4,F{t_row}*G{t_row})'
             ws1[f"H{t_row}"].alignment = align_right
             ws1[f"H{t_row}"].number_format = "#,##0.00"
@@ -293,17 +788,13 @@ def generar_plantilla_cotizacion_venti(
         ws1[f"{c_let}{row_gestion}"].font = f_footer
         ws1[f"{c_let}{row_gestion}"].border = border_cell
 
-    # Fila de IGV (18% si se marca la casilla en COTA, o 0% / -% si no se marca)
+    # Fila de IGV
     row_igv = row_gestion + 1
     ws1[f"C{row_igv}"] = "IGV"
     ws1[f"D{row_igv}"] = "Soles"
     ws1[f"D{row_igv}"].alignment = align_center
-    if incluir_igv:
-        ws1[f"F{row_igv}"] = 0.18
-        ws1[f"F{row_igv}"].number_format = "0%"
-    else:
-        ws1[f"F{row_igv}"] = 0.0
-        ws1[f"F{row_igv}"].number_format = "0%"
+    ws1[f"F{row_igv}"] = 0.18 if incluir_igv else 0.0
+    ws1[f"F{row_igv}"].number_format = "0%"
     ws1[f"F{row_igv}"].alignment = align_center
     ws1[f"H{row_igv}"] = f"=IF(ISNUMBER(F{row_igv}),(I{row_subtotal_casco}+H{row_gg}+H{row_gestion})*F{row_igv},0)"
     ws1[f"H{row_igv}"].number_format = "#,##0.00"
@@ -330,7 +821,7 @@ def generar_plantilla_cotizacion_venti(
         ws1[f"{c_let}{row_total}"].fill = fill_total
         ws1[f"{c_let}{row_total}"].border = border_cell
 
-    # Fila TOTAL Dólares (integrada simétricamente al cuadro con bordes y relleno)
+    # Fila TOTAL Dólares integrada simétricamente al cuadro
     row_usd = row_total + 1
     ws1[f"C{row_usd}"] = "TOTAL (USD)"
     ws1[f"D{row_usd}"] = "Dólares"
@@ -344,7 +835,6 @@ def generar_plantilla_cotizacion_venti(
         ws1[f"{c_let}{row_usd}"].fill = fill_usd
         ws1[f"{c_let}{row_usd}"].border = border_closing
 
-    # Anchos de columna Hoja 1
     col_widths_h1 = {
         "A": 3,
         "B": 9,
@@ -361,7 +851,7 @@ def generar_plantilla_cotizacion_venti(
         ws1.column_dimensions[col_l].width = w
 
     # ==========================================
-    # HOJA 2: CONTROL DE PAGOS (CRONOGRAMA SEMANAL SIN CUADRO DE CUENTAS)
+    # HOJA 2: CONTROL DE PAGOS
     # ==========================================
     ws2 = wb.create_sheet(title="Control de Pagos")
     ws2.views.sheetView[0].showGridLines = True
@@ -420,7 +910,6 @@ def generar_plantilla_cotizacion_venti(
         r_c += 1
     last_c_row = r_c - 1
 
-    # SUB TOTAL Contratistas
     row_sub_h2 = r_c
     ws2[f"B{row_sub_h2}"] = "SUB TOTAL"
     ws2[f"C{row_sub_h2}"] = "Soles"
@@ -435,7 +924,6 @@ def generar_plantilla_cotizacion_venti(
         ws2[f"{c_l}{row_sub_h2}"].fill = fill_subtotal
         ws2[f"{c_l}{row_sub_h2}"].border = border_cell
 
-    # Gestión y supervisión de obras en Hoja 2
     row_ges_h2 = row_sub_h2 + 1
     ws2[f"B{row_ges_h2}"] = "Gestión y supervisión de obras"
     ws2[f"C{row_ges_h2}"] = "Soles"
@@ -451,7 +939,6 @@ def generar_plantilla_cotizacion_venti(
         ws2[f"{c_l}{row_ges_h2}"].font = f_task
         ws2[f"{c_l}{row_ges_h2}"].border = border_cell
 
-    # Gastos Generales en Hoja 2
     row_gg_h2 = row_ges_h2 + 1
     ws2[f"B{row_gg_h2}"] = "Gastos Generales"
     ws2[f"C{row_gg_h2}"] = "Soles"
@@ -467,7 +954,6 @@ def generar_plantilla_cotizacion_venti(
         ws2[f"{c_l}{row_gg_h2}"].font = f_task
         ws2[f"{c_l}{row_gg_h2}"].border = border_cell
 
-    # TOTAL Hoja 2 (Soles)
     row_tot_h2 = row_gg_h2 + 1
     ws2[f"B{row_tot_h2}"] = "TOTAL"
     ws2[f"C{row_tot_h2}"] = "Soles"
@@ -482,7 +968,6 @@ def generar_plantilla_cotizacion_venti(
         ws2[f"{c_l}{row_tot_h2}"].fill = fill_total
         ws2[f"{c_l}{row_tot_h2}"].border = border_cell
 
-    # TOTAL Hoja 2 (Dólares) integrado simétricamente al cuadro
     row_usd_h2 = row_tot_h2 + 1
     ws2[f"B{row_usd_h2}"] = "TOTAL (USD)"
     ws2[f"C{row_usd_h2}"] = "Dólares"
@@ -521,15 +1006,21 @@ def generar_plantilla_cotizacion_venti(
 
 def exportar_proyecto_a_formato_venti(
     proy_name: str,
-    tc: float = 3.42,
+    tc: float = None,
     gg_pct_override: float = None,
     gestion_pct_override: float = None,
-    incluir_igv: bool = False,
+    incluir_igv: bool = None,
 ) -> bytes:
     """
-    Genera el archivo Excel de Cotización a partir de los datos actuales de un proyecto
-    en st.session_state (o con la estructura vacía si el proyecto aún no tiene partidas).
+    Exporta el presupuesto actual del proyecto en COTA a un archivo Excel (.xlsx)
+    listo para compartir con el cliente.
     """
+    params = obtener_parametros_presupuesto_proyecto(proy_name)
+    tc_final = tc if tc is not None else params["tc"]
+    gg_final = gg_pct_override if gg_pct_override is not None else (params["gg_pct"] / 100.0)
+    ges_final = gestion_pct_override if gestion_pct_override is not None else (params["utilidades_pct"] / 100.0)
+    igv_final = incluir_igv if incluir_igv is not None else params["incluir_igv"]
+
     df_p = st.session_state.get("proyectos", pd.DataFrame())
     proy_row = df_p[df_p["Nombre"] == proy_name].iloc[0] if not df_p.empty and proy_name in df_p["Nombre"].values else {}
 
@@ -546,7 +1037,7 @@ def exportar_proyecto_a_formato_venti(
     if not parts_proy.empty:
         for idx_p, (_, p_r) in enumerate(parts_proy.iterrows(), start=1):
             p_nom_raw = safe_str(p_r.get("Nombre_Partida", f"Partida {idx_p}"))
-            p_nom_clean = re.sub(r"^\d+[\.\-\s]+", "", p_nom_raw).strip() or p_nom_raw
+            p_nom_clean = limpiar_nombre_partida(p_nom_raw, idx_p)
 
             pinfo_m = df_pinfo[(df_pinfo["Proyecto"] == proy_name) & (df_pinfo["Nombre_Partida"] == p_nom_raw)] if not df_pinfo.empty else pd.DataFrame()
             monto_pact = safe_float(pinfo_m["Monto_Pactado"].iloc[0], 0.0) if not pinfo_m.empty else 0.0
@@ -555,8 +1046,10 @@ def exportar_proyecto_a_formato_venti(
             subitems = []
             if not tasks_m.empty:
                 for idx_t, (_, t_r) in enumerate(tasks_m.iterrows(), start=1):
+                    cod_item = f"{idx_p}.{idx_t:02d}"
                     t_nom_raw = safe_str(t_r.get("Tarea", ""))
-                    t_desc_clean = re.sub(r"^\d+\.\d+[\s\-:]*", "", t_nom_raw).strip() or t_nom_raw
+                    t_desc_clean = extraer_descripcion_tarea(t_nom_raw, cod_item)
+                    t_mon = safe_str(t_r.get("Moneda", "Soles")) or "Soles"
                     t_und = safe_str(t_r.get("Unidad", "glb")) or "glb"
                     t_met = safe_float(t_r.get("Metrado", 1.0), 1.0)
                     if t_met <= 0:
@@ -567,9 +1060,9 @@ def exportar_proyecto_a_formato_venti(
                         t_vu = round(t_ppto / t_met, 2)
 
                     subitems.append({
-                        "codigo": f"{idx_p}.{idx_t:02d}",
+                        "codigo": cod_item,
                         "descripcion": t_desc_clean,
-                        "moneda": "Soles",
+                        "moneda": t_mon,
                         "unidad": t_und,
                         "metrado": t_met,
                         "valor_unitario": t_vu,
@@ -583,8 +1076,6 @@ def exportar_proyecto_a_formato_venti(
                     "metrado": 1.0,
                     "valor_unitario": monto_pact if monto_pact > 0 else None,
                 })
-                for extra_i in range(2, 5):
-                    subitems.append(f"{idx_p}.{extra_i:02d}")
 
             partidas_precargadas.append({
                 "codigo": str(idx_p),
@@ -593,44 +1084,23 @@ def exportar_proyecto_a_formato_venti(
                 "subitems": subitems,
             })
 
-    subtotal_casco = 0.0
-    if partidas_precargadas:
-        for pp in partidas_precargadas:
-            for si in pp["subitems"]:
-                if isinstance(si, dict) and si.get("valor_unitario"):
-                    subtotal_casco += safe_float(si["metrado"], 1.0) * safe_float(si["valor_unitario"], 0.0)
-
-    gg_ppto = safe_float(proy_row.get("GG_Presupuesto", 0.0), 0.0)
-    util_ppto = safe_float(proy_row.get("Utilidades", 0.0), 0.0)
-
-    if gg_pct_override is not None:
-        gg_pct = gg_pct_override
-    else:
-        gg_pct = round(gg_ppto / subtotal_casco, 4) if subtotal_casco > 0 and gg_ppto > 0 else 0.02
-
-    if gestion_pct_override is not None:
-        gestion_pct = gestion_pct_override
-    else:
-        gestion_pct = round(util_ppto / subtotal_casco, 4) if subtotal_casco > 0 and util_ppto > 0 else 0.15
-
     return generar_plantilla_cotizacion_venti(
         proyecto=proy_name,
         cliente=cliente,
-        tc=tc,
+        tc=tc_final,
         fecha=fecha,
         partidas_precargadas=partidas_precargadas if partidas_precargadas else None,
-        gg_pct=gg_pct,
-        gestion_pct=gestion_pct,
-        incluir_igv=incluir_igv,
+        gg_pct=gg_final,
+        gestion_pct=ges_final,
+        incluir_igv=igv_final,
     )
 
 
 # ==========================================
-# 2. LECTOR E INTERPRETADOR INTELIGENTE DE PRESUPUESTO
+# 3. LECTOR E INTERPRETADOR INTELIGENTE DE PRESUPUESTO EXTERNO
 # ==========================================
 
 def _clean_cell_str(val) -> str:
-    """Convierte celda a string limpio ignorando errores de Excel como #DIV/0!, #VALUE!, etc."""
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
     s = str(val).strip()
@@ -642,11 +1112,6 @@ def _clean_cell_str(val) -> str:
 
 
 def _parse_number_or_pct(val, default=0.0):
-    """
-    Extrae un float de una celda que puede contener moneda ('S/ 1,200.50'),
-    porcentaje ('15%', '0.15', '-%') o formato latino ('3,42').
-    Retorna (valor_float, es_porcentaje_explicito).
-    """
     s = _clean_cell_str(val)
     if not s or s in ["-%", "-", "—"]:
         return default, False
@@ -663,13 +1128,6 @@ def _parse_number_or_pct(val, default=0.0):
 
 
 def _classify_item_code(raw_val) -> tuple:
-    """
-    Clasifica el código de la columna Ítem (ej. '1', '2', '1.01', '2.05').
-    Retorna:
-      ('partida', '1', None) para códigos de partida principal (enteros: 1, 2, 3, 01, 02)
-      ('tarea', '1', '1.01') para sub-ítems / tareas con decimal (1.01, 1.02, 2.01)
-      (None, None, None) si no es un código de ítem válido.
-    """
     if raw_val is None or (isinstance(raw_val, float) and pd.isna(raw_val)):
         return None, None, None
 
@@ -711,10 +1169,6 @@ def _classify_item_code(raw_val) -> tuple:
 
 
 def _rows_from_input(file_or_df) -> list:
-    """
-    Convierte cualquier fuente de entrada (UploadedFile, bytes, ruta str, io.BytesIO o DataFrame)
-    en una lista de filas (listas de valores de celda).
-    """
     if isinstance(file_or_df, pd.DataFrame):
         return file_or_df.values.tolist()
 
@@ -780,21 +1234,6 @@ def _rows_from_input(file_or_df) -> list:
 def parsear_cotizacion_venti(file_or_df) -> dict:
     """
     Lee e interpreta un archivo Excel (.xlsx) o CSV con el formato de presupuesto de COTA.
-    Retorna un diccionario estructurado con:
-      - 'proyecto': str
-      - 'cliente': str
-      - 'fecha': str
-      - 'tc': float
-      - 'partidas': list of dicts [{'codigo', 'nombre', 'nombre_completo', 'monto_pactado', 'mix_pct', 'tareas': [...]}]
-      - 'subtotal_casco': float
-      - 'gg_pct': float (porcentaje ej. 2.0)
-      - 'gg_monto': float (monto en Soles para GG_Presupuesto)
-      - 'utilidades_pct': float (porcentaje ej. 15.0)
-      - 'utilidades_monto': float (monto en Soles para Utilidades / Gestión y supervisión)
-      - 'igv_pct': float
-      - 'igv_monto': float
-      - 'presupuesto_total': float (TOTAL en Soles)
-      - 'presupuesto_dolares': float (TOTAL en Dólares)
     """
     rows = _rows_from_input(file_or_df)
 
@@ -861,7 +1300,6 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
     if header_row_idx is None:
         header_row_idx = 4
 
-    # Extraer metadatos de las filas superiores (Proyecto, Cliente, Fecha, TC)
     for r_i in range(0, min(header_row_idx + 1, len(rows))):
         row = rows[r_i]
         for c_i, cell in enumerate(row):
@@ -1120,7 +1558,6 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
             p_item["mix_pct"] = round((p_item["monto_pactado"] / subtotal_casco) * 100.0, 2)
     resultado["partidas"] = partidas_final
 
-    # Calcular Gastos Generales (GG)
     if raw_gg_amount > 0:
         gg_monto = round(raw_gg_amount, 2)
         gg_pct = round((raw_gg_factor_or_val * 100.0) if (raw_gg_factor_or_val and raw_gg_is_pct) else ((gg_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else 0.0), 2)
@@ -1138,7 +1575,6 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
     resultado["gg_pct"] = gg_pct
     resultado["gg_monto"] = gg_monto
 
-    # Calcular Gestión y Supervisión de Obras (Utilidades)
     if raw_util_amount > 0:
         util_monto = round(raw_util_amount, 2)
         util_pct = round((raw_util_factor_or_val * 100.0) if (raw_util_factor_or_val and raw_util_is_pct) else ((util_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else 0.0), 2)
@@ -1156,7 +1592,6 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
     resultado["utilidades_pct"] = util_pct
     resultado["utilidades_monto"] = util_monto
 
-    # Calcular IGV
     base_imponible = subtotal_casco + gg_monto + util_monto
     if raw_igv_amount > 0:
         igv_monto = round(raw_igv_amount, 2)
@@ -1183,10 +1618,6 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
     return resultado
 
 
-# ==========================================
-# 3. APLICACIÓN / IMPORTACIÓN AL PROYECTO EN COTA APP
-# ==========================================
-
 def aplicar_cotizacion_a_proyecto(
     proy_name: str,
     parsed_data: dict,
@@ -1207,10 +1638,12 @@ def aplicar_cotizacion_a_proyecto(
     if "partidas" not in st.session_state:
         st.session_state.partidas = pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
 
+    for col in COLS_PROY:
+        if col not in st.session_state.proyectos.columns:
+            st.session_state.proyectos[col] = ""
     for col in COLS_TASKS:
         if col not in st.session_state.tasks.columns:
             st.session_state.tasks[col] = ""
-
     for col in COLS_P_INFO:
         if col not in st.session_state.p_info.columns:
             st.session_state.p_info[col] = ""
@@ -1224,6 +1657,14 @@ def aplicar_cotizacion_a_proyecto(
             st.session_state.proyectos.at[idx_p, "Utilidades"] = float(parsed_data["utilidades_monto"])
         if parsed_data.get("gg_monto", 0.0) >= 0:
             st.session_state.proyectos.at[idx_p, "GG_Presupuesto"] = float(parsed_data["gg_monto"])
+        if parsed_data.get("tc", 0.0) > 0:
+            st.session_state.proyectos.at[idx_p, "TC_Presupuesto"] = float(parsed_data["tc"])
+        if parsed_data.get("gg_pct", 0.0) >= 0:
+            st.session_state.proyectos.at[idx_p, "GG_Pct"] = float(parsed_data["gg_pct"])
+        if parsed_data.get("utilidades_pct", 0.0) >= 0:
+            st.session_state.proyectos.at[idx_p, "Utilidades_Pct"] = float(parsed_data["utilidades_pct"])
+        st.session_state.proyectos.at[idx_p, "Incluir_IGV"] = bool(parsed_data.get("igv_pct", 0.0) > 0)
+
         cli_parsed = safe_str(parsed_data.get("cliente", ""))
         if cli_parsed and not safe_str(st.session_state.proyectos.at[idx_p, "Cliente"]):
             st.session_state.proyectos.at[idx_p, "Cliente"] = cli_parsed
@@ -1281,27 +1722,26 @@ def aplicar_cotizacion_a_proyecto(
         partidas_importadas += 1
 
         for idx_t, t in enumerate(p.get("tareas", []), start=1):
-            t_cod = safe_str(t.get("codigo", ""))
+            t_cod = safe_str(t.get("codigo", "")) or f"{p_code}.{idx_t:02d}"
             t_desc = safe_str(t.get("descripcion", ""))
             if t_cod and not t_desc.startswith(t_cod):
                 nombre_tarea = f"{t_cod} {t_desc}".strip()
             else:
                 nombre_tarea = t_desc or f"Tarea {t_cod}"
 
-            moneda_t = safe_str(t.get("moneda", "Soles"))
+            moneda_t = safe_str(t.get("moneda", "Soles")) or "Soles"
             unidad_t = safe_str(t.get("unidad", "glb")) or "glb"
             metrado_t = float(safe_float(t.get("metrado", 1.0), 1.0))
-            vu_soles_t = float(safe_float(t.get("valor_unitario_soles", t.get("valor_unitario", 0.0)), 0.0))
+            vu_orig_t = float(safe_float(t.get("valor_unitario", 0.0), 0.0))
             ppto_soles_t = float(safe_float(t.get("presupuesto_soles", 0.0), 0.0))
 
-            notas_t = f"Ppto: S/ {ppto_soles_t:,.2f} ({metrado_t:g} {unidad_t} x S/ {vu_soles_t:,.2f})"
-            if any(d in moneda_t.lower() for d in ["dolar", "dólar", "usd", "$"]):
-                notas_t += f" [Cotizado en USD @ TC {parsed_data.get('tc', 3.42):.2f}]"
+            notas_t = f"Ppto: S/ {ppto_soles_t:,.2f} ({metrado_t:g} {unidad_t} x {vu_orig_t:,.2f} {moneda_t})"
 
             nuevas_tasks_rows.append({
                 "Proyecto": proy_name,
                 "Partida": p_nom_final,
                 "Orden": idx_t,
+                "Codigo_Item": t_cod,
                 "Tarea": nombre_tarea,
                 "Especialidad": "Ninguna",
                 "Contratista": "",
@@ -1313,9 +1753,10 @@ def aplicar_cotizacion_a_proyecto(
                 "Permitir_Cruce": False,
                 "Dependencia": "",
                 "Notas": notas_t,
+                "Moneda": moneda_t,
                 "Unidad": unidad_t,
                 "Metrado": metrado_t,
-                "Valor_Unitario": vu_soles_t,
+                "Valor_Unitario": vu_orig_t,
                 "Presupuesto": ppto_soles_t,
             })
             tareas_importadas += 1

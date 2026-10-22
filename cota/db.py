@@ -21,14 +21,15 @@ COLS_PROY = [
     'Nombre', 'Encargado', 'Ubicación', 'Estado', 'Inicio', 'Fin', 'Notas',
     'Color', 'Cliente', 'Presupuesto', 'Utilidades', 'GG_Presupuesto',
     'Archivado', 'Metodologia', 'Division', 'Tipo_Proyecto', 'Num_Pisos', 'Num_Sotanos',
-    'Presupuesto_FFE', 'Honorarios_Diseno'
+    'Presupuesto_FFE', 'Honorarios_Diseno',
+    'TC_Presupuesto', 'GG_Pct', 'Utilidades_Pct', 'Incluir_IGV'
 ]
 
 COLS_TASKS = [
-    'Proyecto', 'Partida', 'Orden', 'Tarea', 'Especialidad', 'Contratista',
+    'Proyecto', 'Partida', 'Orden', 'Codigo_Item', 'Tarea', 'Especialidad', 'Contratista',
     'Estado', 'Inicio', 'Fin', 'Causa_Cumplimiento', 'Culpa_Contratista',
     'Permitir_Cruce', 'Dependencia', 'Notas',
-    'Unidad', 'Metrado', 'Valor_Unitario', 'Presupuesto'
+    'Moneda', 'Unidad', 'Metrado', 'Valor_Unitario', 'Presupuesto'
 ]
 
 COLS_MAESTRO = ['ID_Contratista', 'Especialidad', 'Ubicación_Base', 'Notas']
@@ -312,11 +313,20 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
     # Asegurar que todas las columnas esperadas existan con valores por defecto
     for col in columnas:
         if col not in df.columns:
-            if col in ['Archivado', 'Check', 'Aprobado_Cliente', 'Culpa_Contratista', 'Permitir_Cruce']:
+            if col in ['Archivado', 'Check', 'Aprobado_Cliente', 'Culpa_Contratista', 'Permitir_Cruce', 'Incluir_IGV']:
                 df[col] = False
             elif col in ['Presupuesto', 'Utilidades', 'GG_Presupuesto', 'Presupuesto_FFE', 'Honorarios_Diseno',
-                         'Costo_Estimado', 'Costo_Real', 'Precio_Unit_Estimado', 'Monto_Pactado', 'Monto_Cobrado', 'Monto']:
+                         'Costo_Estimado', 'Costo_Real', 'Precio_Unit_Estimado', 'Monto_Pactado', 'Monto_Cobrado', 'Monto',
+                         'Metrado', 'Valor_Unitario']:
                 df[col] = 0.0
+            elif col == 'TC_Presupuesto':
+                df[col] = 3.42
+            elif col == 'GG_Pct':
+                df[col] = 2.0
+            elif col == 'Utilidades_Pct':
+                df[col] = 15.0
+            elif col == 'Moneda' and pestaña == 'tasks':
+                df[col] = "Soles"
             elif col in ['Orden', 'Num_Pisos', 'Num_Sotanos', 'Avance_Pct']:
                 df[col] = 0
             elif col == 'Division':
@@ -754,6 +764,11 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
                 n_t[c] = None
 
         st.session_state[master_state_key] = pd.concat([master_df, n_t[master_df.columns]], ignore_index=True)
+
+        if master_state_key == 'tasks':
+            for k in list(st.session_state.keys()):
+                if str(k).startswith("base_df_ppto_"):
+                    del st.session_state[k]
 
     # 7. Incrementar contador de widget para forzar clave nueva y evitar duplicaciones
     c_key = f"c_{base_key}"

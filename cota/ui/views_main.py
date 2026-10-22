@@ -172,21 +172,17 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                     fase_actual_kpi = pend_fp.iloc[0]['Fase'] if not pend_fp.empty else "08. Cierre & Entrega Final"
     prom_avance = sum(avances) / len(avances) if avances else 0.0
 
-    # 1.C FF&E (Por aprobar / Presupuesto FF&E)
-    ffe_propuestos = 0
-    ffe_total_items = 0
-    monto_ffe_pend = 0.0
-    monto_ffe_total = 0.0
-    if 'materiales' in st.session_state and not st.session_state.materiales.empty and 'Proyecto' in st.session_state.materiales.columns:
-        df_m_act = st.session_state.materiales[st.session_state.materiales['Proyecto'].isin(nombres_kpi)].copy()
-        ffe_total_items = len(df_m_act)
-        if not df_m_act.empty:
-            df_m_act['Costo_Estimado'] = pd.to_numeric(df_m_act.get('Costo_Estimado', 0), errors='coerce').fillna(0.0)
-            monto_ffe_total = float(df_m_act['Costo_Estimado'].sum())
-            if 'Estado' in df_m_act.columns:
-                mask_ffe_pend = df_m_act['Estado'].astype(str).str.contains('Propuesto|Cotizado', case=False, na=False)
-                ffe_propuestos = int(mask_ffe_pend.sum())
-                monto_ffe_pend = float(df_m_act.loc[mask_ffe_pend, 'Costo_Estimado'].sum())
+    # 1.C Partidas y Tareas del Presupuesto
+    num_partidas_kpi = 0
+    num_tareas_kpi = 0
+    monto_partidas_kpi = 0.0
+    if 'partidas' in st.session_state and not st.session_state.partidas.empty and 'Proyecto' in st.session_state.partidas.columns:
+        num_partidas_kpi = len(st.session_state.partidas[st.session_state.partidas['Proyecto'].isin(nombres_kpi)])
+    if 'tasks' in st.session_state and not st.session_state.tasks.empty and 'Proyecto' in st.session_state.tasks.columns:
+        num_tareas_kpi = len(st.session_state.tasks[st.session_state.tasks['Proyecto'].isin(nombres_kpi)])
+    if 'p_info' in st.session_state and not st.session_state.p_info.empty and 'Proyecto' in st.session_state.p_info.columns:
+        df_pi_act = st.session_state.p_info[st.session_state.p_info['Proyecto'].isin(nombres_kpi)]
+        monto_partidas_kpi = float(pd.to_numeric(df_pi_act.get('Monto_Pactado', 0), errors='coerce').fillna(0.0).sum())
 
     # 1.D Hitos por Cobrar
     cobros_pend = 0
@@ -230,9 +226,8 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
         if es_proy_unico and fases_len_tot > 0
         else f"{fases_ok_tot}/{fases_len_tot} fases aprobadas" if fases_len_tot > 0 else "Promedio de fases aprobadas"
     )
-    col_ffe = "#D98A2B" if ffe_propuestos > 0 else "#4A7C59"
-    val_ffe = format_currency(monto_ffe_pend) if monto_ffe_pend > 0 else f"{ffe_propuestos} ítems"
-    sub_ffe = f"{ffe_propuestos}/{ffe_total_items} por aprobar · Total: {format_currency(monto_ffe_total)}"
+    val_ppto_part = format_currency(monto_partidas_kpi) if monto_partidas_kpi > 0 else f"{num_partidas_kpi} partidas"
+    sub_ppto_part = f"{num_partidas_kpi} partida(s) · {num_tareas_kpi} tarea(s) en ppto."
 
     col_cob = "#C85A32" if (cobros_pend > 0 or saldo_hitos_cobrar > 0) else "#4A7C59"
     val_cob = format_currency(saldo_hitos_cobrar) if monto_pactado_cobros > 0 else str(cobros_pend)
@@ -242,13 +237,13 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
         card_1,
         {"title": "Resumen Cartera", "value": format_currency(tot_cartera), "subtitle": sub_cartera},
         {"title": "Avance Diseño", "value": f"{prom_avance:.0f}%", "subtitle": sub_avance, "border_color": "#4A7C59", "text_color": "#4A7C59"},
-        {"title": "FF&E por Aprobar", "value": val_ffe, "subtitle": sub_ffe, "border_color": col_ffe, "text_color": col_ffe},
+        {"title": "Presupuesto Casco", "value": val_ppto_part, "subtitle": sub_ppto_part, "border_color": "#D98A2B", "text_color": "#D98A2B"},
         {"title": "Hitos por Cobrar", "value": val_cob, "subtitle": sub_cob, "border_color": col_cob, "text_color": col_cob},
     ])
 
     # Detalle rápido desplegable cuando se filtra un proyecto específico
     if es_proy_unico:
-        with st.expander(f"📋 Ver detalle de Hitos de Cobro y FF&E de '{proy_kpi_sel}'", expanded=False):
+        with st.expander(f"📋 Ver detalle de Hitos de Cobro y Partidas de Presupuesto de '{proy_kpi_sel}'", expanded=False):
             cd1, cd2 = st.columns(2)
             with cd1:
                 st.markdown("##### 💰 Hitos de Cobro del Proyecto")
@@ -262,16 +257,16 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 else:
                     st.caption("Sin hitos de cobro registrados para este proyecto.")
             with cd2:
-                st.markdown("##### 🛋️ Especificaciones FF&E del Proyecto")
-                df_m_det = st.session_state.materiales[st.session_state.materiales['Proyecto'] == proy_kpi_sel] if 'materiales' in st.session_state else pd.DataFrame()
-                if not df_m_det.empty:
+                st.markdown("##### 📐 Partidas de Presupuesto del Proyecto")
+                df_pi_det = st.session_state.p_info[st.session_state.p_info['Proyecto'] == proy_kpi_sel] if 'p_info' in st.session_state else pd.DataFrame()
+                if not df_pi_det.empty:
                     st.dataframe(
-                        df_m_det[['Ambiente', 'Material', 'Costo_Estimado', 'Estado']],
+                        df_pi_det[['Nombre_Partida', 'Monto_Pactado']].rename(columns={'Nombre_Partida': 'Partida', 'Monto_Pactado': 'Sub Total (S/)'}),
                         use_container_width=True,
                         hide_index=True
                     )
                 else:
-                    st.caption("Sin elementos FF&E registrados para este proyecto.")
+                    st.caption("Sin partidas de presupuesto registradas para este proyecto.")
 
     st.divider()
 
