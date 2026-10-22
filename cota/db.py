@@ -455,13 +455,19 @@ def obtener_banco_fases() -> list[dict]:
     if "banco_fases" not in st.session_state or not st.session_state.banco_fases:
         st.session_state.banco_fases = [dict(f) for f in BANCO_FASES_DEFAULT]
 
+    # Eliminar cualquier fase residual de FF&E
+    st.session_state.banco_fases = [
+        f for f in st.session_state.banco_fases
+        if "ff&e" not in str(f.get("Fase", "")).lower() and "ffe" not in str(f.get("Fase", "")).lower()
+    ]
+
     nombres_en_banco = {f["Fase"] for f in st.session_state.banco_fases}
 
     # Incorporar fases personalizadas que ya existan en la tabla fases de la BD
     if "fases" in st.session_state and isinstance(st.session_state.fases, pd.DataFrame) and not st.session_state.fases.empty:
         for _, r in st.session_state.fases.iterrows():
             f_nom = str(r.get("Fase", "")).strip()
-            if f_nom and f_nom not in nombres_en_banco:
+            if f_nom and "ff&e" not in f_nom.lower() and "ffe" not in f_nom.lower() and f_nom not in nombres_en_banco:
                 orden_max = max((item.get("Orden", 0) for item in st.session_state.banco_fases), default=0) + 1
                 st.session_state.banco_fases.append({
                     "Orden": int(r.get("Orden", orden_max) or orden_max),

@@ -520,6 +520,57 @@ def get_app_css() -> str:
             margin-bottom: 8px !important;
         }
 
+        /* Título del expander con barra de avance pegada a la derecha */
+        div[data-testid="stExpander"] summary {
+            display: flex !important;
+            align-items: center !important;
+        }
+
+        div[data-testid="stExpander"] summary div[data-testid="stMarkdownContainer"] {
+            width: 100% !important;
+            flex-grow: 1 !important;
+        }
+
+        div[data-testid="stExpander"] summary div[data-testid="stMarkdownContainer"] p {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            width: 100% !important;
+            margin: 0 !important;
+        }
+
+        div[data-testid="stExpander"] summary code {
+            margin-left: auto !important;
+            font-family: 'JetBrains Mono', monospace !important;
+            font-size: 11.5px !important;
+            font-weight: 700 !important;
+            background-color: var(--bg-card, #FAF8F5) !important;
+            border: 1px solid var(--border-sand, #DFD9CE) !important;
+            border-radius: 6px !important;
+            padding: 2px 8px !important;
+            color: var(--text-charcoal, #262320) !important;
+            white-space: nowrap !important;
+        }
+
+        /* Botones de cabecera de acordeón de Estado */
+        div[class*="st-key-btn_est_"] button {
+            text-align: left !important;
+            justify-content: flex-start !important;
+            font-weight: 700 !important;
+            font-size: 11.5px !important;
+            letter-spacing: 0.03em !important;
+            padding: 0.35rem 0.65rem !important;
+            background-color: var(--bg-stone, #F5F3EF) !important;
+            border: 1px solid var(--border-sand, #DFD9CE) !important;
+            color: var(--text-charcoal, #262320) !important;
+        }
+
+        div[class*="st-key-btn_est_"] button:hover {
+            border-color: var(--clay-primary, #C85A32) !important;
+            background-color: var(--bg-card, #FAF8F5) !important;
+            color: var(--clay-primary, #C85A32) !important;
+        }
+
         div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
             border: 1px solid var(--border-sand) !important;
             border-radius: 10px !important;

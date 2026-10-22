@@ -128,6 +128,14 @@ def _proy_tiene_anio(row, anio_str: str) -> bool:
     return False
 
 
+def _generar_barra_avance(pct: int, length: int = 10) -> str:
+    """Genera una barra gráfica de progreso unicode con porcentaje."""
+    p_val = max(0, min(100, int(pct)))
+    filled = int(round(length * p_val / 100))
+    bar = "█" * filled + "░" * (length - filled)
+    return f"{bar} {p_val}%"
+
+
 def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
     """Portafolio de proyectos activos con KPIs ejecutivos filtrables por proyecto, carpetas y estados."""
     p_vis_all = get_proyectos_activos(st.session_state.proyectos)
@@ -359,8 +367,8 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 st.markdown("##### Fases Activas del Proyecto (Banco de Fases)")
                 fases_sel_nuevo = st.multiselect(
                     "Selecciona las fases que aplican a este proyecto:",
-                    options=nombres_banco_all,
-                    default=nombres_banco_def,
+                    options=[f for f in nombres_banco_all if "ff&e" not in f.lower() and "ffe" not in f.lower()],
+                    default=[f for f in nombres_banco_def if "ff&e" not in f.lower() and "ffe" not in f.lower()],
                 )
 
                 st.markdown("##### Presupuestos Iniciales (Opcional)")
@@ -369,8 +377,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 p_util = col_m2.number_input("Utilidades Proyectadas (S/)", value=0.0, help="Si se deja en 0, se calcula el 20% del contrato por defecto.")
                 col_m3, col_m4 = st.columns(2)
                 p_hon = col_m3.number_input("Honorarios Diseño (S/)", value=0.0)
-                p_ffe = col_m4.number_input("Ppto FF&E / Muebles (S/)", value=0.0)
-                p_gg = st.number_input("Ppto Caja Chica (S/)", value=0.0)
+                p_gg = col_m4.number_input("Ppto Caja Chica (S/)", value=0.0)
 
                 if st.form_submit_button("CREAR PROYECTO", type="primary", use_container_width=True):
                     if not pn:
@@ -379,7 +386,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                         st.error(f"Ya existe un proyecto con el nombre '{pn}'. Elige un nombre único.")
                     else:
                         util_final = p_util if p_util > 0 else (p_presupuesto * 0.20)
-                        n_p = pd.DataFrame([{
+                        n_p_dict = {
                             'Nombre': pn,
                             'Encargado': pe,
                             'Ubicación': p_ubi,
@@ -387,6 +394,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                             'Inicio': fecha_hoy.strftime('%Y-%m-%d'),
                             'Fin': (fecha_hoy + datetime.timedelta(days=90)).strftime('%Y-%m-%d'),
                             'Color': p_color,
+                            'Cliente': p_cliente,
                             'Presupuesto': p_presupuesto,
                             'Utilidades': util_final,
                             'GG_Presupuesto': p_gg,
@@ -396,14 +404,22 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                             'Tipo_Proyecto': p_tipo,
                             'Num_Pisos': 0,
                             'Num_Sotanos': 0,
-                            'Presupuesto_FFE': p_ffe,
+                            'Presupuesto_FFE': 0.0,
                             'Honorarios_Diseno': p_hon,
-                            'Cliente': p_cliente
-                        }])
+                            'Notas': '',
+                            'TC_Presupuesto': 3.42,
+                            'GG_Pct': 2.0,
+                            'Utilidades_Pct': 15.0,
+                            'Incluir_IGV': False,
+                        }
+                        for col in COLS_PROY:
+                            if col not in n_p_dict:
+                                n_p_dict[col] = False if col in ['Archivado', 'Incluir_IGV'] else (0.0 if 'Ppto' in col or 'Pct' in col or col in ['Presupuesto', 'Utilidades', 'GG_Presupuesto', 'Presupuesto_FFE', 'Honorarios_Diseno'] else "")
+                        n_p = pd.DataFrame([n_p_dict])
                         st.session_state.proyectos = pd.concat([st.session_state.proyectos, n_p[COLS_PROY]], ignore_index=True)
 
-                        # Sembrar fases seleccionadas del Banco de Fases
-                        fases_a_sembrar = fases_sel_nuevo if fases_sel_nuevo else nombres_banco_def
+                        # Sembrar fases seleccionadas del Banco de Fases (sin FF&E)
+                        fases_a_sembrar = [f for f in (fases_sel_nuevo if fases_sel_nuevo else nombres_banco_def) if "ff&e" not in f.lower() and "ffe" not in f.lower()]
                         nuevas_fases = sembrar_fases_default(pn, fecha_hoy, fases_seleccionadas=fases_a_sembrar)
                         if 'fases' not in st.session_state or st.session_state.fases.empty:
                             st.session_state.fases = nuevas_fases
@@ -531,7 +547,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                             st.error("Indica el nombre del proyecto para importar el presupuesto.")
                         else:
                             if destino_opt == "nuevo" or proy_dest not in st.session_state.proyectos["Nombre"].tolist():
-                                n_proy_df = pd.DataFrame([{
+                                n_proy_dict = {
                                     "Nombre": proy_dest,
                                     "Encargado": lista_socios[0] if lista_socios else "Alvaro",
                                     "Ubicación": "Lima",
@@ -551,7 +567,16 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                     "Presupuesto_FFE": 0.0,
                                     "Honorarios_Diseno": 0.0,
                                     "Cliente": cli_dest if destino_opt == "nuevo" else parsed_p.get("cliente", ""),
-                                }])
+                                    "Notas": "",
+                                    "TC_Presupuesto": parsed_p.get("tc", 3.42),
+                                    "GG_Pct": parsed_p.get("gg_pct", 2.0),
+                                    "Utilidades_Pct": parsed_p.get("utilidades_pct", 15.0),
+                                    "Incluir_IGV": parsed_p.get("incluir_igv", False),
+                                }
+                                for col in COLS_PROY:
+                                    if col not in n_proy_dict:
+                                        n_proy_dict[col] = False if col in ['Archivado', 'Incluir_IGV'] else 0.0
+                                n_proy_df = pd.DataFrame([n_proy_dict])
                                 st.session_state.proyectos = pd.concat([st.session_state.proyectos, n_proy_df[COLS_PROY]], ignore_index=True)
                                 nuevas_f = sembrar_fases_default(proy_dest, fecha_hoy, fases_seleccionadas=nombres_banco_def)
                                 if "fases" not in st.session_state or st.session_state.fases.empty:
@@ -626,9 +651,11 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 est_slug = est_clean.replace(" ", "_").replace("ó", "o").replace("í", "i").replace("á", "a")
                 btn_key = f"btn_est_{d_slug}_{est_slug}"
 
-                if st.button(label_header, key=btn_key, use_container_width=True, help="Click para ocultar o desplegar esta sección"):
-                    st.session_state[state_key] = not is_open
-                    st.rerun()
+                c_est_col, _ = st.columns([1.25, 4.75])
+                with c_est_col:
+                    if st.button(label_header, key=btn_key, use_container_width=True, help="Click para ocultar o desplegar esta sección"):
+                        st.session_state[state_key] = not is_open
+                        st.rerun()
 
                 if not is_open:
                     continue
@@ -657,12 +684,12 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                     cli_str = f" · Cliente: {cli_val}" if cli_val else ""
                     div_val = safe_str(proy.get('Division', 'General'))
                     tipo_val = safe_str(proy.get('Tipo_Proyecto', 'Diseño'))
-                    tit_expander = f"🏛️ {p_nom.upper()}{cli_str}  |  📁 {div_val} · {tipo_val}  |  Líder: {proy.get('Encargado', 'N/A')}  |  Avance: {pct_avance}%"
+                    barra_avance = _generar_barra_avance(pct_avance, 10)
+                    tit_expander = f"🏛️ **{p_nom.upper()}**{cli_str}  ·  📁 {div_val} · {tipo_val}  ·  Líder: {proy.get('Encargado', 'N/A')}  `{barra_avance}`"
 
                     with st.expander(tit_expander, expanded=es_proy_unico):
                         ppto_p = safe_float(proy.get('Presupuesto', 0))
                         hon_p = safe_float(proy.get('Honorarios_Diseno', 0))
-                        ffe_p = safe_float(proy.get('Presupuesto_FFE', 0))
                         ubi_p = safe_str(proy.get('Ubicación', 'Lima'))
                         ini_p = format_date(proy.get('Inicio'))
                         fin_p = format_date(proy.get('Fin'))
@@ -682,7 +709,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Fase Actual</span><br><b style='color:#C85A32;'>{fase_actual_str}</b></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Tareas en Proceso</span><br><b style='color:#262320; font-family:monospace;'>{info_t['en_proceso']} en proceso</b> <span style='color:#6E665E; font-size:11px;'>({info_t['completadas']}/{info_t['total']} listas)</span></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Ppto. Contrato</span><br><b style='color:#262320; font-family:monospace;'>{format_currency(ppto_p)}</b></div>"
-                            f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Honorarios / FF&E</span><br><b style='color:#4A7C59; font-family:monospace;'>{format_currency(hon_p)} / {format_currency(ffe_p)}</b></div>"
+                            f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Honorarios Diseño</span><br><b style='color:#4A7C59; font-family:monospace;'>{format_currency(hon_p)}</b></div>"
                             f"</div>"
                             f"<div style='margin-top: 10px; background: #EFECE6; border-radius: 4px; height: 6px; overflow: hidden;'>"
                             f"<div style='background: {col_st}; width: {pct_avance}%; height: 100%;'></div>"
@@ -723,12 +750,11 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                     v_p = st.number_input("Ppto Total (S/)", value=safe_float(proy.get('Presupuesto', 0)))
                                     v_util = st.number_input("Utilidades Proyectadas (S/)", value=safe_float(proy.get('Utilidades', 0)))
                                     v_hon = st.number_input("Honorarios Diseño (S/)", value=safe_float(proy.get('Honorarios_Diseno', 0)))
-                                    v_ffe = st.number_input("Ppto FF&E (S/)", value=safe_float(proy.get('Presupuesto_FFE', 0)))
                                     v_gg = st.number_input("Ppto Caja Chica (S/)", value=safe_float(proy.get('GG_Presupuesto', 0)))
 
                                     if st.form_submit_button("ACTUALIZAR DATOS"):
                                         if n_nom != p_nom:
-                                            renombrar_proyecto(p_nom, n_nom)
+                                             renombrar_proyecto(p_nom, n_nom)
 
                                         st.session_state.proyectos.at[idx_p, 'Nombre'] = n_nom
                                         st.session_state.proyectos.at[idx_p, 'Cliente'] = n_cli
@@ -741,7 +767,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                         st.session_state.proyectos.at[idx_p, 'Presupuesto'] = v_p
                                         st.session_state.proyectos.at[idx_p, 'Utilidades'] = v_util
                                         st.session_state.proyectos.at[idx_p, 'Honorarios_Diseno'] = v_hon
-                                        st.session_state.proyectos.at[idx_p, 'Presupuesto_FFE'] = v_ffe
+                                        st.session_state.proyectos.at[idx_p, 'Presupuesto_FFE'] = 0.0
                                         st.session_state.proyectos.at[idx_p, 'GG_Presupuesto'] = v_gg
                                         clear_base_dfs()
                                         st.success("Datos actualizados correctamente.")

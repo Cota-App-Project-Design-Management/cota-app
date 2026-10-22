@@ -63,9 +63,9 @@ def test_to_bool():
 
 def test_sembrar_fases_default():
     df_fases = sembrar_fases_default("Casa Prueba", datetime.date(2026, 1, 1))
-    assert len(df_fases) == 8
+    assert len(df_fases) == 7
     assert "01. Levantamiento & Brief" in df_fases['Fase'].tolist()
-    assert "08. Cierre & Entrega Final" in df_fases['Fase'].tolist()
+    assert "07. Cierre & Entrega Final" in df_fases['Fase'].tolist()
     assert all(df_fases['Proyecto'] == "Casa Prueba")
 
 
