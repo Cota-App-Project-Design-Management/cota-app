@@ -507,6 +507,19 @@ def test_kpi_proyectos_activos_calculo():
     assert subtitle == "2 en proceso · 1 en planificación"
 
 
+def test_status_accordion_labels():
+    is_open = True
+    flecha = "▲" if is_open else "▼"
+    lbl_open = f"{flecha}   ESTADO: 🟡 PLANIFICACIÓN (2)"
+    assert lbl_open == "▲   ESTADO: 🟡 PLANIFICACIÓN (2)"
+
+    is_open = False
+    flecha = "▲" if is_open else "▼"
+    lbl_closed = f"{flecha}   ESTADO: 🟡 PLANIFICACIÓN (2)"
+    assert lbl_closed == "▼   ESTADO: 🟡 PLANIFICACIÓN (2)"
+
+
+
 
 
 

@@ -284,6 +284,69 @@ def get_app_css() -> str:
             border-radius: 2px;
         }
 
+        /* Cabeceras de Estado Plegables / Desplegables (Acordeón de Proyectos) */
+        div[class*="st-key-btn_est_"] {
+            margin-top: 16px !important;
+            margin-bottom: 8px !important;
+        }
+
+        div[class*="st-key-btn_est_"] .stButton > button {
+            display: flex !important;
+            flex-direction: row !important;
+            justify-content: flex-start !important;
+            align-items: center !important;
+            text-align: left !important;
+            width: 100% !important;
+            background-color: var(--bg-card) !important;
+            border: 1px solid var(--border-sand) !important;
+            border-left: 5px solid var(--clay-primary) !important;
+            border-radius: 8px !important;
+            padding: 9px 16px !important;
+            min-height: 42px !important;
+            box-shadow: 0 1px 4px rgba(38, 35, 32, 0.03) !important;
+            cursor: pointer !important;
+            transition: all 0.15s ease !important;
+        }
+
+        div[class*="st-key-btn_est_"] .stButton > button:hover {
+            background-color: var(--bg-stone) !important;
+            border-color: var(--clay-primary) !important;
+            transform: none !important;
+        }
+
+        div[class*="st-key-btn_est_"] .stButton > button div[data-testid="stMarkdownContainer"] {
+            text-align: left !important;
+            width: 100% !important;
+            display: flex !important;
+            justify-content: flex-start !important;
+        }
+
+        div[class*="st-key-btn_est_"] .stButton > button p {
+            font-family: 'Plus Jakarta Sans', sans-serif !important;
+            font-size: 13.5px !important;
+            font-weight: 700 !important;
+            letter-spacing: 0.05em !important;
+            color: var(--text-charcoal) !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            display: flex !important;
+            align-items: center !important;
+            gap: 10px !important;
+            text-align: left !important;
+        }
+
+        div[class*="st-key-btn_est_"][class*="Planificaci"] .stButton > button {
+            border-left-color: #D98A2B !important;
+        }
+
+        div[class*="st-key-btn_est_"][class*="Proceso"] .stButton > button {
+            border-left-color: #C85A32 !important;
+        }
+
+        div[class*="st-key-btn_est_"][class*="Completado"] .stButton > button {
+            border-left-color: #4A7C59 !important;
+        }
+
         .cota-section-header {
             background-color: var(--bg-stone);
             border: 1px solid var(--border-sand);

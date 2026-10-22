@@ -7,6 +7,7 @@ Estética: Warm Architectural Atelier (#F7F4EF, #C85A32, #262320, #4A7C59, #D98A
 
 import calendar
 import datetime
+import re
 import altair as alt
 import pandas as pd
 import streamlit as st
@@ -611,27 +612,22 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                     continue
 
                 indices_mostrados.update(p_est.index.tolist())
-                col_st = "#D98A2B" if "Planificación" in est else ("#4A7C59" if "Completado" in est else "#C85A32")
 
                 state_key = f"est_open_{est_clean}"
                 if state_key not in st.session_state:
                     st.session_state[state_key] = True
                 is_open = st.session_state[state_key]
 
-                col_head, col_tog = st.columns([8.0, 2.0])
-                with col_head:
-                    st.markdown(
-                        f"<h4 class='cota-status-header' style='color: {col_st} !important; margin: 0; padding-top: 6px;'>"
-                        f"<span class='cota-status-header-bar' style='background-color: {col_st};'></span>"
-                        f"ESTADO: {est.upper()} ({len(p_est)})"
-                        f"</h4>",
-                        unsafe_allow_html=True
-                    )
-                with col_tog:
-                    label_btn = f"🔼 Ocultar ({len(p_est)})" if is_open else f"🔽 Desplegar ({len(p_est)})"
-                    if st.button(label_btn, key=f"btn_toggle_est_{d_key}_{est_clean}", use_container_width=True):
-                        st.session_state[state_key] = not is_open
-                        st.rerun()
+                flecha = "▲" if is_open else "▼"
+                label_header = f"{flecha}   ESTADO: {est.upper()} ({len(p_est)})"
+
+                d_slug = re.sub(r'[^a-zA-Z0-9_]', '_', str(d_key))
+                est_slug = est_clean.replace(" ", "_").replace("ó", "o").replace("í", "i").replace("á", "a")
+                btn_key = f"btn_est_{d_slug}_{est_slug}"
+
+                if st.button(label_header, key=btn_key, use_container_width=True, help="Click para ocultar o desplegar esta sección"):
+                    st.session_state[state_key] = not is_open
+                    st.rerun()
 
                 if not is_open:
                     continue
