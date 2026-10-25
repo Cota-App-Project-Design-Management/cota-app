@@ -1098,7 +1098,6 @@ def _render_tab_obra(proy_name, proy_data):
             column_order=[
                 "Codigo_Item",
                 "Tarea",
-                "Presupuesto",
                 "Especialidad",
                 "Contratista",
                 "Estado",
@@ -1114,7 +1113,7 @@ def _render_tab_obra(proy_name, proy_data):
                 "Unidad": None,
                 "Metrado": None,
                 "Valor_Unitario": None,
-                "Presupuesto": st.column_config.NumberColumn("Presupuesto (S/)", format="S/ %.2f", width="medium"),
+                "Presupuesto": None,
                 "Especialidad": st.column_config.SelectboxColumn("Especialidad", options=extraer_esp(st.session_state.maestro)),
                 "Contratista": st.column_config.SelectboxColumn("Contratista", options=st.session_state.maestro['ID_Contratista'].tolist() if not st.session_state.maestro.empty else []),
                 "Estado": st.column_config.SelectboxColumn("Estado", options=STATUS_TASKS),
