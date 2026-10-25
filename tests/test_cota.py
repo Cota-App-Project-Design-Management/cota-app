@@ -519,6 +519,25 @@ def test_status_accordion_labels():
     assert lbl_closed == "▼   ESTADO: 🟡 PLANIFICACIÓN (2)"
 
 
+def test_tab_partidas_y_tareas_cols():
+    # Verificar que en la pestaña 05 las columnas operativas visibles excluyen moneda, unidad, metrado y valor unitario
+    cols_visibles = [
+        "Codigo_Item",
+        "Tarea",
+        "Presupuesto",
+        "Especialidad",
+        "Contratista",
+        "Estado",
+        "Supervisado",
+        "Inicio",
+        "Fin",
+        "Notas",
+    ]
+    for col_oculta in ["Moneda", "Unidad", "Metrado", "Valor_Unitario"]:
+        assert col_oculta not in cols_visibles
+
+
+
 
 
 

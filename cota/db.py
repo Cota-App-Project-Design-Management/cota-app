@@ -769,9 +769,18 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
             if p_est == 0.0 and met > 0 and v_unit > 0:
                 df_new.at[i, 'Presupuesto'] = round(met * v_unit, 2)
 
-    # Normalizar Supervisado en tasks ("Sí" / "No")
-    if master_state_key == 'tasks' and 'Supervisado' in df_new.columns:
-        df_new['Supervisado'] = df_new['Supervisado'].apply(_normalizar_supervisado)
+    # Normalizar Supervisado y defaults en tasks
+    if master_state_key == 'tasks':
+        if 'Supervisado' in df_new.columns:
+            df_new['Supervisado'] = df_new['Supervisado'].apply(_normalizar_supervisado)
+        if 'Moneda' in df_new.columns:
+            df_new['Moneda'] = df_new['Moneda'].fillna("Soles").replace("", "Soles").replace("None", "Soles")
+        if 'Unidad' in df_new.columns:
+            df_new['Unidad'] = df_new['Unidad'].fillna("glb").replace("", "glb").replace("None", "glb")
+        if 'Metrado' in df_new.columns:
+            df_new['Metrado'] = pd.to_numeric(df_new['Metrado'], errors='coerce').fillna(1.0)
+        if 'Valor_Unitario' in df_new.columns:
+            df_new['Valor_Unitario'] = pd.to_numeric(df_new['Valor_Unitario'], errors='coerce').fillna(0.0)
 
     st.session_state[base_key] = df_new
 

@@ -132,7 +132,7 @@ def render_proyecto_view(proy_name):
         "02. FASES DE DISEÑO",
         "03. PRESUPUESTO",
         "04. ENTREGABLES & PLANOS",
-        "05. EJECUCIÓN & PARTIDAS",
+        "05. PARTIDAS Y TAREAS",
         "06. COBROS & FINANZAS",
         "07. REUNIONES & ACTAS",
         "08. PUNCH LIST"
@@ -936,8 +936,8 @@ def _render_tab_entregables(proy_name, proy_data):
 
 
 def _render_tab_obra(proy_name, proy_data):
-    """Pestaña 5: Ejecución de Obra, Partidas y Tareas Técnicas (Sincronizada con 03. Presupuesto)."""
-    st.markdown("### 🏗️ EJECUCIÓN DE OBRA Y PARTIDAS")
+    """Pestaña 5: Partidas y Tareas (Sincronizada con 03. Presupuesto)."""
+    st.markdown("### 🏗️ PARTIDAS Y TAREAS")
     st.caption(
         "Control operativo de contratistas, cronograma de obra y pagos por partida. "
         "Las partidas, tareas (1.01, 1.02...) y sus presupuestos provienen automáticamente de **03. PRESUPUESTO**."
@@ -1095,13 +1095,25 @@ def _render_tab_obra(proy_name, proy_data):
             hide_index=True,
             num_rows="dynamic",
             key=w_key,
+            column_order=[
+                "Codigo_Item",
+                "Tarea",
+                "Presupuesto",
+                "Especialidad",
+                "Contratista",
+                "Estado",
+                "Supervisado",
+                "Inicio",
+                "Fin",
+                "Notas",
+            ],
             column_config={
                 "Codigo_Item": st.column_config.TextColumn("Ítem", width="small"),
                 "Tarea": st.column_config.TextColumn("Tarea / Actividad", width="large", required=True),
-                "Moneda": st.column_config.SelectboxColumn("Moneda", options=["Soles", "USD"], width="small"),
-                "Unidad": st.column_config.SelectboxColumn("Und.", options=UNIDADES_MEDIDA, width="small"),
-                "Metrado": st.column_config.NumberColumn("Metrado", format="%.2f", width="small"),
-                "Valor_Unitario": st.column_config.NumberColumn("V. Unit.", format="%.2f", width="small"),
+                "Moneda": None,
+                "Unidad": None,
+                "Metrado": None,
+                "Valor_Unitario": None,
                 "Presupuesto": st.column_config.NumberColumn("Presupuesto (S/)", format="S/ %.2f", width="medium"),
                 "Especialidad": st.column_config.SelectboxColumn("Especialidad", options=extraer_esp(st.session_state.maestro)),
                 "Contratista": st.column_config.SelectboxColumn("Contratista", options=st.session_state.maestro['ID_Contratista'].tolist() if not st.session_state.maestro.empty else []),
