@@ -63,9 +63,9 @@ def test_to_bool():
 
 def test_sembrar_fases_default():
     df_fases = sembrar_fases_default("Casa Prueba", datetime.date(2026, 1, 1))
-    assert len(df_fases) == 7
+    assert len(df_fases) == 6
     assert "01. Levantamiento & Brief" in df_fases['Fase'].tolist()
-    assert "07. Cierre & Entrega Final" in df_fases['Fase'].tolist()
+    assert "08. Observaciones & Entrega Final" in df_fases['Fase'].tolist()
     assert all(df_fases['Proyecto'] == "Casa Prueba")
 
 
@@ -534,6 +534,37 @@ def test_tab_partidas_y_tareas_cols():
     ]
     for col_oculta in ["Moneda", "Unidad", "Metrado", "Valor_Unitario", "Presupuesto"]:
         assert col_oculta not in cols_visibles
+
+
+def test_sanitizar_fases_estudio():
+    import streamlit as st
+    from cota.db import sanitizar_fases_estudio
+    st.session_state["fases"] = pd.DataFrame([
+        {"Proyecto": "P1", "Orden": 1, "Fase": "01. Levantamiento & Brief"},
+        {"Proyecto": "P1", "Orden": 5, "Fase": "05. Expediente Técnico & Planos"},
+        {"Proyecto": "P1", "Orden": 6, "Fase": "06. Presupuesto & Compras (FF&E)"},
+        {"Proyecto": "P1", "Orden": 7, "Fase": "07. Ejecución / Obra / Montaje"},
+        {"Proyecto": "P1", "Orden": 8, "Fase": "08. Cierre & Entrega Final"},
+    ])
+    sanitizar_fases_estudio()
+    fases_res = st.session_state["fases"]["Fase"].tolist()
+    assert not any("ff&e" in f.lower() or "ffe" in f.lower() for f in fases_res)
+    assert not any("expediente" in f.lower() for f in fases_res)
+    assert "05. Partidas y Tareas (Obra)" in fases_res
+    assert "08. Observaciones & Entrega Final" in fases_res
+    assert len(st.session_state["fases"]) == 3
+
+
+def test_on_table_edit_missing_key_no_crash():
+    import streamlit as st
+    from cota.db import on_table_edit
+    # Asegurar que cuando base_key no existe en session_state, no se lance KeyError ni crashee
+    st.session_state["dummy_widget_key"] = {"edited_rows": {}}
+    if "missing_base_key" in st.session_state:
+        del st.session_state["missing_base_key"]
+    # Debe retornar sin lanzar KeyError
+    on_table_edit("missing_base_key", "dummy_widget_key", "tasks")
+
 
 
 

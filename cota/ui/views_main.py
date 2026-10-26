@@ -218,24 +218,15 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
         gastado_gg = pd.to_numeric(df_gg_k.get('Monto', 0), errors='coerce').sum()
     tot_ejecutado = gastado_pagos + gastado_gg
 
-    # 1.B Avance del Diseño (Fases)
-    avances = []
-    fases_ok_tot = 0
-    fases_len_tot = 0
-    fase_actual_kpi = "En curso"
-    if 'fases' in st.session_state and not st.session_state.fases.empty:
-        for p_n in nombres_kpi:
-            fp = st.session_state.fases[st.session_state.fases['Proyecto'] == p_n].sort_values(by='Orden')
-            if not fp.empty:
-                mask_ok = fp['Aprobado_Cliente'].apply(to_bool) | (fp['Estado'].astype(str).str.contains('Aprobada', case=False, na=False))
-                ok_c = int(mask_ok.sum())
-                fases_ok_tot += ok_c
-                fases_len_tot += len(fp)
-                avances.append(ok_c / len(fp) * 100.0)
-                if es_proy_unico:
-                    pend_fp = fp[~mask_ok]
-                    fase_actual_kpi = pend_fp.iloc[0]['Fase'] if not pend_fp.empty else "08. Cierre & Entrega Final"
-    prom_avance = sum(avances) / len(avances) if avances else 0.0
+    # 1.B Avance Operativo de Tareas (completadas / totales)
+    tot_tareas_kpi = 0
+    comp_tareas_kpi = 0
+    if 'tasks' in st.session_state and not st.session_state.tasks.empty and 'Proyecto' in st.session_state.tasks.columns:
+        df_t_kpi = st.session_state.tasks[st.session_state.tasks['Proyecto'].isin(nombres_kpi)]
+        tot_tareas_kpi = len(df_t_kpi)
+        if tot_tareas_kpi > 0 and 'Estado' in df_t_kpi.columns:
+            comp_tareas_kpi = int(df_t_kpi['Estado'].astype(str).str.contains('Completado', case=False, na=False).sum())
+    prom_avance = (comp_tareas_kpi / tot_tareas_kpi * 100.0) if tot_tareas_kpi > 0 else 0.0
 
     # 1.C Partidas y Tareas del Presupuesto
     num_partidas_kpi = 0
@@ -287,9 +278,9 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
         else "Presupuesto total contratado"
     )
     sub_avance = (
-        f"{fases_ok_tot}/{fases_len_tot} fases · {fase_actual_kpi}"
-        if es_proy_unico and fases_len_tot > 0
-        else f"{fases_ok_tot}/{fases_len_tot} fases aprobadas" if fases_len_tot > 0 else "Promedio de fases aprobadas"
+        f"{comp_tareas_kpi} de {tot_tareas_kpi} tareas completadas"
+        if tot_tareas_kpi > 0
+        else "Sin tareas registradas"
     )
     val_ppto_part = format_currency(monto_partidas_kpi) if monto_partidas_kpi > 0 else f"{num_partidas_kpi} partidas"
     sub_ppto_part = f"{num_partidas_kpi} partida(s) · {num_tareas_kpi} tarea(s) en ppto."
@@ -301,7 +292,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
     render_metric_row([
         card_1,
         {"title": "Resumen Cartera", "value": format_currency(tot_cartera), "subtitle": sub_cartera},
-        {"title": "Avance Diseño", "value": f"{prom_avance:.0f}%", "subtitle": sub_avance, "border_color": "#4A7C59", "text_color": "#4A7C59"},
+        {"title": "Avance de Tareas", "value": f"{prom_avance:.0f}%", "subtitle": sub_avance, "border_color": "#4A7C59", "text_color": "#4A7C59"},
         {"title": "Presupuesto Casco", "value": val_ppto_part, "subtitle": sub_ppto_part, "border_color": "#D98A2B", "text_color": "#D98A2B"},
         {"title": "Hitos por Cobrar", "value": val_cob, "subtitle": sub_cob, "border_color": col_cob, "text_color": col_cob},
     ])
@@ -680,11 +671,14 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                     # Analizar tareas en proceso y widget inteligente de alertas (Foto 2)
                     info_t = analizar_tareas_proyecto(st.session_state.get('tasks'), p_nom, fecha_hoy)
 
+                    # % de avance basado exclusivamente en tareas (completadas / totales)
+                    pct_avance_tareas = int((info_t['completadas'] / info_t['total']) * 100) if info_t['total'] > 0 else 0
+
                     cli_val = safe_str(proy.get('Cliente', ''))
                     cli_str = f" · Cliente: {cli_val}" if cli_val else ""
                     div_val = safe_str(proy.get('Division', 'General'))
                     tipo_val = safe_str(proy.get('Tipo_Proyecto', 'Diseño'))
-                    barra_avance = _generar_barra_avance(pct_avance, 10)
+                    barra_avance = _generar_barra_avance(pct_avance_tareas, 10)
                     tit_expander = f"🏛️ **{p_nom.upper()}**{cli_str}  ·  📁 {div_val} · {tipo_val}  ·  Líder: {proy.get('Encargado', 'N/A')}  `{barra_avance}`"
 
                     with st.expander(tit_expander, expanded=es_proy_unico):
@@ -712,7 +706,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Honorarios Diseño</span><br><b style='color:#4A7C59; font-family:monospace;'>{format_currency(hon_p)}</b></div>"
                             f"</div>"
                             f"<div style='margin-top: 10px; background: #EFECE6; border-radius: 4px; height: 6px; overflow: hidden;'>"
-                            f"<div style='background: {col_st}; width: {pct_avance}%; height: 100%;'></div>"
+                            f"<div style='background: {col_st}; width: {pct_avance_tareas}%; height: 100%;'></div>"
                             f"</div>"
                             f"<div style='margin-top: 10px; background: {info_t['widget_bg']}; border: 1px solid #DFD9CE; border-left: 3px solid {info_t['widget_color']}; border-radius: 6px; padding: 8px 12px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;'>"
                             f"<div>"
@@ -751,6 +745,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                     v_util = st.number_input("Utilidades Proyectadas (S/)", value=safe_float(proy.get('Utilidades', 0)))
                                     v_hon = st.number_input("Honorarios Diseño (S/)", value=safe_float(proy.get('Honorarios_Diseno', 0)))
                                     v_gg = st.number_input("Ppto Caja Chica (S/)", value=safe_float(proy.get('GG_Presupuesto', 0)))
+                                    n_drive = st.text_input("Presentación Drive / Slides (URL)", value=safe_str(proy.get('Link_Drive', '')))
 
                                     if st.form_submit_button("ACTUALIZAR DATOS"):
                                         if n_nom != p_nom:
@@ -769,6 +764,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                         st.session_state.proyectos.at[idx_p, 'Honorarios_Diseno'] = v_hon
                                         st.session_state.proyectos.at[idx_p, 'Presupuesto_FFE'] = 0.0
                                         st.session_state.proyectos.at[idx_p, 'GG_Presupuesto'] = v_gg
+                                        st.session_state.proyectos.at[idx_p, 'Link_Drive'] = n_drive.strip()
                                         clear_base_dfs()
                                         st.success("Datos actualizados correctamente.")
                                         st.rerun()

@@ -34,6 +34,7 @@ from cota.db import (
     clear_base_dfs,
     obtener_banco_fases,
     on_table_edit,
+    sanitizar_fases_estudio,
     sembrar_fases_default,
     sincronizar_fases_proyecto,
 )
@@ -117,7 +118,8 @@ def render_proyecto_view(proy_name):
 
     st.divider()
 
-    # Asegurar inicialización de fases para este proyecto
+    # Asegurar inicialización y sanitización de fases para este proyecto
+    sanitizar_fases_estudio()
     if 'fases' not in st.session_state or st.session_state.fases.empty:
         st.session_state.fases = sembrar_fases_default(proy_name, proy_data.get('Inicio'))
     else:
@@ -126,29 +128,25 @@ def render_proyecto_view(proy_name):
             nuevas_f = sembrar_fases_default(proy_name, proy_data.get('Inicio'))
             st.session_state.fases = pd.concat([st.session_state.fases, nuevas_f], ignore_index=True)
 
-    # Tabs especializadas para diseño y arquitectura (Sin módulo FF&E; 03. PRESUPUESTO integrado)
-    t_resumen, t_fases, t_presupuesto, t_planos, t_obra, t_finanzas, t_actas, t_punch = st.tabs([
+    # Tabs especializadas del proyecto
+    t_resumen, t_diseno, t_presupuesto, t_obra, t_finanzas, t_actas, t_observaciones = st.tabs([
         "01. RESUMEN",
-        "02. FASES DE DISEÑO",
+        "02. DISEÑO",
         "03. PRESUPUESTO",
-        "04. ENTREGABLES & PLANOS",
         "05. PARTIDAS Y TAREAS",
         "06. COBROS & FINANZAS",
         "07. REUNIONES & ACTAS",
-        "08. PUNCH LIST"
+        "08. OBSERVACIONES"
     ])
 
     with t_resumen:
         _render_tab_resumen(proy_name, proy_data)
 
-    with t_fases:
+    with t_diseno:
         _render_tab_fases(proy_name, proy_data)
 
     with t_presupuesto:
         _render_tab_presupuesto(proy_name, proy_data)
-
-    with t_planos:
-        _render_tab_entregables(proy_name, proy_data)
 
     with t_obra:
         _render_tab_obra(proy_name, proy_data)
@@ -159,7 +157,7 @@ def render_proyecto_view(proy_name):
     with t_actas:
         _render_tab_actas(proy_name, proy_data)
 
-    with t_punch:
+    with t_observaciones:
         _render_tab_punch(proy_name, proy_data)
 
 
@@ -197,6 +195,10 @@ def _render_tab_resumen(proy_name, proy_data):
     n_fases_ok = len(fases_p[fases_p['Aprobado_Cliente'].apply(to_bool) | (fases_p['Estado'].astype(str).str.contains('Aprobada', case=False))])
     pct_fases = (n_fases_ok / n_fases * 100) if n_fases > 0 else 0.0
 
+    # Analizar tareas operativas
+    info_t = analizar_tareas_proyecto(st.session_state.get('tasks'), proy_name)
+    pct_tareas = (info_t['completadas'] / info_t['total'] * 100) if info_t['total'] > 0 else 0.0
+
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
         render_metric_card("Ppto. Total", format_currency(ppto_venta), f"Casco: {format_currency(total_casco_pactado)}")
@@ -210,12 +212,11 @@ def _render_tab_resumen(proy_name, proy_data):
         col_caja = "#4A7C59" if caja_restante >= 0 else "#C93B2B"
         render_metric_card("Caja Chica Saldo", format_currency(caja_restante), f"Gastado: {format_currency(caja_gastada)}", border_color=col_caja, text_color=col_caja)
     with c6:
-        render_metric_card("Fases Aprobadas", f"{pct_fases:.0f}%", f"{n_fases_ok} de {n_fases} fases completadas", border_color="#C85A32", text_color="#C85A32")
+        render_metric_card("Avance de Tareas", f"{pct_tareas:.0f}%", f"{info_t['completadas']} de {info_t['total']} tareas completadas", border_color="#C85A32", text_color="#C85A32")
 
     st.divider()
 
     # Datos descriptivos, widget inteligente de tareas y estado de fases activas
-    info_t = analizar_tareas_proyecto(st.session_state.get('tasks'), proy_name)
     banco_fases_estudio = obtener_banco_fases()
     nombres_banco_all = [f["Fase"] for f in banco_fases_estudio]
     fases_activas_actuales = fases_p['Fase'].tolist() if not fases_p.empty else []
@@ -223,6 +224,7 @@ def _render_tab_resumen(proy_name, proy_data):
     col_d1, col_d2 = st.columns([1, 1.1])
     with col_d1:
         st.markdown("#### FICHA TÉCNICA DEL PROYECTO")
+        drive_link_val = safe_str(proy_data.get('Link_Drive', '')).strip()
         info_items = [
             ("Líder de Diseño", proy_data.get('Encargado', 'N/A')),
             ("Cliente", proy_data.get('Cliente', 'N/A')),
@@ -232,6 +234,7 @@ def _render_tab_resumen(proy_name, proy_data):
             ("Fecha Inicio", format_date(proy_data.get('Inicio'))),
             ("Fecha Estimada Entrega", format_date(proy_data.get('Fin'))),
             ("Tareas en Proceso", f"{info_t['en_proceso']} en proceso ({info_t['completadas']}/{info_t['total']} completadas)"),
+            ("Presentación Drive", f"<a href='{drive_link_val}' target='_blank' style='color:#C85A32; font-weight:600;'>Abrir Drive ↗</a>" if drive_link_val else "Sin vincular"),
         ]
         rows_html = "".join(
             f"<div style='display:flex; justify-content:space-between; padding:8px 12px; border-bottom:1px solid #DFD9CE;'>"
@@ -326,9 +329,56 @@ def _render_tab_resumen(proy_name, proy_data):
 
 
 def _render_tab_fases(proy_name, proy_data):
-    """Pestaña 2: Fases de diseño, Banco de Fases configurable y cronograma."""
-    st.markdown("### 📐 CICLO DE VIDA Y FASES DEL PROYECTO")
-    st.caption("Personaliza las fases activas de este proyecto a partir del Banco de Fases del estudio según sus características (con o sin Expediente Técnico, Obra, Licencias, etc.).")
+    """Pestaña 2: Diseño, Banco de Fases configurable, cronograma y presentación en Drive."""
+    st.markdown("### 🎨 02. DISEÑO Y PRESENTACIÓN DEL PROYECTO")
+    st.caption("Fases del ciclo de diseño del proyecto, cronograma Gantt y conexión directa con la presentación en Google Drive / Slides.")
+
+    # Conectar con la presentación de diseño en Google Drive / Slides / Figma
+    drive_link = safe_str(proy_data.get('Link_Drive', '')).strip()
+    c_drive1, c_drive2 = st.columns([6.8, 3.2])
+    with c_drive1:
+        if drive_link:
+            st.markdown(
+                f"<div style='background:#FAF8F5; border:1px solid #DFD9CE; border-left:4px solid #C85A32; border-radius:8px; padding:10px 14px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between;'>"
+                f"<div><span style='font-size:11px; color:#6E665E; text-transform:uppercase; font-weight:700;'>📂 PRESENTACIÓN DE DISEÑO VINCULADA</span><br>"
+                f"<a href='{drive_link}' target='_blank' style='color:#C85A32; font-weight:600; font-size:13px; text-decoration:none;'>{drive_link[:75]}{'...' if len(drive_link) > 75 else ''} ↗</a></div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                f"<div style='background:#FAF8F5; border:1px dashed #DFD9CE; border-radius:8px; padding:10px 14px; margin-bottom:12px; color:#6E665E; font-size:12.5px;'>"
+                f"ℹ️ <i>Aún no se ha vinculado la presentación o carpeta de Google Drive / Slides para este proyecto.</i>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+    with c_drive2:
+        if drive_link:
+            c_s1, c_s2 = st.columns([6.5, 3.5])
+            with c_s1:
+                st.link_button("🚀 ABRIR DRIVE ↗", drive_link, type="primary", use_container_width=True)
+            with c_s2:
+                with st.popover("✏️ EDITAR", use_container_width=True):
+                    with st.form(f"f_edit_drive_{proy_name}"):
+                        n_link = st.text_input("Enlace Drive / Slides:", value=drive_link)
+                        if st.form_submit_button("GUARDAR", type="primary"):
+                            idx_matches = st.session_state.proyectos[st.session_state.proyectos['Nombre'] == proy_name].index
+                            if not idx_matches.empty:
+                                st.session_state.proyectos.loc[idx_matches, 'Link_Drive'] = n_link.strip()
+                            clear_base_dfs()
+                            st.rerun()
+        else:
+            with st.popover("🔗 CONECTAR DRIVE", use_container_width=True):
+                with st.form(f"f_new_drive_{proy_name}"):
+                    st.markdown("##### Presentación de Diseño en Drive")
+                    st.caption("Pega el enlace de Google Drive, Google Slides o Figma del proyecto:")
+                    n_link = st.text_input("URL:", placeholder="https://drive.google.com/...")
+                    if st.form_submit_button("CONECTAR DRIVE", type="primary"):
+                        idx_matches = st.session_state.proyectos[st.session_state.proyectos['Nombre'] == proy_name].index
+                        if not idx_matches.empty:
+                            st.session_state.proyectos.loc[idx_matches, 'Link_Drive'] = n_link.strip()
+                        clear_base_dfs()
+                        st.rerun()
 
     fases_df = st.session_state.fases[st.session_state.fases['Proyecto'] == proy_name].copy()
     fases_df = fases_df.sort_values(by='Orden')
@@ -1509,9 +1559,9 @@ def _render_tab_actas(proy_name, proy_data):
 
 
 def _render_tab_punch(proy_name, proy_data):
-    """Pestaña 8: Punch List / Lista de Observaciones para Entrega."""
-    st.markdown("### 🔍 PUNCH LIST Y PENDIENTES DE ENTREGA")
-    st.caption("Inspección de detalles finales por ambiente antes de la entrega formal al cliente.")
+    """Pestaña 8: Observaciones y Control de Calidad para Entrega."""
+    st.markdown("### 🔍 08. OBSERVACIONES Y CONTROL DE CALIDAD")
+    st.caption("Control de observaciones técnicas, detalles finales y levantamiento de pendientes antes de la entrega al cliente.")
 
     if 'pendientes_entrega' not in st.session_state:
         st.session_state.pendientes_entrega = pd.DataFrame(columns=COLS_PUNCH)
@@ -1520,17 +1570,17 @@ def _render_tab_punch(proy_name, proy_data):
 
     col_btn1, _ = st.columns([3, 7])
     with col_btn1:
-        with st.popover("➕ AGREGAR OBSERVACIÓN / DETALLE", use_container_width=True):
+        with st.popover("➕ AGREGAR OBSERVACIÓN", use_container_width=True):
             with st.form(f"f_new_punch_{proy_name}", clear_on_submit=True):
                 p_amb = st.selectbox("Ambiente", AMBIENTES_DEFAULT)
                 p_elem = st.text_input("Elemento (ej. Zócalo, Puerta Principal, Pintura Techo)")
-                p_desc = st.text_area("Detalle / Observación", placeholder="ej. Retocar masillado y pintura en esquina superior derecha")
+                p_desc = st.text_area("Descripción de la Observación", placeholder="ej. Retocar masillado y pintura en esquina superior derecha")
                 col_r1, col_r2 = st.columns(2)
                 p_resp = col_r1.text_input("Responsable (Contratista / Proveedor)")
                 p_prio = col_r2.selectbox("Prioridad", PRIORIDADES_PUNCH, index=1)
                 p_est = st.selectbox("Estado", STATUS_PUNCH)
 
-                if st.form_submit_button("REGISTRAR PENDIENTE") and p_desc:
+                if st.form_submit_button("REGISTRAR OBSERVACIÓN") and p_desc:
                     n_row = pd.DataFrame([{
                         'ID': f"PUN_{int(datetime.datetime.now().timestamp())}_{uuid.uuid4().hex[:6]}",
                         'Proyecto': proy_name,

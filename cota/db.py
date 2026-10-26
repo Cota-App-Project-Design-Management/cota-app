@@ -22,7 +22,8 @@ COLS_PROY = [
     'Color', 'Cliente', 'Presupuesto', 'Utilidades', 'GG_Presupuesto',
     'Archivado', 'Metodologia', 'Division', 'Tipo_Proyecto', 'Num_Pisos', 'Num_Sotanos',
     'Presupuesto_FFE', 'Honorarios_Diseno',
-    'TC_Presupuesto', 'GG_Pct', 'Utilidades_Pct', 'Incluir_IGV'
+    'TC_Presupuesto', 'GG_Pct', 'Utilidades_Pct', 'Incluir_IGV',
+    'Link_Drive'
 ]
 
 COLS_TASKS = [
@@ -372,6 +373,23 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
         else:
             df['Supervisado'] = df['Supervisado'].apply(_normalizar_supervisado)
 
+    if pestaña == 'proyectos':
+        if 'Link_Drive' not in df.columns:
+            df['Link_Drive'] = ""
+
+    if pestaña == 'fases':
+        mask_obsoletas = df['Fase'].astype(str).str.contains(r'ff&e|ffe|expediente t[eé]cnico', case=False, na=False)
+        if mask_obsoletas.any():
+            df = df[~mask_obsoletas].copy()
+        def _migrar_fase_item(nom):
+            s = str(nom).strip()
+            if re.search(r'ejecuci[oó]n|obra|montaje', s, re.IGNORECASE):
+                return "05. Partidas y Tareas (Obra)"
+            if re.search(r'cierre|entrega final|punch list', s, re.IGNORECASE):
+                return "08. Observaciones & Entrega Final"
+            return s
+        df['Fase'] = df['Fase'].apply(_migrar_fase_item)
+
     st.session_state.original_tables[pestaña] = df.copy()
     return df
 
@@ -455,10 +473,12 @@ def obtener_banco_fases() -> list[dict]:
     if "banco_fases" not in st.session_state or not st.session_state.banco_fases:
         st.session_state.banco_fases = [dict(f) for f in BANCO_FASES_DEFAULT]
 
-    # Eliminar cualquier fase residual de FF&E
+    # Eliminar cualquier fase residual de FF&E o Expediente Técnico
     st.session_state.banco_fases = [
         f for f in st.session_state.banco_fases
-        if "ff&e" not in str(f.get("Fase", "")).lower() and "ffe" not in str(f.get("Fase", "")).lower()
+        if "ff&e" not in str(f.get("Fase", "")).lower()
+        and "ffe" not in str(f.get("Fase", "")).lower()
+        and "expediente" not in str(f.get("Fase", "")).lower()
     ]
 
     nombres_en_banco = {f["Fase"] for f in st.session_state.banco_fases}
@@ -467,7 +487,13 @@ def obtener_banco_fases() -> list[dict]:
     if "fases" in st.session_state and isinstance(st.session_state.fases, pd.DataFrame) and not st.session_state.fases.empty:
         for _, r in st.session_state.fases.iterrows():
             f_nom = str(r.get("Fase", "")).strip()
-            if f_nom and "ff&e" not in f_nom.lower() and "ffe" not in f_nom.lower() and f_nom not in nombres_en_banco:
+            if (
+                f_nom
+                and "ff&e" not in f_nom.lower()
+                and "ffe" not in f_nom.lower()
+                and "expediente" not in f_nom.lower()
+                and f_nom not in nombres_en_banco
+            ):
                 orden_max = max((item.get("Orden", 0) for item in st.session_state.banco_fases), default=0) + 1
                 st.session_state.banco_fases.append({
                     "Orden": int(r.get("Orden", orden_max) or orden_max),
@@ -674,6 +700,47 @@ def purgar_proyecto_cascada(nombre_proyecto):
         st.session_state.vista_actual = 'main'
 
 
+def sanitizar_fases_estudio():
+    """
+    Limpia y actualiza el DataFrame de fases en st.session_state:
+    - Elimina fases obsoletas de FF&E y Expediente Técnico
+    - Renombra fases antiguas con los nuevos nombres de ventana
+    - Normaliza el orden de 1 a N por proyecto
+    """
+    if "fases" not in st.session_state or not isinstance(st.session_state.fases, pd.DataFrame) or st.session_state.fases.empty:
+        return
+
+    df_f = st.session_state.fases.copy()
+
+    # 1. Eliminar FF&E y Expediente Técnico
+    mask_obsoletas = df_f['Fase'].astype(str).str.contains(r'ff&e|ffe|expediente t[eé]cnico', case=False, na=False)
+    if mask_obsoletas.any():
+        df_f = df_f[~mask_obsoletas].copy()
+
+    # 2. Renombrar fases antiguas
+    def _migrar_nombre_fase(nom):
+        s = str(nom).strip()
+        if re.search(r'ejecuci[oó]n|obra|montaje', s, re.IGNORECASE):
+            return "05. Partidas y Tareas (Obra)"
+        if re.search(r'cierre|entrega final|punch list', s, re.IGNORECASE):
+            return "08. Observaciones & Entrega Final"
+        return s
+
+    df_f['Fase'] = df_f['Fase'].apply(_migrar_nombre_fase)
+
+    # 3. Re-indexar orden por proyecto
+    dfs_proy = []
+    for proy_k, grp in df_f.groupby('Proyecto', sort=False):
+        grp_sorted = grp.sort_values(by='Orden').copy()
+        grp_sorted['Orden'] = list(range(1, len(grp_sorted) + 1))
+        dfs_proy.append(grp_sorted)
+
+    if dfs_proy:
+        st.session_state.fases = pd.concat(dfs_proy, ignore_index=True)
+    else:
+        st.session_state.fases = df_f
+
+
 def clear_base_dfs():
     """Limpia dataframes cacheados en sesión para forzar re-renderizado fresco."""
     for k in list(st.session_state.keys()):
@@ -687,130 +754,138 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
     Manejador unificado de edición en st.data_editor con soporte para inserción,
     edición, eliminación, sanitización de tipos y generación segura de IDs únicos.
     """
-    if widget_key not in st.session_state:
+    if widget_key not in st.session_state or base_key not in st.session_state:
         return
-    edits = st.session_state[widget_key]
-    df = st.session_state[base_key]
 
-    df_new = df.copy()
+    try:
+        edits = st.session_state.get(widget_key)
+        if not edits or not isinstance(edits, dict):
+            return
+        df = st.session_state.get(base_key)
+        if df is None or not isinstance(df, pd.DataFrame):
+            return
 
-    # 1. Aplicar celdas editadas
-    for idx, cols in edits.get("edited_rows", {}).items():
-        row_idx = int(idx)
-        for col, val in cols.items():
-            df_new.at[row_idx, col] = val
+        df_new = df.copy()
 
-    # 2. Aplicar eliminaciones
-    deleted_indices = [int(i) for i in edits.get("deleted_rows", [])]
-    if deleted_indices:
-        df_new = df_new.drop(index=deleted_indices).reset_index(drop=True)
-
-    # 3. Aplicar inserciones
-    added_rows = edits.get("added_rows", [])
-    if added_rows:
-        df_added = pd.DataFrame(added_rows)
-        df_new = pd.concat([df_new, df_added], ignore_index=True)
-
-    # 4. Generación de IDs únicos
-    if id_col:
-        if id_col not in df_new.columns:
-            df_new[id_col] = None
-        for i, row in df_new.iterrows():
-            val = row.get(id_col)
-            if pd.isna(val) or val == "" or str(val).strip() == "" or str(val).lower() == "none":
-                prefix = id_col.split("_")[0] if "_" in id_col else id_col
-                df_new.at[i, id_col] = f"{prefix}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
-
-    # 5. Sanitización de tipos
-    if date_cols:
-        for c in date_cols:
-            if c in df_new.columns:
-                df_new[c] = df_new[c].apply(lambda x: parse_date(x))
-    if text_cols:
-        for c in text_cols:
-            if c in df_new.columns:
-                df_new[c] = df_new[c].fillna("").astype(str).replace('nan', '').replace('None', '')
-    if bool_cols:
-        for c in bool_cols:
-            if c in df_new.columns:
-                df_new[c] = df_new[c].apply(to_bool)
-    if num_cols:
-        for c in num_cols:
-            if c in df_new.columns:
-                df_new[c] = pd.to_numeric(df_new[c], errors='coerce').fillna(0.0)
-
-    # Recalcular Costo_Estimado automáticamente en FF&E si cambian Cantidad o Precio Unitario
-    if master_state_key == 'materiales' and 'Cantidad' in df_new.columns and 'Precio_Unit_Estimado' in df_new.columns:
+        # 1. Aplicar celdas editadas
         for idx, cols in edits.get("edited_rows", {}).items():
-            r_idx = int(idx)
-            if r_idx in df_new.index and ('Cantidad' in cols or 'Precio_Unit_Estimado' in cols) and 'Costo_Estimado' not in cols:
-                df_new.at[r_idx, 'Costo_Estimado'] = round(
-                    float(df_new.at[r_idx, 'Cantidad'] or 0.0) * float(df_new.at[r_idx, 'Precio_Unit_Estimado'] or 0.0), 2
-                )
-        for i, row in df_new.iterrows():
-            c_est = float(row.get('Costo_Estimado') or 0.0)
-            cant = float(row.get('Cantidad') or 0.0)
-            p_unit = float(row.get('Precio_Unit_Estimado') or 0.0)
-            if c_est == 0.0 and cant > 0 and p_unit > 0:
-                df_new.at[i, 'Costo_Estimado'] = round(cant * p_unit, 2)
+            row_idx = int(idx)
+            for col, val in cols.items():
+                df_new.at[row_idx, col] = val
 
-    # Recalcular Presupuesto automáticamente en tasks si cambian Metrado o Valor_Unitario
-    if master_state_key == 'tasks' and 'Metrado' in df_new.columns and 'Valor_Unitario' in df_new.columns and 'Presupuesto' in df_new.columns:
-        for idx, cols in edits.get("edited_rows", {}).items():
-            r_idx = int(idx)
-            if r_idx in df_new.index and ('Metrado' in cols or 'Valor_Unitario' in cols) and 'Presupuesto' not in cols:
-                df_new.at[r_idx, 'Presupuesto'] = round(
-                    float(df_new.at[r_idx, 'Metrado'] or 0.0) * float(df_new.at[r_idx, 'Valor_Unitario'] or 0.0), 2
-                )
-        for i, row in df_new.iterrows():
-            p_est = float(row.get('Presupuesto') or 0.0)
-            met = float(row.get('Metrado') or 0.0)
-            v_unit = float(row.get('Valor_Unitario') or 0.0)
-            if p_est == 0.0 and met > 0 and v_unit > 0:
-                df_new.at[i, 'Presupuesto'] = round(met * v_unit, 2)
+        # 2. Aplicar eliminaciones
+        deleted_indices = [int(i) for i in edits.get("deleted_rows", [])]
+        if deleted_indices:
+            df_new = df_new.drop(index=deleted_indices).reset_index(drop=True)
 
-    # Normalizar Supervisado y defaults en tasks
-    if master_state_key == 'tasks':
-        if 'Supervisado' in df_new.columns:
-            df_new['Supervisado'] = df_new['Supervisado'].apply(_normalizar_supervisado)
-        if 'Moneda' in df_new.columns:
-            df_new['Moneda'] = df_new['Moneda'].fillna("Soles").replace("", "Soles").replace("None", "Soles")
-        if 'Unidad' in df_new.columns:
-            df_new['Unidad'] = df_new['Unidad'].fillna("glb").replace("", "glb").replace("None", "glb")
-        if 'Metrado' in df_new.columns:
-            df_new['Metrado'] = pd.to_numeric(df_new['Metrado'], errors='coerce').fillna(1.0)
-        if 'Valor_Unitario' in df_new.columns:
-            df_new['Valor_Unitario'] = pd.to_numeric(df_new['Valor_Unitario'], errors='coerce').fillna(0.0)
+        # 3. Aplicar inserciones
+        added_rows = edits.get("added_rows", [])
+        if added_rows:
+            df_added = pd.DataFrame(added_rows)
+            df_new = pd.concat([df_new, df_added], ignore_index=True)
 
-    st.session_state[base_key] = df_new
+        # 4. Generación de IDs únicos
+        if id_col:
+            if id_col not in df_new.columns:
+                df_new[id_col] = None
+            for i, row in df_new.iterrows():
+                val = row.get(id_col)
+                if pd.isna(val) or val == "" or str(val).strip() == "" or str(val).lower() == "none":
+                    prefix = id_col.split("_")[0] if "_" in id_col else id_col
+                    df_new.at[i, id_col] = f"{prefix}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
 
-    # 6. Actualizar dataframe maestro en session state
-    if master_state_key in st.session_state:
-        master_df = st.session_state[master_state_key]
-        if group_cols and group_vals:
-            clean_mask = pd.Series(True, index=master_df.index)
-            for g_col, g_val in zip(group_cols, group_vals):
-                clean_mask = clean_mask & (master_df[g_col] == g_val)
-            master_df = master_df[~clean_mask]
-        else:
-            master_df = pd.DataFrame(columns=master_df.columns)
+        # 5. Sanitización de tipos
+        if date_cols:
+            for c in date_cols:
+                if c in df_new.columns:
+                    df_new[c] = df_new[c].apply(lambda x: parse_date(x))
+        if text_cols:
+            for c in text_cols:
+                if c in df_new.columns:
+                    df_new[c] = df_new[c].fillna("").astype(str).replace('nan', '').replace('None', '')
+        if bool_cols:
+            for c in bool_cols:
+                if c in df_new.columns:
+                    df_new[c] = df_new[c].apply(to_bool)
+        if num_cols:
+            for c in num_cols:
+                if c in df_new.columns:
+                    df_new[c] = pd.to_numeric(df_new[c], errors='coerce').fillna(0.0)
 
-        n_t = df_new.copy()
-        if group_cols and group_vals:
-            for g_col, g_val in zip(group_cols, group_vals):
-                n_t[g_col] = g_val
+        # Recalcular Costo_Estimado automáticamente en FF&E si cambian Cantidad o Precio Unitario
+        if master_state_key == 'materiales' and 'Cantidad' in df_new.columns and 'Precio_Unit_Estimado' in df_new.columns:
+            for idx, cols in edits.get("edited_rows", {}).items():
+                r_idx = int(idx)
+                if r_idx in df_new.index and ('Cantidad' in cols or 'Precio_Unit_Estimado' in cols) and 'Costo_Estimado' not in cols:
+                    df_new.at[r_idx, 'Costo_Estimado'] = round(
+                        float(df_new.at[r_idx, 'Cantidad'] or 0.0) * float(df_new.at[r_idx, 'Precio_Unit_Estimado'] or 0.0), 2
+                    )
+            for i, row in df_new.iterrows():
+                c_est = float(row.get('Costo_Estimado') or 0.0)
+                cant = float(row.get('Cantidad') or 0.0)
+                p_unit = float(row.get('Precio_Unit_Estimado') or 0.0)
+                if c_est == 0.0 and cant > 0 and p_unit > 0:
+                    df_new.at[i, 'Costo_Estimado'] = round(cant * p_unit, 2)
 
-        for c in master_df.columns:
-            if c not in n_t.columns:
-                n_t[c] = None
+        # Recalcular Presupuesto automáticamente en tasks si cambian Metrado o Valor_Unitario
+        if master_state_key == 'tasks' and 'Metrado' in df_new.columns and 'Valor_Unitario' in df_new.columns and 'Presupuesto' in df_new.columns:
+            for idx, cols in edits.get("edited_rows", {}).items():
+                r_idx = int(idx)
+                if r_idx in df_new.index and ('Metrado' in cols or 'Valor_Unitario' in cols) and 'Presupuesto' not in cols:
+                    df_new.at[r_idx, 'Presupuesto'] = round(
+                        float(df_new.at[r_idx, 'Metrado'] or 0.0) * float(df_new.at[r_idx, 'Valor_Unitario'] or 0.0), 2
+                    )
+            for i, row in df_new.iterrows():
+                p_est = float(row.get('Presupuesto') or 0.0)
+                met = float(row.get('Metrado') or 0.0)
+                v_unit = float(row.get('Valor_Unitario') or 0.0)
+                if p_est == 0.0 and met > 0 and v_unit > 0:
+                    df_new.at[i, 'Presupuesto'] = round(met * v_unit, 2)
 
-        st.session_state[master_state_key] = pd.concat([master_df, n_t[master_df.columns]], ignore_index=True)
-
+        # Normalizar Supervisado y defaults en tasks
         if master_state_key == 'tasks':
-            for k in list(st.session_state.keys()):
-                if str(k).startswith("base_df_ppto_"):
-                    del st.session_state[k]
+            if 'Supervisado' in df_new.columns:
+                df_new['Supervisado'] = df_new['Supervisado'].apply(_normalizar_supervisado)
+            if 'Moneda' in df_new.columns:
+                df_new['Moneda'] = df_new['Moneda'].fillna("Soles").replace("", "Soles").replace("None", "Soles")
+            if 'Unidad' in df_new.columns:
+                df_new['Unidad'] = df_new['Unidad'].fillna("glb").replace("", "glb").replace("None", "glb")
+            if 'Metrado' in df_new.columns:
+                df_new['Metrado'] = pd.to_numeric(df_new['Metrado'], errors='coerce').fillna(1.0)
+            if 'Valor_Unitario' in df_new.columns:
+                df_new['Valor_Unitario'] = pd.to_numeric(df_new['Valor_Unitario'], errors='coerce').fillna(0.0)
 
-    # 7. Incrementar contador de widget para forzar clave nueva y evitar duplicaciones
-    c_key = f"c_{base_key}"
-    st.session_state[c_key] = st.session_state.get(c_key, 0) + 1
+        st.session_state[base_key] = df_new
+
+        # 6. Actualizar dataframe maestro en session state
+        if master_state_key in st.session_state:
+            master_df = st.session_state[master_state_key]
+            if group_cols and group_vals:
+                clean_mask = pd.Series(True, index=master_df.index)
+                for g_col, g_val in zip(group_cols, group_vals):
+                    clean_mask = clean_mask & (master_df[g_col] == g_val)
+                master_df = master_df[~clean_mask]
+            else:
+                master_df = pd.DataFrame(columns=master_df.columns)
+
+            n_t = df_new.copy()
+            if group_cols and group_vals:
+                for g_col, g_val in zip(group_cols, group_vals):
+                    n_t[g_col] = g_val
+
+            for c in master_df.columns:
+                if c not in n_t.columns:
+                    n_t[c] = None
+
+            st.session_state[master_state_key] = pd.concat([master_df, n_t[master_df.columns]], ignore_index=True)
+
+            if master_state_key == 'tasks':
+                for k in list(st.session_state.keys()):
+                    if str(k).startswith("base_df_ppto_"):
+                        del st.session_state[k]
+
+        # 7. Incrementar contador de widget para forzar clave nueva y evitar duplicaciones
+        c_key = f"c_{base_key}"
+        st.session_state[c_key] = st.session_state.get(c_key, 0) + 1
+    except Exception:
+        return
