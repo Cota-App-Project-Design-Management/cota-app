@@ -368,6 +368,9 @@ def _render_tab_fases(proy_name, proy_data):
                     with st.form(f"f_edit_drive_{proy_name}"):
                         n_link = st.text_input("Enlace Drive / Slides:", value=drive_link)
                         if st.form_submit_button("GUARDAR", type="primary"):
+                            if 'Link_Drive' not in st.session_state.proyectos.columns:
+                                st.session_state.proyectos['Link_Drive'] = ""
+                            st.session_state.proyectos['Link_Drive'] = st.session_state.proyectos['Link_Drive'].astype(object)
                             idx_matches = st.session_state.proyectos[st.session_state.proyectos['Nombre'] == proy_name].index
                             if not idx_matches.empty:
                                 st.session_state.proyectos.loc[idx_matches, 'Link_Drive'] = n_link.strip()
@@ -380,6 +383,9 @@ def _render_tab_fases(proy_name, proy_data):
                     st.caption("Pega el enlace de Google Drive, Google Slides o Figma del proyecto:")
                     n_link = st.text_input("URL:", placeholder="https://drive.google.com/...")
                     if st.form_submit_button("CONECTAR DRIVE", type="primary"):
+                        if 'Link_Drive' not in st.session_state.proyectos.columns:
+                            st.session_state.proyectos['Link_Drive'] = ""
+                        st.session_state.proyectos['Link_Drive'] = st.session_state.proyectos['Link_Drive'].astype(object)
                         idx_matches = st.session_state.proyectos[st.session_state.proyectos['Nombre'] == proy_name].index
                         if not idx_matches.empty:
                             st.session_state.proyectos.loc[idx_matches, 'Link_Drive'] = n_link.strip()
@@ -1415,6 +1421,8 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             r_idx = int(r_idx_str)
             if r_idx < len(df_b):
                 for col_k, val_k in changes.items():
+                    if col_k in df_b.columns and df_b[col_k].dtype != object and isinstance(val_k, str):
+                        df_b[col_k] = df_b[col_k].astype(object)
                     df_b.at[r_idx, col_k] = val_k
         for del_idx in sorted(state_ed.get("deleted_rows", []), reverse=True):
             if del_idx < len(df_b):
@@ -1465,6 +1473,8 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             r_idx = int(r_idx_str)
             if r_idx < len(df_b):
                 for col_k, val_k in changes.items():
+                    if col_k in df_b.columns and df_b[col_k].dtype != object and isinstance(val_k, str):
+                        df_b[col_k] = df_b[col_k].astype(object)
                     df_b.at[r_idx, col_k] = val_k
 
         d_cur = obtener_cuadro_pagos_semanales_proyecto(p_name)

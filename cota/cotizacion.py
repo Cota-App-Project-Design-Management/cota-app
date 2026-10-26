@@ -97,6 +97,27 @@ def obtener_parametros_presupuesto_proyecto(proy_name: str) -> dict:
     return params
 
 
+def _sanitizar_dtypes_tasks_y_proyectos():
+    """Garantiza que las columnas de texto sean object y las numéricas float en tasks, p_info y proyectos."""
+    if "tasks" in st.session_state and isinstance(st.session_state.tasks, pd.DataFrame):
+        for c_txt in ["Proyecto", "Partida", "Codigo_Item", "Tarea", "Especialidad", "Contratista", "Estado", "Supervisado", "Inicio", "Fin", "Causa_Cumplimiento", "Dependencia", "Notas", "Moneda", "Unidad"]:
+            if c_txt in st.session_state.tasks.columns and st.session_state.tasks[c_txt].dtype != object:
+                st.session_state.tasks[c_txt] = st.session_state.tasks[c_txt].fillna("").astype(str).replace({"nan": "", "None": ""}).astype(object)
+        for c_num in ["Metrado", "Valor_Unitario", "Presupuesto"]:
+            if c_num in st.session_state.tasks.columns:
+                st.session_state.tasks[c_num] = pd.to_numeric(st.session_state.tasks[c_num], errors="coerce").fillna(0.0).astype(float)
+        if "Orden" in st.session_state.tasks.columns:
+            st.session_state.tasks["Orden"] = pd.to_numeric(st.session_state.tasks["Orden"], errors="coerce").fillna(0).astype(int)
+
+    if "proyectos" in st.session_state and isinstance(st.session_state.proyectos, pd.DataFrame):
+        for c_num_p in ["Presupuesto", "Utilidades", "GG_Presupuesto", "TC_Presupuesto", "GG_Pct", "Utilidades_Pct"]:
+            if c_num_p in st.session_state.proyectos.columns:
+                st.session_state.proyectos[c_num_p] = pd.to_numeric(st.session_state.proyectos[c_num_p], errors="coerce").fillna(0.0).astype(float)
+        for c_txt_p in ["Link_Drive", "Pagos_Semanales_JSON"]:
+            if c_txt_p in st.session_state.proyectos.columns and st.session_state.proyectos[c_txt_p].dtype != object:
+                st.session_state.proyectos[c_txt_p] = st.session_state.proyectos[c_txt_p].fillna("").astype(str).replace({"nan": "", "None": ""}).astype(object)
+
+
 def guardar_parametros_presupuesto_proyecto(
     proy_name: str,
     tc: float = 3.42,
@@ -110,6 +131,7 @@ def guardar_parametros_presupuesto_proyecto(
     for col in COLS_PROY:
         if col not in st.session_state.proyectos.columns:
             st.session_state.proyectos[col] = ""
+    _sanitizar_dtypes_tasks_y_proyectos()
 
     mask = st.session_state.proyectos["Nombre"] == proy_name
     if mask.any():
@@ -117,6 +139,8 @@ def guardar_parametros_presupuesto_proyecto(
         st.session_state.proyectos.at[idx, "TC_Presupuesto"] = float(tc)
         st.session_state.proyectos.at[idx, "GG_Pct"] = float(gg_pct)
         st.session_state.proyectos.at[idx, "Utilidades_Pct"] = float(utilidades_pct)
+        if st.session_state.proyectos["Incluir_IGV"].dtype != bool:
+            st.session_state.proyectos["Incluir_IGV"] = st.session_state.proyectos["Incluir_IGV"].apply(to_bool).astype(bool)
         st.session_state.proyectos.at[idx, "Incluir_IGV"] = bool(incluir_igv)
 
     recalcular_totales_presupuesto_proyecto(proy_name)
@@ -144,6 +168,7 @@ def asegurar_estructura_presupuesto_proyecto(
     for col in COLS_TASKS:
         if col not in st.session_state.tasks.columns:
             st.session_state.tasks[col] = ""
+    _sanitizar_dtypes_tasks_y_proyectos()
 
     parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name]
 
@@ -221,6 +246,7 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str) -> dict:
     3. El Sub Total (Casco), Gastos Generales, Gestión/Supervisión (Utilidades), IGV y TOTAL del proyecto
        en st.session_state.proyectos.
     """
+    _sanitizar_dtypes_tasks_y_proyectos()
     params = obtener_parametros_presupuesto_proyecto(proy_name)
     tc = params["tc"] if params["tc"] > 0 else 3.42
     gg_pct = params["gg_pct"]
@@ -500,8 +526,11 @@ def aplicar_edicion_tabla_presupuesto_partida(
         r_i = int(r_str)
         if r_i in df_base.index:
             for col_k, val in changes.items():
+                if col_k in df_base.columns and df_base[col_k].dtype != object and isinstance(val, str):
+                    df_base[col_k] = df_base[col_k].astype(object)
                 df_base.at[r_i, col_k] = val
 
+    _sanitizar_dtypes_tasks_y_proyectos()
     params = obtener_parametros_presupuesto_proyecto(proy_name)
     tc = params["tc"] if params["tc"] > 0 else 3.42
 
@@ -1968,6 +1997,10 @@ def guardar_cuadro_pagos_semanales_proyecto(proy_name: str, data_cuadro: dict):
         return
     if "Pagos_Semanales_JSON" not in st.session_state.proyectos.columns:
         st.session_state.proyectos["Pagos_Semanales_JSON"] = ""
+    if st.session_state.proyectos["Pagos_Semanales_JSON"].dtype != object:
+        st.session_state.proyectos["Pagos_Semanales_JSON"] = (
+            st.session_state.proyectos["Pagos_Semanales_JSON"].fillna("").astype(str).replace({"nan": "", "None": ""}).astype(object)
+        )
 
     mask = st.session_state.proyectos["Nombre"] == proy_name
     if mask.any():

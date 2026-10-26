@@ -617,6 +617,52 @@ def test_cuadro_pagos_semanales_parse_calculo_y_excel():
     assert xlsx_bytes[:4] == b"PK\x03\x04"
 
 
+def test_asegurar_estructura_presupuesto_float64_columns_no_lossy_error():
+    import numpy as np
+    import streamlit as st
+    from cota.cotizacion import asegurar_estructura_presupuesto_proyecto, recalcular_totales_presupuesto_proyecto
+
+    # Simular que Google Sheets / Pandas infirió float64 en columnas vacías o numéricas (ej. Codigo_Item = 1.01, Unidad = NaN)
+    st.session_state["proyectos"] = pd.DataFrame([
+        {
+            "Nombre": "Casa La Planicie",
+            "Presupuesto": 0.0,
+            "TC_Presupuesto": 3.60,
+            "Link_Drive": np.nan,
+            "Pagos_Semanales_JSON": np.nan,
+        }
+    ])
+    st.session_state["partidas"] = pd.DataFrame([
+        {"Proyecto": "Casa La Planicie", "Nombre_Partida": "1. Obras Civiles"}
+    ])
+    st.session_state["p_info"] = pd.DataFrame([
+        {"Proyecto": "Casa La Planicie", "Nombre_Partida": "1. Obras Civiles", "Monto_Pactado": 1000.0}
+    ])
+    st.session_state["tasks"] = pd.DataFrame([
+        {
+            "Proyecto": "Casa La Planicie",
+            "Partida": "1. Obras Civiles",
+            "Orden": 1.0,
+            "Codigo_Item": 1.01,       # float64!
+            "Tarea": "Demolición",
+            "Moneda": np.nan,          # float64!
+            "Unidad": np.nan,          # float64!
+            "Metrado": np.nan,
+            "Valor_Unitario": 500.0,
+            "Presupuesto": 500.0,
+        }
+    ])
+
+    # No debe lanzar TypeError / LossySetitemError
+    asegurar_estructura_presupuesto_proyecto("Casa La Planicie")
+    tot = recalcular_totales_presupuesto_proyecto("Casa La Planicie")
+    assert st.session_state["tasks"].loc[0, "Codigo_Item"] == "1.01"
+    assert st.session_state["tasks"].loc[0, "Moneda"] == "Soles"
+    assert st.session_state["tasks"].loc[0, "Unidad"] == "glb"
+    assert tot["subtotal_casco"] == 500.0
+
+
+
 
 
 

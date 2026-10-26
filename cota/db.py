@@ -324,26 +324,33 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
                 '🟢 Comprado': '🟢 Instalado / Recibido'
             })
 
-    # Asegurar que todas las columnas esperadas existan con valores por defecto
+    # Asegurar que todas las columnas esperadas existan con valores y dtypes seguros
+    bool_cols_set = {'Archivado', 'Check', 'Aprobado_Cliente', 'Culpa_Contratista', 'Permitir_Cruce', 'Incluir_IGV'}
+    float_cols_set = {
+        'Presupuesto', 'Utilidades', 'GG_Presupuesto', 'Presupuesto_FFE', 'Honorarios_Diseno',
+        'Costo_Estimado', 'Costo_Real', 'Precio_Unit_Estimado', 'Monto_Pactado', 'Monto_Cobrado', 'Monto',
+        'Metrado', 'Valor_Unitario', 'TC_Presupuesto', 'GG_Pct', 'Utilidades_Pct'
+    }
+    int_cols_set = {'Orden', 'Num_Pisos', 'Num_Sotanos', 'Avance_Pct'}
+
     for col in columnas:
         if col not in df.columns:
-            if col in ['Archivado', 'Check', 'Aprobado_Cliente', 'Culpa_Contratista', 'Permitir_Cruce', 'Incluir_IGV']:
+            if col in bool_cols_set:
                 df[col] = False
-            elif col in ['Presupuesto', 'Utilidades', 'GG_Presupuesto', 'Presupuesto_FFE', 'Honorarios_Diseno',
-                         'Costo_Estimado', 'Costo_Real', 'Precio_Unit_Estimado', 'Monto_Pactado', 'Monto_Cobrado', 'Monto',
-                         'Metrado', 'Valor_Unitario']:
-                df[col] = 0.0
-            elif col == 'TC_Presupuesto':
-                df[col] = 3.42
-            elif col == 'GG_Pct':
-                df[col] = 2.0
-            elif col == 'Utilidades_Pct':
-                df[col] = 15.0
+            elif col in float_cols_set:
+                if col == 'TC_Presupuesto':
+                    df[col] = 3.42
+                elif col == 'GG_Pct':
+                    df[col] = 2.0
+                elif col == 'Utilidades_Pct':
+                    df[col] = 15.0
+                else:
+                    df[col] = 0.0
             elif col == 'Moneda' and pestaña == 'tasks':
                 df[col] = "Soles"
             elif col == 'Supervisado' and pestaña == 'tasks':
                 df[col] = "No"
-            elif col in ['Orden', 'Num_Pisos', 'Num_Sotanos', 'Avance_Pct']:
+            elif col in int_cols_set:
                 df[col] = 0
             elif col == 'Division':
                 df[col] = "General"
@@ -366,18 +373,29 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
             else:
                 df[col] = ""
 
+        # Garantizar dtype compatible en pandas 2.x para evitar LossySetitemError / TypeError al usar .at[]
+        if col in bool_cols_set:
+            df[col] = df[col].apply(to_bool).astype(bool)
+        elif col in float_cols_set:
+            default_f = 3.42 if col == 'TC_Presupuesto' else (2.0 if col == 'GG_Pct' else (15.0 if col == 'Utilidades_Pct' else 0.0))
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(default_f).astype(float)
+        elif col in int_cols_set:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+        else:
+            df[col] = df[col].fillna("").astype(str).replace({"nan": "", "None": "", "<NA>": ""}).astype(object)
+
     # Normalizar Supervisado en tareas
     if pestaña == 'tasks':
         if 'Supervisado' not in df.columns:
             df['Supervisado'] = "No"
         else:
-            df['Supervisado'] = df['Supervisado'].apply(_normalizar_supervisado)
+            df['Supervisado'] = df['Supervisado'].apply(_normalizar_supervisado).astype(object)
 
     if pestaña == 'proyectos':
-        if 'Link_Drive' not in df.columns:
-            df['Link_Drive'] = ""
-        if 'Pagos_Semanales_JSON' not in df.columns:
-            df['Pagos_Semanales_JSON'] = ""
+        for c_extra in ['Link_Drive', 'Pagos_Semanales_JSON']:
+            if c_extra not in df.columns:
+                df[c_extra] = ""
+            df[c_extra] = df[c_extra].fillna("").astype(str).replace({"nan": "", "None": "", "<NA>": ""}).astype(object)
 
     if pestaña == 'fases':
         mask_obsoletas = df['Fase'].astype(str).str.contains(r'ff&e|ffe|expediente t[eé]cnico', case=False, na=False)
@@ -773,6 +791,8 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
         for idx, cols in edits.get("edited_rows", {}).items():
             row_idx = int(idx)
             for col, val in cols.items():
+                if col in df_new.columns and df_new[col].dtype != object and isinstance(val, (str, datetime.date, datetime.datetime)):
+                    df_new[col] = df_new[col].astype(object)
                 df_new.at[row_idx, col] = val
 
         # 2. Aplicar eliminaciones
@@ -789,7 +809,8 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
         # 4. Generación de IDs únicos
         if id_col:
             if id_col not in df_new.columns:
-                df_new[id_col] = None
+                df_new[id_col] = ""
+            df_new[id_col] = df_new[id_col].astype(object)
             for i, row in df_new.iterrows():
                 val = row.get(id_col)
                 if pd.isna(val) or val == "" or str(val).strip() == "" or str(val).lower() == "none":
