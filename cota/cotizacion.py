@@ -594,6 +594,52 @@ def mover_tarea_presupuesto(
     return True
 
 
+def reordenar_tareas_partida_por_indices(
+    proy_name: str,
+    idx_partida_1based: int,
+    nombre_partida_completo: str,
+    nuevos_indices_0based: list[int],
+) -> bool:
+    """
+    Reordena las tareas de una Partida según la permutación `nuevos_indices_0based`
+    (proveniente de arrastrar y soltar / drag-and-drop), renumerando automáticamente
+    Orden (1, 2, 3...) y Codigo_Item (1.01, 1.02, 1.03...).
+    """
+    _sanitizar_dtypes_tasks_y_proyectos()
+    mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
+    df_t_p = st.session_state.tasks[mask_t].copy().reset_index(drop=True)
+    n = len(df_t_p)
+    if n <= 1:
+        return False
+
+    valid_idx = [int(i) for i in nuevos_indices_0based if 0 <= int(i) < n]
+    # Completar cualquier índice faltante por seguridad
+    for i_f in range(n):
+        if i_f not in valid_idx:
+            valid_idx.append(i_f)
+    if valid_idx == list(range(n)):
+        return False
+
+    descs = [
+        extraer_descripcion_tarea(df_t_p.at[i, "Tarea"], f"{idx_partida_1based}.{i + 1:02d}")
+        for i in range(n)
+    ]
+
+    df_reord = df_t_p.iloc[valid_idx].copy().reset_index(drop=True)
+    descs_reord = [descs[i] for i in valid_idx]
+    for i_new in range(n):
+        cod_new = f"{idx_partida_1based}.{i_new + 1:02d}"
+        d_limp = descs_reord[i_new]
+        df_reord.at[i_new, "Orden"] = i_new + 1
+        df_reord.at[i_new, "Codigo_Item"] = cod_new
+        df_reord.at[i_new, "Tarea"] = f"{cod_new} {d_limp}".strip() if d_limp else cod_new
+
+    _reemplazar_tareas_partida_in_place(proy_name, nombre_partida_completo, df_reord)
+    clear_base_dfs()
+    recalcular_totales_presupuesto_proyecto(proy_name)
+    return True
+
+
 def aplicar_edicion_tabla_presupuesto_partida(
     base_key: str,
     widget_key: str,
@@ -2205,10 +2251,13 @@ def obtener_columnas_pago_semanal(num_semanas: int = 5) -> list[str]:
     return ["ADELANTO 1"] + [f"SEMANA {i}" for i in range(1, n + 1)]
 
 
-def _normalizar_fila_pago(fila: dict, cols_pago: list[str], desc_default: str = "") -> dict:
-    """Garantiza que una fila del cuadro de pagos tenga todas las columnas numéricas y de texto."""
+def _normalizar_fila_pago(fila: dict, cols_pago: list[str], desc_default: str = "", partida_default: str = "") -> dict:
+    """Garantiza que una fila del cuadro de pagos tenga todas las columnas numéricas, de texto y vínculo de Partida."""
+    desc_val = safe_str(fila.get("Descripcion", desc_default)).strip() or desc_default
+    part_val = safe_str(fila.get("Partida", partida_default)).strip() or partida_default or desc_val
     res = {
-        "Descripcion": safe_str(fila.get("Descripcion", desc_default)).strip() or desc_default,
+        "Partida": part_val,
+        "Descripcion": desc_val,
         "Moneda": safe_str(fila.get("Moneda", "Soles")).strip() or "Soles",
         "TOTAL": round(safe_float(fila.get("TOTAL", 0.0), 0.0), 2),
     }
@@ -2218,11 +2267,35 @@ def _normalizar_fila_pago(fila: dict, cols_pago: list[str], desc_default: str = 
     return res
 
 
+def _fila_pertenece_a_partida(fila: dict, p_raw: str, p_clean: str, idx_p: int) -> bool:
+    """Verifica si una fila del cuadro de pagos corresponde a la partida dada."""
+    p_raw_u = safe_str(p_raw).strip().upper()
+    p_clean_u = safe_str(p_clean).strip().upper()
+    f_part_u = safe_str(fila.get("Partida", "")).strip().upper()
+    f_desc_u = safe_str(fila.get("Descripcion", "")).strip().upper()
+
+    if f_part_u and (
+        f_part_u == p_raw_u
+        or f_part_u == p_clean_u
+        or limpiar_nombre_partida(f_part_u, idx_p).strip().upper() == p_clean_u
+    ):
+        return True
+    if not f_part_u or f_part_u == f_desc_u:
+        if (
+            f_desc_u == p_raw_u
+            or f_desc_u == p_clean_u
+            or limpiar_nombre_partida(f_desc_u, idx_p).strip().upper() == p_clean_u
+            or (p_clean_u and (f_desc_u.startswith(p_clean_u + " -") or f_desc_u.startswith(p_clean_u + " (") or f_desc_u.startswith(p_clean_u + " /")))
+        ):
+            return True
+    return False
+
+
 def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas: bool = False) -> dict:
     """
     Obtiene o inicializa la estructura del Cuadro de Pagos Semanales para el proyecto `proy_name`.
     Sincroniza automáticamente las partidas, contratistas y montos desde 03. PRESUPUESTO
-    conservando todos los pagos semanales ya registrados.
+    conservando todos los pagos semanales ya registrados y permitiendo múltiples filas por partida.
     """
     df_parts = st.session_state.get("partidas", pd.DataFrame())
     if not df_parts.empty and "Proyecto" in df_parts.columns and not df_parts[df_parts["Proyecto"] == proy_name].empty:
@@ -2274,9 +2347,9 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
                     if not contra_p and "Contratista" in t_m.columns:
                         cs = [safe_str(x).strip() for x in t_m["Contratista"].dropna().unique().tolist() if safe_str(x).strip()]
                         contra_p = ", ".join(cs)
-            partidas_proy.append((p_clean, round(monto_p, 2), contra_p))
+            partidas_proy.append((idx_p, p_raw, p_clean, round(monto_p, 2), contra_p))
 
-    tiene_ppto_activo = any(m > 0 for _, m, _ in partidas_proy)
+    tiene_ppto_activo = any(m > 0 for _, _, _, m, _ in partidas_proy)
 
     if data_guardada and isinstance(data_guardada, dict):
         num_sem = max(1, min(30, int(data_guardada.get("num_semanas", 5) or 5)))
@@ -2302,37 +2375,54 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
         )
 
         if (sincronizar_partidas or tiene_ppto_activo) and partidas_proy:
-            mapa_exist = {f["Descripcion"].strip().upper(): f for f in filas_c}
             nuevas_filas_c = []
-            usadas = set()
-            for idx_pos, (p_nom_u, p_monto, p_contra) in enumerate(partidas_proy):
-                key_u = p_nom_u.strip().upper()
-                f_ex = None
-                if key_u in mapa_exist:
-                    f_ex = dict(mapa_exist[key_u])
-                    usadas.add(key_u)
-                elif idx_pos < len(filas_c) and filas_c[idx_pos]["Descripcion"].strip().upper().startswith("PARTIDA "):
-                    f_ex = dict(filas_c[idx_pos])
-                    usadas.add(filas_c[idx_pos]["Descripcion"].strip().upper())
+            indices_usados = set()
 
-                if f_ex is not None:
-                    f_ex["Descripcion"] = p_nom_u
-                    if p_monto > 0 or sincronizar_partidas:
+            for idx_pos, (idx_p, p_raw, p_nom_u, p_monto, p_contra) in enumerate(partidas_proy):
+                match_idxs = [
+                    i_f for i_f, f_cand in enumerate(filas_c)
+                    if i_f not in indices_usados and _fila_pertenece_a_partida(f_cand, p_raw, p_nom_u, idx_p)
+                ]
+                if not match_idxs and idx_pos < len(filas_c) and idx_pos not in indices_usados:
+                    cand_d = filas_c[idx_pos]["Descripcion"].strip().upper()
+                    if cand_d.startswith("PARTIDA "):
+                        match_idxs = [idx_pos]
+
+                if len(match_idxs) == 1:
+                    i_m = match_idxs[0]
+                    indices_usados.add(i_m)
+                    f_ex = dict(filas_c[i_m])
+                    f_ex["Partida"] = p_nom_u
+                    if f_ex["Descripcion"].strip().upper().startswith("PARTIDA "):
+                        f_ex["Descripcion"] = p_nom_u
+                    if p_monto > 0 and (sincronizar_partidas or safe_float(f_ex.get("TOTAL", 0.0), 0.0) == 0.0):
                         f_ex["TOTAL"] = p_monto
                     if p_contra and not safe_str(f_ex.get("Notas", "")).strip():
                         f_ex["Notas"] = f"Contratista: {p_contra}"
-                    nuevas_filas_c.append(_normalizar_fila_pago(f_ex, cols_pago, p_nom_u))
+                    nuevas_filas_c.append(_normalizar_fila_pago(f_ex, cols_pago, p_nom_u, p_nom_u))
+                elif len(match_idxs) > 1:
+                    # Múltiples filas para la misma partida (ej. Eléctricas y Sanitarias dentro de Instalaciones)
+                    for i_m in match_idxs:
+                        indices_usados.add(i_m)
+                        f_ex = dict(filas_c[i_m])
+                        f_ex["Partida"] = p_nom_u
+                        nuevas_filas_c.append(_normalizar_fila_pago(f_ex, cols_pago, f_ex.get("Descripcion", p_nom_u), p_nom_u))
                 else:
                     nota_init = f"Contratista: {p_contra}" if p_contra else ""
                     nuevas_filas_c.append(
-                        _normalizar_fila_pago({"Descripcion": p_nom_u, "TOTAL": p_monto, "Notas": nota_init}, cols_pago, p_nom_u)
+                        _normalizar_fila_pago(
+                            {"Partida": p_nom_u, "Descripcion": p_nom_u, "TOTAL": p_monto, "Notas": nota_init},
+                            cols_pago,
+                            p_nom_u,
+                            p_nom_u,
+                        )
                     )
-            for f_old in filas_c:
-                k_old = f_old["Descripcion"].strip().upper()
-                if k_old not in usadas:
-                    pagos_old = sum(safe_float(f_old.get(c, 0.0), 0.0) for c in cols_pago)
-                    if f_old.get("TOTAL", 0.0) > 0 or pagos_old > 0:
-                        nuevas_filas_c.append(f_old)
+
+            # Conservar cualquier fila adicional creada por el usuario
+            for i_old, f_old in enumerate(filas_c):
+                if i_old not in indices_usados:
+                    nuevas_filas_c.append(_normalizar_fila_pago(f_old, cols_pago, f_old.get("Descripcion", ""), f_old.get("Partida", "")))
+
             filas_c = nuevas_filas_c
             if util_proy > 0 or sincronizar_partidas:
                 fila_ges["TOTAL"] = util_proy
@@ -2357,15 +2447,16 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
     if partidas_proy:
         filas_c = [
             _normalizar_fila_pago(
-                {"Descripcion": p_n, "TOTAL": p_m, "Notas": f"Contratista: {p_c}" if p_c else ""},
+                {"Partida": p_n, "Descripcion": p_n, "TOTAL": p_m, "Notas": f"Contratista: {p_c}" if p_c else ""},
                 cols_pago,
                 p_n,
+                p_n,
             )
-            for p_n, p_m, p_c in partidas_proy
+            for _, _, p_n, p_m, p_c in partidas_proy
         ]
     else:
         filas_c = [
-            _normalizar_fila_pago({"Descripcion": p_def, "TOTAL": 0.0}, cols_pago, p_def)
+            _normalizar_fila_pago({"Partida": p_def, "Descripcion": p_def, "TOTAL": 0.0}, cols_pago, p_def, p_def)
             for p_def in PARTIDAS_PAGOS_DEFAULT
         ]
 
@@ -2378,6 +2469,54 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
         "fila_gg": _normalizar_fila_pago({"TOTAL": gg_proy}, cols_pago, "Gastos Generales"),
     }
     return res_init
+
+
+def obtener_pagado_por_partida_proyecto(proy_name: str) -> dict[str, float]:
+    """
+    Calcula el monto total PAGADO de cada Partida del proyecto sumando:
+    1. Los pagos registrados en el Cuadro de Pagos Semanales (06. COBROS & FINANZAS) para esa Partida
+       (incluyendo cuando una Partida tiene múltiples filas de contratistas, ej. Eléctricas y Sanitarias).
+    2. Los pagos manuales registrados en `st.session_state.pagos` para esa Partida.
+    Retorna un diccionario `{Nombre_Partida_Completo: monto_pagado_total}`.
+    """
+    resultado_pagado = {}
+    df_parts = st.session_state.get("partidas", pd.DataFrame())
+    if df_parts.empty or "Proyecto" not in df_parts.columns:
+        return resultado_pagado
+
+    p_sub = df_parts[df_parts["Proyecto"] == proy_name]
+    if p_sub.empty:
+        return resultado_pagado
+
+    data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+    res_calc = calcular_resumen_cuadro_pagos_semanales(data_cuadro)
+    filas_c_calc = res_calc.get("filas_contratistas", [])
+    tc = safe_float(res_calc.get("tc", 3.60), 3.60)
+    if tc <= 0:
+        tc = 3.60
+
+    df_pagos_man = st.session_state.get("pagos", pd.DataFrame())
+
+    for idx_p, (_, r_p) in enumerate(p_sub.iterrows(), start=1):
+        p_raw = safe_str(r_p.get("Nombre_Partida", f"Partida {idx_p}"))
+        p_clean = limpiar_nombre_partida(p_raw, idx_p).upper()
+
+        pagado_cuadro = 0.0
+        for f_c in filas_c_calc:
+            if _fila_pertenece_a_partida(f_c, p_raw, p_clean, idx_p):
+                monto_f = safe_float(f_c.get("PAGADO", 0.0), 0.0)
+                es_usd = "dólar" in safe_str(f_c.get("Moneda", "")).lower() or "dolar" in safe_str(f_c.get("Moneda", "")).lower()
+                pagado_cuadro += monto_f * (tc if es_usd else 1.0)
+
+        pagado_manual = 0.0
+        if not df_pagos_man.empty and "Proyecto" in df_pagos_man.columns and "Partida" in df_pagos_man.columns:
+            m_man = df_pagos_man[(df_pagos_man["Proyecto"] == proy_name) & (df_pagos_man["Partida"] == p_raw)]
+            if not m_man.empty:
+                pagado_manual = float(pd.to_numeric(m_man.get("Monto", 0.0), errors="coerce").fillna(0.0).sum())
+
+        resultado_pagado[p_raw] = round(pagado_cuadro + pagado_manual, 2)
+
+    return resultado_pagado
 
 
 def guardar_cuadro_pagos_semanales_proyecto(proy_name: str, data_cuadro: dict):
@@ -2629,7 +2768,12 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     curr_r = 7
     first_c_row = curr_r
     for f_c in res["filas_contratistas"]:
-        ws[f"B{curr_r}"] = f_c["Descripcion"]
+        part_s = safe_str(f_c.get("Partida", "")).strip()
+        desc_s = safe_str(f_c.get("Descripcion", "")).strip()
+        if part_s and desc_s and part_s.upper() not in desc_s.upper():
+            ws[f"B{curr_r}"] = f"{part_s} — {desc_s}"
+        else:
+            ws[f"B{curr_r}"] = desc_s or part_s
         ws[f"B{curr_r}"].alignment = align_left
         ws[f"C{curr_r}"] = f_c["Moneda"]
         ws[f"C{curr_r}"].alignment = align_center

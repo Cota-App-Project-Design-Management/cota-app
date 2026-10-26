@@ -792,6 +792,83 @@ def test_catalogo_estudio_y_notas_chat():
     assert notas_nuevas[1]["texto"] == "Revisión de planos lista"
 
 
+def test_reordenar_dnd_y_pagos_multiples_por_partida():
+    import streamlit as st
+    from cota.cotizacion import (
+        asegurar_estructura_presupuesto_proyecto,
+        guardar_cuadro_pagos_semanales_proyecto,
+        obtener_cuadro_pagos_semanales_proyecto,
+        obtener_pagado_por_partida_proyecto,
+        reordenar_tareas_partida_por_indices,
+    )
+    from cota.db import COLS_PAGOS, COLS_TASKS
+    from cota.pdf import generar_pdf_minuta
+
+    st.session_state["proyectos"] = pd.DataFrame([
+        {
+            "Nombre": "Proy Multi",
+            "Cliente": "Cliente Test",
+            "Tipo_Cambio": 3.50,
+            "Presupuesto": 0.0,
+            "GG_Presupuesto": 0.0,
+            "Utilidades": 0.0,
+            "Honorarios_Diseno": 0.0,
+        }
+    ])
+    st.session_state["partidas"] = pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
+    st.session_state["tasks"] = pd.DataFrame(columns=COLS_TASKS)
+    st.session_state["p_info"] = pd.DataFrame(columns=["Proyecto", "Nombre_Partida", "Monto_Pactado"])
+    st.session_state["pagos"] = pd.DataFrame(columns=COLS_PAGOS)
+    st.session_state["config_estudio"] = pd.DataFrame(columns=["Clave", "Valor"])
+
+    asegurar_estructura_presupuesto_proyecto("Proy Multi", n_partidas_default=2, n_tareas_default=3)
+    p1_name = st.session_state["partidas"].iloc[0]["Nombre_Partida"]
+    p2_name = st.session_state["partidas"].iloc[1]["Nombre_Partida"]
+
+    mask_p1 = (st.session_state["tasks"]["Proyecto"] == "Proy Multi") & (st.session_state["tasks"]["Partida"] == p1_name)
+    idxs_p1 = st.session_state["tasks"][mask_p1].index.tolist()
+    st.session_state["tasks"].loc[idxs_p1[0], "Tarea"] = "1.01 Tarea A"
+    st.session_state["tasks"].loc[idxs_p1[1], "Tarea"] = "1.02 Tarea B"
+    st.session_state["tasks"].loc[idxs_p1[2], "Tarea"] = "1.03 Tarea C"
+
+    # Reordenar Drag & Drop: mover la tarea en índice 2 al principio -> [2, 0, 1]
+    assert reordenar_tareas_partida_por_indices("Proy Multi", 1, p1_name, [2, 0, 1]) is True
+    tasks_p1 = st.session_state["tasks"][
+        (st.session_state["tasks"]["Proyecto"] == "Proy Multi") & (st.session_state["tasks"]["Partida"] == p1_name)
+    ].reset_index(drop=True)
+    assert tasks_p1.iloc[0]["Tarea"] == "1.01 Tarea C"
+    assert tasks_p1.iloc[1]["Tarea"] == "1.02 Tarea A"
+    assert tasks_p1.iloc[2]["Tarea"] == "1.03 Tarea B"
+
+    # Cuadro de pagos con 2 filas para la misma Partida 2 (ej. Eléctricas y Sanitarias)
+    cuadro = obtener_cuadro_pagos_semanales_proyecto("Proy Multi")
+    cuadro["filas_contratistas"] = [
+        {"Partida": p1_name, "Descripcion": p1_name, "Moneda": "Soles", "TOTAL": 5000.0, "Adelanto": 1200.0, "Sem. 1": 800.0},
+        {"Partida": p2_name, "Descripcion": "Instalaciones Eléctricas - Emp A", "Moneda": "Soles", "TOTAL": 4000.0, "Adelanto": 1500.0, "Sem. 1": 500.0},
+        {"Partida": p2_name, "Descripcion": "Instalaciones Sanitarias - Emp B", "Moneda": "Soles", "TOTAL": 3000.0, "Adelanto": 1000.0, "Sem. 1": 250.0},
+    ]
+    guardar_cuadro_pagos_semanales_proyecto("Proy Multi", cuadro)
+
+    pagados_map = obtener_pagado_por_partida_proyecto("Proy Multi")
+    assert abs(pagados_map[p1_name] - 2000.0) < 1e-4
+    assert abs(pagados_map[p2_name] - 3250.0) < 1e-4
+
+    # Verificar que generar_pdf_minuta genera bytes válidos con 3 filas en asistencia y acuerdos
+    df_asist = pd.DataFrame([
+        {"Nombre": "Socio 1", "Rol_Empresa": "Arquitecto", "Asistencia": True},
+        {"Nombre": "Cliente 1", "Rol_Empresa": "Propietario", "Asistencia": True},
+        {"Nombre": "Ing. Eléctrico", "Rol_Empresa": "Contratista", "Asistencia": True},
+    ])
+    df_acuerdos = pd.DataFrame([
+        {"Tema": "Tablero", "Acuerdo_Tarea": "Reubicar tablero", "Responsable": "Ing. Eléctrico", "Fecha_Limite": "20/11/2026", "Estado": "Pendiente"},
+        {"Tema": "Luminarias", "Acuerdo_Tarea": "Aprobar catálogo", "Responsable": "Cliente 1", "Fecha_Limite": "22/11/2026", "Estado": "En Proceso"},
+        {"Tema": "Puntos de red", "Acuerdo_Tarea": "Definir sala TV", "Responsable": "Socio 1", "Fecha_Limite": "25/11/2026", "Estado": "Completado"},
+    ])
+    pdf_bytes = generar_pdf_minuta("Proy Multi", {"Codigo": "ACTA-01", "Fecha": "15/11/2026", "Tipo": "Obra"}, df_asist, df_acuerdos)
+    assert isinstance(pdf_bytes, (bytes, bytearray))
+    assert len(pdf_bytes) > 500
+
+
 
 
 

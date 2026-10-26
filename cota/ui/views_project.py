@@ -5,10 +5,13 @@ Ejecución de Obra, Cobros y Finanzas, Reuniones y Actas, y Punch List de Entreg
 """
 
 import datetime
+import html as html_lib
+import json
 import uuid
 import altair as alt
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from cota.config import (
     AMBIENTES_DEFAULT,
@@ -59,12 +62,14 @@ from cota.cotizacion import (
     mover_tarea_presupuesto,
     obtener_columnas_pago_semanal,
     obtener_cuadro_pagos_semanales_proyecto,
+    obtener_pagado_por_partida_proyecto,
     obtener_parametros_presupuesto_proyecto,
     parsear_cotizacion_venti,
     parsear_cuadro_pagos_semanales,
     parsear_presupuesto_flexible,
     recalcular_totales_presupuesto_proyecto,
     renombrar_partida_presupuesto,
+    reordenar_tareas_partida_por_indices,
 )
 from cota.pdf import generar_pdf_minuta
 from cota.ui.components import render_metric_card
@@ -184,9 +189,13 @@ def _render_tab_resumen(proy_name, proy_data):
     util_proy = safe_float(proy_data.get('Utilidades', 0.0))
     gg_ppto = safe_float(proy_data.get('GG_Presupuesto', 0.0))
 
-    # Pagos a contratistas
-    df_pagos_p = st.session_state.pagos[st.session_state.pagos['Proyecto'] == proy_name]
-    total_pagado_maestros = pd.to_numeric(df_pagos_p['Monto'], errors='coerce').sum() if not df_pagos_p.empty else 0.0
+    # Pagos a contratistas (incluye pagos del Cuadro de Pagos Semanales y pagos manuales por partida)
+    pagados_por_part_res = obtener_pagado_por_partida_proyecto(proy_name)
+    if pagados_por_part_res:
+        total_pagado_maestros = float(sum(pagados_por_part_res.values()))
+    else:
+        df_pagos_p = st.session_state.pagos[st.session_state.pagos['Proyecto'] == proy_name]
+        total_pagado_maestros = pd.to_numeric(df_pagos_p['Monto'], errors='coerce').sum() if not df_pagos_p.empty else 0.0
 
     # Costo directo pactado en partidas
     df_pinfo_p = st.session_state.p_info[st.session_state.p_info['Proyecto'] == proy_name] if 'p_info' in st.session_state else pd.DataFrame()
@@ -547,6 +556,258 @@ def _render_tab_fases(proy_name, proy_data):
     )
 
 
+def _render_dnd_tareas_presupuesto(proy_name: str, idx_p: int, p_nom_completo: str, rows_ed: list, c_ppto_key: str, c_ppto_val: int):
+    """
+    Renderiza una lista interactiva Drag-and-Drop (click holdeando en una tarea y arrastrándola hacia arriba o abajo)
+    para reordenar las tareas de una partida sin usar botones de subir/bajar.
+    """
+    bridge_label = f"dnd_bridge_{proy_name}_{idx_p}"
+    bridge_key = f"dnd_in_{proy_name}_{idx_p}"
+
+    def _on_dnd_change():
+        raw_val = safe_str(st.session_state.get(bridge_key, "")).strip()
+        if not raw_val:
+            return
+        orden_part = raw_val.split("|")[0].strip()
+        try:
+            nuevos_indices = [int(x.strip()) for x in orden_part.split(",") if x.strip() != ""]
+        except ValueError:
+            return
+        if reordenar_tareas_partida_por_indices(proy_name, idx_p, p_nom_completo, nuevos_indices):
+            st.session_state[c_ppto_key] = st.session_state.get(c_ppto_key, c_ppto_val) + 1
+        st.session_state[bridge_key] = ""
+
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stTextInput"]:has(input[aria-label^="dnd_bridge_"]) {
+            position: absolute !important;
+            width: 1px !important;
+            height: 1px !important;
+            opacity: 0 !important;
+            overflow: hidden !important;
+            pointer-events: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.text_input(
+        bridge_label,
+        key=bridge_key,
+        label_visibility="collapsed",
+        on_change=_on_dnd_change,
+    )
+
+    items_html_list = []
+    for i_r, r_item in enumerate(rows_ed):
+        cod_str = html_lib.escape(safe_str(r_item.get("Item", f"{idx_p}.{i_r+1:02d}")))
+        desc_str = html_lib.escape(safe_str(r_item.get("Descripcion", "")).strip() or "(Sin descripción)")
+        vp_str = html_lib.escape(format_currency(safe_float(r_item.get("Valor_Parcial", 0.0), 0.0)))
+        items_html_list.append(
+            f'<div class="dnd-row" data-orig-idx="{i_r}">'
+            f'  <span class="dnd-grip" title="Mantén click y arrastra arriba o abajo">⠿</span>'
+            f'  <span class="dnd-code">{cod_str}</span>'
+            f'  <span class="dnd-desc">{desc_str}</span>'
+            f'  <span class="dnd-val">{vp_str}</span>'
+            f'</div>'
+        )
+    items_html = "\n".join(items_html_list)
+    alto_iframe = max(92, min(280, len(rows_ed) * 34 + 44))
+    bridge_label_js = json.dumps(bridge_label)
+
+    html_dnd = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <style>
+        * {{ box-sizing: border-box; user-select: none; -webkit-user-select: none; }}
+        body {{
+            margin: 0;
+            padding: 2px 0 0 0;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: transparent;
+            color: #262320;
+        }}
+        .dnd-wrap {{
+            background: #FAF8F5;
+            border: 1px dashed #D3C9B8;
+            border-radius: 8px;
+            padding: 6px 10px;
+        }}
+        .dnd-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 11px;
+            color: #6E665E;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }}
+        .dnd-list {{
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }}
+        .dnd-row {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #FFFFFF;
+            border: 1px solid #DFD9CE;
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 12px;
+            cursor: grab;
+            transition: transform 0.10s ease, box-shadow 0.10s ease, border-color 0.10s ease, background 0.10s ease;
+            touch-action: none;
+        }}
+        .dnd-row:hover {{
+            border-color: #C85A32;
+            background: #FFFDFB;
+        }}
+        .dnd-row.dragging {{
+            cursor: grabbing;
+            background: #FFF5EE;
+            border-color: #C85A32;
+            box-shadow: 0 4px 12px rgba(200, 90, 50, 0.22);
+            z-index: 20;
+            transform: scale(1.008);
+        }}
+        .dnd-grip {{
+            color: #C85A32;
+            font-size: 14px;
+            font-weight: 700;
+            line-height: 1;
+        }}
+        .dnd-code {{
+            font-family: monospace;
+            font-weight: 700;
+            font-size: 11.5px;
+            color: #C85A32;
+            background: #F4EFE8;
+            padding: 1px 6px;
+            border-radius: 4px;
+            min-width: 38px;
+            text-align: center;
+        }}
+        .dnd-desc {{
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: #262320;
+            font-weight: 500;
+        }}
+        .dnd-val {{
+            font-family: monospace;
+            font-size: 11.5px;
+            font-weight: 600;
+            color: #6E665E;
+        }}
+    </style>
+    </head>
+    <body>
+        <div class="dnd-wrap">
+            <div class="dnd-header">
+                <span>✋ Mantén click en una tarea y arrástrala arriba o abajo para cambiar su orden:</span>
+                <span style="font-weight:500; color:#8A8178;">🔒 Especialidad y Contratista son internos</span>
+            </div>
+            <div class="dnd-list" id="dndList">
+                {items_html}
+            </div>
+        </div>
+        <script>
+        (function() {{
+            const listEl = document.getElementById('dndList');
+            const partIdx = {int(idx_p)};
+            const bridgeLabel = {bridge_label_js};
+            let activeRow = null;
+            let initialOrder = Array.from(listEl.children).map(el => el.getAttribute('data-orig-idx')).join(',');
+
+            function updateItemCodes() {{
+                const rows = Array.from(listEl.children);
+                rows.forEach((r, i) => {{
+                    const codeEl = r.querySelector('.dnd-code');
+                    if (codeEl) {{
+                        const numStr = String(i + 1).padStart(2, '0');
+                        codeEl.textContent = partIdx + '.' + numStr;
+                    }}
+                }});
+            }}
+
+            function commitOrderIfChanged() {{
+                const newOrder = Array.from(listEl.children).map(el => el.getAttribute('data-orig-idx')).join(',');
+                if (newOrder === initialOrder) return;
+                initialOrder = newOrder;
+                try {{
+                    const parentDoc = window.parent.document;
+                    const inputEl = parentDoc.querySelector('input[aria-label=' + JSON.stringify(bridgeLabel) + ']');
+                    if (inputEl) {{
+                        const payload = newOrder + '|' + Date.now();
+                        const nativeSetter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
+                        nativeSetter.call(inputEl, payload);
+                        inputEl.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        inputEl.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        inputEl.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }}));
+                        inputEl.blur();
+                    }}
+                }} catch (e) {{
+                    console.error('Error enviando orden DND:', e);
+                }}
+            }}
+
+            listEl.addEventListener('pointerdown', function(e) {{
+                const row = e.target.closest('.dnd-row');
+                if (!row) return;
+                activeRow = row;
+                activeRow.classList.add('dragging');
+                if (activeRow.setPointerCapture) {{
+                    try {{ activeRow.setPointerCapture(e.pointerId); }} catch (_) {{}}
+                }}
+                e.preventDefault();
+            }});
+
+            listEl.addEventListener('pointermove', function(e) {{
+                if (!activeRow) return;
+                const y = e.clientY;
+                const siblings = Array.from(listEl.querySelectorAll('.dnd-row:not(.dragging)'));
+                for (const sib of siblings) {{
+                    const box = sib.getBoundingClientRect();
+                    const mid = box.top + box.height / 2;
+                    if (y < mid && sib.compareDocumentPosition(activeRow) & Node.DOCUMENT_POSITION_FOLLOWING) {{
+                        listEl.insertBefore(activeRow, sib);
+                        updateItemCodes();
+                        break;
+                    }} else if (y > mid && sib.compareDocumentPosition(activeRow) & Node.DOCUMENT_POSITION_PRECEDING) {{
+                        listEl.insertBefore(activeRow, sib.nextSibling);
+                        updateItemCodes();
+                        break;
+                    }}
+                }}
+            }});
+
+            function endDrag(e) {{
+                if (!activeRow) return;
+                activeRow.classList.remove('dragging');
+                activeRow = null;
+                commitOrderIfChanged();
+            }}
+
+            listEl.addEventListener('pointerup', endDrag);
+            listEl.addEventListener('pointercancel', endDrag);
+            window.addEventListener('mouseup', endDrag);
+        }})();
+        </script>
+    </body>
+    </html>
+    """
+    components.html(html_dnd, height=alto_iframe, scrolling=False)
+
+
 def _render_tab_presupuesto(proy_name, proy_data):
     """
     Pestaña 3: Constructor y Editor de Presupuesto All-in-One dentro de COTA.
@@ -570,7 +831,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
         )
     with col_imp_top:
         st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
-        if st.button("🤖 IMPORTAR GEMINI / EXCEL", key=f"btn_toggle_imp_ppto_{proy_name}", use_container_width=True):
+        if st.button("📥 IMPORTAR PRESUPUESTO", key=f"btn_toggle_imp_ppto_{proy_name}", use_container_width=True):
             st.session_state[f"show_imp_ppto_{proy_name}"] = not st.session_state.get(f"show_imp_ppto_{proy_name}", False)
     with col_exp_p:
         st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
@@ -585,14 +846,14 @@ def _render_tab_presupuesto(proy_name, proy_data):
             key=f"btn_exp_excel_top_{proy_name}",
         )
 
-    # Panel Importador Inteligente de Presupuesto (Gemini Spark / Markdown / Excel / CSV)
+    # Panel Importador Inteligente de Presupuesto
     if st.session_state.get(f"show_imp_ppto_{proy_name}", False):
         with st.container(border=True):
             ci_1, ci_2 = st.columns([8.5, 1.5])
             with ci_1:
-                st.markdown("##### 🤖 Importar Presupuesto desde Gemini Spark, Excel o CSV")
+                st.markdown("##### 📥 Importar Presupuesto")
                 st.caption(
-                    "Pega directamente la tabla generada en **Gemini Spark** (con columnas como *Partida, Tarea / Sub-partida, Unidad, Metraje, Valor Unitario, Valor Parcial*) "
+                    "Pega directamente una tabla de presupuesto (con columnas como *Partida, Tarea / Sub-partida, Unidad, Metraje, Valor Unitario, Valor Parcial*) "
                     "o sube un archivo `.xlsx` / `.csv`. El sistema la transformará automáticamente al formato oficial de COTA."
                 )
             with ci_2:
@@ -983,29 +1244,18 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 ),
             )
 
-            # Barra para mover tareas verticalmente (Subir / Bajar) sin reescribir
-            if len(opciones_orden_t) > 1:
-                cm_sel, cm_up, cm_dn, cm_info = st.columns([4.5, 1.5, 1.5, 2.5])
-                with cm_sel:
-                    pos_t_sel = st.selectbox(
-                        f"↕️ Reordenar tarea en Partida {idx_p}:",
-                        options=[o[0] for o in opciones_orden_t],
-                        format_func=lambda x: dict(opciones_orden_t).get(x, ""),
-                        key=f"sel_move_t_ppto_{proy_name}_{idx_p}",
-                        label_visibility="collapsed",
-                    )
-                with cm_up:
-                    if st.button("⬆️ Subir", key=f"btn_up_t_ppto_{proy_name}_{idx_p}", use_container_width=True, disabled=(pos_t_sel == 0)):
-                        if mover_tarea_presupuesto(proy_name, idx_p, p_nom_completo, pos_t_sel, "subir"):
-                            st.session_state[c_ppto_key] = c_ppto_val + 1
-                            st.rerun()
-                with cm_dn:
-                    if st.button("⬇️ Bajar", key=f"btn_dn_t_ppto_{proy_name}_{idx_p}", use_container_width=True, disabled=(pos_t_sel >= len(opciones_orden_t) - 1)):
-                        if mover_tarea_presupuesto(proy_name, idx_p, p_nom_completo, pos_t_sel, "bajar"):
-                            st.session_state[c_ppto_key] = c_ppto_val + 1
-                            st.rerun()
-                with cm_info:
-                    st.caption("🔒 *Especialidad y Contratista son internos (no se exportan al cliente).*")
+            # Reordenamiento Drag & Drop (Click holdeando en una tarea y arrastrándola hacia arriba o abajo)
+            if len(rows_ed) > 1:
+                _render_dnd_tareas_presupuesto(
+                    proy_name=proy_name,
+                    idx_p=idx_p,
+                    p_nom_completo=p_nom_completo,
+                    rows_ed=rows_ed,
+                    c_ppto_key=c_ppto_key,
+                    c_ppto_val=c_ppto_val,
+                )
+            else:
+                st.caption("🔒 *Especialidad y Contratista son internos (no se exportan al cliente).*")
 
     # Cuadro Resumen de Cierre del Presupuesto + Exportación a Excel
     st.divider()
@@ -1293,64 +1543,232 @@ def _render_tab_obra(proy_name, proy_data):
                     clear_base_dfs()
                     st.rerun()
 
-    with st.expander("📊 CRONOGRAMA GANTT DE PARTIDAS Y TAREAS (INICIO → FIN Y ESTADOS)", expanded=True):
+    with st.expander("📊 CRONOGRAMA GANTT POR PARTIDA Y TAREAS (INICIO → FIN Y ESTADOS)", expanded=True):
         if not df_all_t_proy.empty:
-            df_gantt = df_all_t_proy.copy()
-            df_gantt["Inicio_DT"] = df_gantt["Inicio"].apply(lambda x: pd.to_datetime(parse_date(x)))
-            df_gantt["Fin_DT"] = df_gantt["Fin"].apply(lambda x: pd.to_datetime(parse_date(x)))
-            df_gantt = df_gantt.dropna(subset=["Inicio_DT", "Fin_DT"]).copy()
+            df_gantt_raw = df_all_t_proy.copy()
+            df_gantt_raw["Inicio_DT"] = df_gantt_raw["Inicio"].apply(lambda x: pd.to_datetime(parse_date(x)))
+            df_gantt_raw["Fin_DT"] = df_gantt_raw["Fin"].apply(lambda x: pd.to_datetime(parse_date(x)))
+            df_gantt_raw = df_gantt_raw.dropna(subset=["Inicio_DT", "Fin_DT"]).copy()
 
-            if not df_gantt.empty:
-                mask_eq = df_gantt["Inicio_DT"].dt.date == df_gantt["Fin_DT"].dt.date
-                df_gantt.loc[mask_eq, "Fin_DT"] = df_gantt["Fin_DT"] + datetime.timedelta(days=1)
-                df_gantt["Duracion_Dias"] = (df_gantt["Fin_DT"] - df_gantt["Inicio_DT"]).dt.days.clip(lower=1)
-                df_gantt["Etiqueta_Tarea"] = df_gantt.apply(
-                    lambda r: f"{safe_str(r.get('Codigo_Item', '')).strip()} {extraer_descripcion_tarea(r.get('Tarea', ''), r.get('Codigo_Item', ''))}"[:55].strip(),
-                    axis=1,
-                )
-                df_gantt["Orden_Gantt"] = range(len(df_gantt))
+            if not df_gantt_raw.empty:
+                mask_eq = df_gantt_raw["Inicio_DT"].dt.date == df_gantt_raw["Fin_DT"].dt.date
+                df_gantt_raw.loc[mask_eq, "Fin_DT"] = df_gantt_raw["Fin_DT"] + datetime.timedelta(days=1)
+                df_gantt_raw["Duracion_Dias"] = (df_gantt_raw["Fin_DT"] - df_gantt_raw["Inicio_DT"]).dt.days.clip(lower=1)
 
-                escala_color_t = alt.Scale(
-                    domain=STATUS_TASKS,
-                    range=["#D98A2B", "#2B6CB0", "#4A7C59", "#C93B2B"],
-                )
-                alto_gantt = max(220, min(680, len(df_gantt) * 28 + 60))
-                chart_gantt_t = (
-                    alt.Chart(df_gantt)
-                    .mark_bar(cornerRadius=4, height=16)
-                    .encode(
-                        x=alt.X(
-                            "Inicio_DT:T",
-                            title="Cronograma de Ejecución (Inicio → Fin)",
-                            axis=alt.Axis(gridColor="#DFD9CE", domainColor="#DFD9CE", labelColor="#6E665E", titleColor="#262320", format="%d %b"),
-                        ),
-                        x2="Fin_DT:T",
-                        y=alt.Y(
-                            "Etiqueta_Tarea:N",
-                            sort=alt.SortField(field="Orden_Gantt", order="ascending"),
-                            title="",
-                            axis=alt.Axis(labelColor="#262320", labelFontWeight="bold", labelLimit=280),
-                        ),
-                        color=alt.Color(
-                            "Estado:N",
-                            scale=escala_color_t,
-                            legend=alt.Legend(title="Estado de Tarea", orient="top", labelColor="#262320", titleColor="#6E665E"),
-                        ),
-                        tooltip=[
-                            alt.Tooltip("Partida:N", title="Partida"),
-                            alt.Tooltip("Tarea:N", title="Tarea"),
-                            alt.Tooltip("Contratista:N", title="Contratista"),
-                            alt.Tooltip("Estado:N", title="Estado"),
-                            alt.Tooltip("Inicio:N", title="Inicio"),
-                            alt.Tooltip("Fin:N", title="Fin"),
-                            alt.Tooltip("Duracion_Dias:Q", title="Duración (días)"),
-                        ],
+                paleta_partidas = [
+                    "#C85A32",
+                    "#2B6CB0",
+                    "#4A7C59",
+                    "#D98A2B",
+                    "#7B4B94",
+                    "#1D7874",
+                    "#9C4221",
+                    "#4C51BF",
+                ]
+                orden_partidas_lista = parts_proy["Nombre_Partida"].dropna().astype(str).tolist()
+                for p_ex in df_gantt_raw["Partida"].dropna().astype(str).unique().tolist():
+                    if p_ex not in orden_partidas_lista:
+                        orden_partidas_lista.append(p_ex)
+
+                mapa_color_partida = {
+                    p_n: paleta_partidas[i_c % len(paleta_partidas)]
+                    for i_c, p_n in enumerate(orden_partidas_lista)
+                }
+
+                filas_gantt_estructuradas = []
+                separadores_y = []
+                chips_leyenda_partidas = []
+                orden_row = 0
+
+                for i_part_g, p_nom_g in enumerate(orden_partidas_lista, start=1):
+                    df_p_sub = df_gantt_raw[df_gantt_raw["Partida"].astype(str) == p_nom_g].copy()
+                    if df_p_sub.empty:
+                        continue
+
+                    color_p = mapa_color_partida.get(p_nom_g, "#C85A32")
+                    p_limpio_g = limpiar_nombre_partida(p_nom_g, i_part_g)
+                    p_grupo_lbl = f"P{i_part_g}: {p_limpio_g}"
+
+                    ini_min_p = df_p_sub["Inicio_DT"].min()
+                    fin_max_p = df_p_sub["Fin_DT"].max()
+                    dur_total_p = max(1, int((fin_max_p - ini_min_p).days))
+                    etiqueta_cabecera = f"■ PARTIDA {i_part_g}: {p_limpio_g.upper()}"[:56]
+
+                    if orden_row > 0:
+                        separadores_y.append(etiqueta_cabecera)
+
+                    chips_leyenda_partidas.append(
+                        f"<span style='display:inline-flex; align-items:center; gap:6px; background:#FFFFFF; border:1px solid #DFD9CE; "
+                        f"border-left:5px solid {color_p}; border-radius:6px; padding:4px 10px; font-size:12px; font-weight:600; color:#262320;'>"
+                        f"<span style='width:10px; height:10px; border-radius:2px; background:{color_p}; display:inline-block;'></span>"
+                        f"{html_lib.escape(f'{i_part_g}. {p_limpio_g}')} "
+                        f"<span style='font-size:11px; color:#6E665E; font-weight:500;'>({len(df_p_sub)} tarea{'s' if len(df_p_sub) != 1 else ''})</span>"
+                        f"</span>"
                     )
+
+                    # Barra resumen de toda la Partida
+                    filas_gantt_estructuradas.append({
+                        "Orden_Gantt": orden_row,
+                        "Etiqueta_Y": etiqueta_cabecera,
+                        "Partida_Grupo": p_grupo_lbl,
+                        "Partida": p_nom_g,
+                        "Tarea": f"RESUMEN {p_nom_g}",
+                        "Contratista": "—",
+                        "Estado": "Resumen de Partida",
+                        "Inicio": ini_min_p.strftime("%d/%m/%Y"),
+                        "Fin": fin_max_p.strftime("%d/%m/%Y"),
+                        "Inicio_DT": ini_min_p,
+                        "Fin_DT": fin_max_p,
+                        "Duracion_Dias": dur_total_p,
+                        "Es_Cabecera": True,
+                        "Opacidad": 1.0,
+                        "Texto_Barra": f"● {ini_min_p.strftime('%d/%m')} → {fin_max_p.strftime('%d/%m')} ({dur_total_p}d total)",
+                    })
+                    orden_row += 1
+
+                    # Barras de cada Tarea perteneciente a esta Partida
+                    for pos_sub_t, (_, r_gt) in enumerate(df_p_sub.iterrows(), start=1):
+                        cod_g = safe_str(r_gt.get("Codigo_Item", "")).strip() or f"{i_part_g}.{pos_sub_t:02d}"
+                        desc_g = extraer_descripcion_tarea(r_gt.get("Tarea", ""), cod_g)
+                        est_g = safe_str(r_gt.get("Estado", "⏳ Planificado")).strip() or "⏳ Planificado"
+                        icono_est = est_g.split(" ")[0] if " " in est_g else "•"
+                        etiqueta_t = f"   ↳ {cod_g} {desc_g}"[:54]
+                        # Evitar colisión si dos tareas tienen exactamente el mismo nombre
+                        while any(f_prev["Etiqueta_Y"] == etiqueta_t for f_prev in filas_gantt_estructuradas):
+                            etiqueta_t = etiqueta_t + " "
+
+                        ini_t_dt = r_gt["Inicio_DT"]
+                        fin_t_dt = r_gt["Fin_DT"]
+                        dur_t_d = int(r_gt["Duracion_Dias"])
+                        contra_g = safe_str(r_gt.get("Contratista", "")).strip() or "Sin asignar"
+
+                        filas_gantt_estructuradas.append({
+                            "Orden_Gantt": orden_row,
+                            "Etiqueta_Y": etiqueta_t,
+                            "Partida_Grupo": p_grupo_lbl,
+                            "Partida": p_nom_g,
+                            "Tarea": f"{cod_g} - {desc_g}",
+                            "Contratista": contra_g,
+                            "Estado": est_g,
+                            "Inicio": ini_t_dt.strftime("%d/%m/%Y"),
+                            "Fin": fin_t_dt.strftime("%d/%m/%Y"),
+                            "Inicio_DT": ini_t_dt,
+                            "Fin_DT": fin_t_dt,
+                            "Duracion_Dias": dur_t_d,
+                            "Es_Cabecera": False,
+                            "Opacidad": 0.78,
+                            "Texto_Barra": f"{est_g} · {ini_t_dt.strftime('%d/%m')}→{fin_t_dt.strftime('%d/%m')} ({dur_t_d}d)",
+                        })
+                        orden_row += 1
+
+                # Leyenda clara en HTML (Partidas por Color + Estados de Ejecución)
+                html_leyenda_gantt = (
+                    "<div style='background:#FAF8F5; border:1px solid #DFD9CE; border-radius:10px; padding:10px 14px; margin-bottom:10px;'>"
+                    "  <div style='display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px;'>"
+                    "    <div style='font-size:11.5px; font-weight:700; color:#262320; text-transform:uppercase; letter-spacing:0.4px;'>"
+                    "      🎨 Leyenda de Partidas (Color por Partida):"
+                    "    </div>"
+                    "    <div style='display:flex; flex-wrap:wrap; align-items:center; gap:10px; font-size:11.5px; color:#4A453E; background:#EFECE6; padding:4px 10px; border-radius:6px;'>"
+                    "      <span><b>Estados en barra:</b></span>"
+                    "      <span>⏳ Planificado</span>"
+                    "      <span>🔨 En Proceso</span>"
+                    "      <span>✅ Completado</span>"
+                    "      <span>⚠️ Retrasado</span>"
+                    "      <span style='color:#6E665E;'>|</span>"
+                    "      <span><b>■</b> Barra intensa = Duración total de la Partida</span>"
+                    "      <span><b>↳</b> Barra clara = Tarea individual</span>"
+                    "    </div>"
+                    "  </div>"
+                    f"  <div style='display:flex; flex-wrap:wrap; gap:8px;'>{''.join(chips_leyenda_partidas)}</div>"
+                    "</div>"
+                )
+                st.markdown(html_leyenda_gantt, unsafe_allow_html=True)
+
+                df_gantt_plot = pd.DataFrame(filas_gantt_estructuradas)
+                dominio_grupos = list(dict.fromkeys(df_gantt_plot["Partida_Grupo"].tolist()))
+                rango_colores = [
+                    mapa_color_partida.get(
+                        df_gantt_plot[df_gantt_plot["Partida_Grupo"] == g]["Partida"].iloc[0],
+                        "#C85A32",
+                    )
+                    for g in dominio_grupos
+                ]
+                escala_color_partidas = alt.Scale(domain=dominio_grupos, range=rango_colores)
+                orden_etiquetas_y = df_gantt_plot.sort_values("Orden_Gantt")["Etiqueta_Y"].tolist()
+
+                alto_gantt = max(250, min(820, len(df_gantt_plot) * 30 + 55))
+
+                base_chart = alt.Chart(df_gantt_plot).encode(
+                    y=alt.Y(
+                        "Etiqueta_Y:N",
+                        sort=orden_etiquetas_y,
+                        title="",
+                        axis=alt.Axis(
+                            labelColor="#262320",
+                            labelFontSize=11.5,
+                            labelFontWeight="bold",
+                            labelLimit=310,
+                            tickColor="#DFD9CE",
+                            domainColor="#DFD9CE",
+                        ),
+                    )
+                )
+
+                barras_gantt = base_chart.mark_bar(cornerRadius=4, height=18).encode(
+                    x=alt.X(
+                        "Inicio_DT:T",
+                        title="Línea de Tiempo (Inicio → Fin)",
+                        axis=alt.Axis(
+                            grid=True,
+                            gridColor="#EAE5DC",
+                            domainColor="#DFD9CE",
+                            labelColor="#262320",
+                            titleColor="#262320",
+                            format="%d/%m",
+                        ),
+                    ),
+                    x2="Fin_DT:T",
+                    color=alt.Color("Partida_Grupo:N", scale=escala_color_partidas, legend=None),
+                    opacity=alt.Opacity("Opacidad:Q", legend=None),
+                    tooltip=[
+                        alt.Tooltip("Partida:N", title="Partida"),
+                        alt.Tooltip("Tarea:N", title="Tarea / Resumen"),
+                        alt.Tooltip("Estado:N", title="Estado"),
+                        alt.Tooltip("Contratista:N", title="Contratista"),
+                        alt.Tooltip("Inicio:N", title="Fecha Inicio"),
+                        alt.Tooltip("Fin:N", title="Fecha Fin"),
+                        alt.Tooltip("Duracion_Dias:Q", title="Duración (días)"),
+                    ],
+                )
+
+                textos_gantt = base_chart.mark_text(
+                    align="left",
+                    baseline="middle",
+                    dx=6,
+                    fontSize=10.5,
+                    fontWeight="bold",
+                    color="#262320",
+                ).encode(
+                    x="Fin_DT:T",
+                    text="Texto_Barra:N",
+                )
+
+                layers_gantt = [barras_gantt, textos_gantt]
+                if separadores_y:
+                    df_sep = pd.DataFrame({"Etiqueta_Y": separadores_y})
+                    reglas_sep = (
+                        alt.Chart(df_sep)
+                        .mark_rule(strokeDash=[5, 4], color="#C8BFA8", strokeWidth=1.5)
+                        .encode(y=alt.Y("Etiqueta_Y:N", sort=orden_etiquetas_y))
+                    )
+                    layers_gantt.insert(0, reglas_sep)
+
+                chart_gantt_final = (
+                    alt.layer(*layers_gantt)
                     .properties(height=alto_gantt)
                     .configure_view(strokeOpacity=0)
-                    .configure_axis(grid=True)
                 )
-                st.altair_chart(chart_gantt_t, use_container_width=True)
+                st.altair_chart(chart_gantt_final, use_container_width=True)
             else:
                 st.caption("💡 Asigna fechas de **Inicio** y **Fin** a las tareas abajo (o usa el botón **📅 Auto-asignar fechas**) para visualizar las barras en el Cronograma Gantt.")
         else:
@@ -1358,6 +1776,9 @@ def _render_tab_obra(proy_name, proy_data):
 
     especialidades_obra = list(dict.fromkeys([""] + (obtener_catalogo_estudio("especialidades") or ESPECIALIDADES_DEFAULT) + extraer_esp(st.session_state.maestro)))
     contratistas_obra = [""] + (st.session_state.maestro['ID_Contratista'].dropna().unique().tolist() if not st.session_state.maestro.empty else [])
+
+    # Mapa de montos pagados por Partida (sincronizado con 06. Cuadro de Pagos Semanales + Pagos directos)
+    pagados_por_partida_map = obtener_pagado_por_partida_proyecto(proy_name)
 
     # Iterar partidas en el orden exacto del presupuesto
     for pos_part_0b, (idx_part, part_r) in enumerate(parts_proy.iterrows()):
@@ -1368,8 +1789,7 @@ def _render_tab_obra(proy_name, proy_data):
         df_pactado = st.session_state.p_info[(st.session_state.p_info['Proyecto'] == proy_name) & (st.session_state.p_info['Nombre_Partida'] == p_nom)]
         monto_pactado = float(df_pactado['Monto_Pactado'].iloc[0]) if not df_pactado.empty else 0.0
 
-        df_pagos_part = st.session_state.pagos[(st.session_state.pagos['Proyecto'] == proy_name) & (st.session_state.pagos['Partida'] == p_nom)]
-        monto_pagado = pd.to_numeric(df_pagos_part['Monto'], errors='coerce').sum() if not df_pagos_part.empty else 0.0
+        monto_pagado = float(pagados_por_partida_map.get(p_nom, 0.0))
         saldo = monto_pactado - monto_pagado
 
         col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns([1.5, 1.8, 1.8, 1.5, 5.4])
@@ -1537,13 +1957,13 @@ def _render_tab_obra(proy_name, proy_data):
             )
         )
 
-        # Barra rápida: Selector de Rango de Fechas (Inicio → Fin en el mismo calendario con resaltado) + Mover Tarea (Subir / Bajar) + Sugerir Contratista
+        # Barra rápida: Selector de Rango de Fechas (Inicio → Fin en el mismo calendario con resaltado) + Sugerir Contratista
         if not df_tasks_p.empty:
             opciones_t_obra = [
                 (i_t, f"{safe_str(r_t.get('Codigo_Item', f'{idx_p_1b}.{i_t+1:02d}'))} — {extraer_descripcion_tarea(r_t.get('Tarea', ''), r_t.get('Codigo_Item', ''))}")
                 for i_t, (_, r_t) in enumerate(df_tasks_p.iterrows())
             ]
-            cr_t, cr_cal, cr_btn, cr_up, cr_dn, cr_sug = st.columns([3.0, 2.8, 1.5, 0.85, 0.85, 1.0])
+            cr_t, cr_cal, cr_btn, cr_sug = st.columns([3.8, 3.2, 1.6, 1.4])
             with cr_t:
                 idx_t_sel_obra = st.selectbox(
                     "Tarea seleccionada:",
@@ -1583,16 +2003,6 @@ def _render_tab_obra(proy_name, proy_data):
                             st.session_state.tasks.at[g_idx, "Fin"] = f_f_new.strftime("%d/%m/%Y")
                             st.session_state[counter_key] = c_val + 1
                             st.rerun()
-            with cr_up:
-                if st.button("⬆️", key=f"btn_up_obra_{proy_name}_{idx_p_1b}", use_container_width=True, disabled=(idx_t_sel_obra == 0), help="Subir tarea"):
-                    if mover_tarea_presupuesto(proy_name, idx_p_1b, p_nom, idx_t_sel_obra, "subir"):
-                        st.session_state[counter_key] = c_val + 1
-                        st.rerun()
-            with cr_dn:
-                if st.button("⬇️", key=f"btn_dn_obra_{proy_name}_{idx_p_1b}", use_container_width=True, disabled=(idx_t_sel_obra >= len(opciones_t_obra) - 1), help="Bajar tarea"):
-                    if mover_tarea_presupuesto(proy_name, idx_p_1b, p_nom, idx_t_sel_obra, "bajar"):
-                        st.session_state[counter_key] = c_val + 1
-                        st.rerun()
             with cr_sug:
                 if st.button("🔍 Sugerir", key=f"sug_{proy_name}_{p_nom}_{idx_part}", use_container_width=True, help="Sugerir contratista disponible para esta partida"):
                     for _, row_s in st.session_state[base_t_key].iterrows():
@@ -1768,10 +2178,28 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         )
 
     # Construcción de columnas del editor
+    partidas_proy_list = (
+        st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name]["Nombre_Partida"].dropna().astype(str).tolist()
+        if "partidas" in st.session_state and not st.session_state.partidas.empty
+        else []
+    )
+    opciones_partida_cont = [""] + list(dict.fromkeys(partidas_proy_list))
+    for r_fc in res_calc.get("filas_contratistas", []):
+        p_fc = safe_str(r_fc.get("Partida", "")).strip()
+        if p_fc and p_fc not in opciones_partida_cont:
+            opciones_partida_cont.append(p_fc)
+
+    ordered_cols_cont = ["Partida", "Descripcion", "Moneda", "TOTAL"] + cols_pago + ["PAGADO", "SALDO", "Notas"]
     ordered_cols = ["Descripcion", "Moneda", "TOTAL"] + cols_pago + ["PAGADO", "SALDO", "Notas"]
 
     col_cfg_common = {
-        "Descripcion": st.column_config.TextColumn("Descripción / Partida", width="medium", required=True),
+        "Partida": st.column_config.SelectboxColumn(
+            "Partida",
+            options=opciones_partida_cont,
+            width="medium",
+            help="Partida del proyecto a la que pertenece este pago (puedes tener varias filas/contratistas para una misma Partida, ej. Eléctricas y Sanitarias).",
+        ),
+        "Descripcion": st.column_config.TextColumn("Contratista / Especialidad / Frente", width="medium", required=True),
         "Moneda": st.column_config.SelectboxColumn("Moneda", options=["Soles", "Dólares"], default="Soles", width="small"),
         "TOTAL": st.column_config.NumberColumn("TOTAL", format="%.2f", width="small"),
     }
@@ -1788,21 +2216,78 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
     col_cfg_common["SALDO"] = st.column_config.NumberColumn("SALDO", format="%.2f", width="small", disabled=True)
     col_cfg_common["Notas"] = st.column_config.TextColumn("Notas", width="medium")
 
-    # 1. Editor de TRABAJOS CONTRATISTAS
-    st.markdown("##### 👷 TRABAJOS CONTRATISTAS")
-    df_cont_view = pd.DataFrame(res_calc["filas_contratistas"])
-    if df_cont_view.empty:
-        df_cont_view = pd.DataFrame(columns=ordered_cols)
-    else:
-        for c_o in ordered_cols:
-            if c_o not in df_cont_view.columns:
-                df_cont_view[c_o] = "" if c_o in ("Descripcion", "Moneda", "Notas") else 0.0
-        df_cont_view = df_cont_view[ordered_cols].copy()
-
     base_cont_key = f"base_df_pagos_cont_{proy_name}"
     cnt_cont_key = f"c_{base_cont_key}"
     c_cont_val = st.session_state.get(cnt_cont_key, 0)
     w_cont_key = f"ed_pagos_cont_{proy_name}_{c_cont_val}"
+
+    # 1. Editor de TRABAJOS CONTRATISTAS (permite múltiples filas por Partida)
+    col_hdr_cont, col_add_sub_cont = st.columns([5.8, 4.2])
+    with col_hdr_cont:
+        st.markdown("##### 👷 TRABAJOS CONTRATISTAS")
+        st.caption("Puedes tener múltiples contratistas/empresas para una misma Partida (ej. en Instalaciones: una fila para Eléctricas y otra para Sanitarias). Todos sus pagos se suman al `PAGADO:` de esa Partida en `05. PARTIDAS Y TAREAS`.")
+    with col_add_sub_cont:
+        with st.popover("➕ Agregar Contratista / Sub-partida a una Partida", use_container_width=True):
+            st.caption("Agrega otra fila asociada a una misma Partida (ej. Instalaciones → Eléctricas / Sanitarias).")
+            with st.form(f"frm_add_sub_cont_{proy_name}", clear_on_submit=True):
+                part_sel_new = st.selectbox(
+                    "Partida Asociada:",
+                    options=partidas_proy_list if partidas_proy_list else ["General"],
+                )
+                contratistas_sug_list = (
+                    st.session_state.maestro["ID_Contratista"].dropna().astype(str).tolist()
+                    if "maestro" in st.session_state and not st.session_state.maestro.empty
+                    else []
+                )
+                desc_sub_new = st.text_input(
+                    "Contratista / Especialidad (ej. Eléctricas - Emp. A, Sanitarias - Emp. B):",
+                    placeholder="Ej. Inst. Eléctricas - Contratista",
+                )
+                contra_ref = st.selectbox(
+                    "O elegir Contratista de Base de Datos (opcional):",
+                    options=["(Escribir arriba)"] + contratistas_sug_list,
+                )
+                c_m1, c_m2 = st.columns(2)
+                with c_m1:
+                    mon_sub_new = st.selectbox("Moneda:", ["Soles", "Dólares"])
+                with c_m2:
+                    tot_sub_new = st.number_input("Total Pactado:", min_value=0.0, value=0.0, step=100.0)
+                if st.form_submit_button("➕ AGREGAR FILA A LA PARTIDA", type="primary", use_container_width=True):
+                    etiqueta_final = desc_sub_new.strip()
+                    if contra_ref != "(Escribir arriba)":
+                        etiqueta_final = f"{etiqueta_final} ({contra_ref})" if etiqueta_final else contra_ref
+                    if not etiqueta_final:
+                        etiqueta_final = f"{part_sel_new} — Sub-contratista"
+                    d_cur_add = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+                    nueva_fila_c = {
+                        "Partida": part_sel_new,
+                        "Descripcion": etiqueta_final,
+                        "Moneda": mon_sub_new,
+                        "TOTAL": float(tot_sub_new),
+                        "Notas": "",
+                    }
+                    for c_s in cols_pago:
+                        nueva_fila_c[c_s] = 0.0
+                    # Insertar justo debajo de la última fila de esa misma Partida si existe
+                    filas_act = list(d_cur_add.get("filas_contratistas", []))
+                    insert_pos = len(filas_act)
+                    for idx_f, f_ex in enumerate(filas_act):
+                        if safe_str(f_ex.get("Partida", "")).strip() == part_sel_new:
+                            insert_pos = idx_f + 1
+                    filas_act.insert(insert_pos, nueva_fila_c)
+                    d_cur_add["filas_contratistas"] = filas_act
+                    guardar_cuadro_pagos_semanales_proyecto(proy_name, d_cur_add)
+                    st.session_state[cnt_cont_key] = c_cont_val + 1
+                    st.rerun()
+
+    df_cont_view = pd.DataFrame(res_calc["filas_contratistas"])
+    if df_cont_view.empty:
+        df_cont_view = pd.DataFrame(columns=ordered_cols_cont)
+    else:
+        for c_o in ordered_cols_cont:
+            if c_o not in df_cont_view.columns:
+                df_cont_view[c_o] = "" if c_o in ("Partida", "Descripcion", "Moneda", "Notas") else 0.0
+        df_cont_view = df_cont_view[ordered_cols_cont].copy()
 
     st.session_state[base_cont_key] = df_cont_view.copy()
 
@@ -1822,10 +2307,12 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             if del_idx < len(df_b):
                 df_b = df_b.drop(df_b.index[del_idx]).reset_index(drop=True)
         for add_r in state_ed.get("added_rows", []):
-            new_r = {c: ("" if c in ("Descripcion", "Notas") else ("Soles" if c == "Moneda" else 0.0)) for c in df_b.columns}
+            new_r = {c: ("" if c in ("Partida", "Descripcion", "Notas") else ("Soles" if c == "Moneda" else 0.0)) for c in df_b.columns}
             new_r.update(add_r)
+            if not str(new_r.get("Partida", "")).strip() and str(new_r.get("Descripcion", "")).strip() in opciones_partida_cont:
+                new_r["Partida"] = str(new_r.get("Descripcion", "")).strip()
             if not str(new_r.get("Descripcion", "")).strip():
-                new_r["Descripcion"] = f"NUEVA PARTIDA {len(df_b) + 1}"
+                new_r["Descripcion"] = str(new_r.get("Partida", "")).strip() or f"NUEVA PARTIDA {len(df_b) + 1}"
             df_b = pd.concat([df_b, pd.DataFrame([new_r])], ignore_index=True)
 
         d_cur = obtener_cuadro_pagos_semanales_proyecto(p_name)
@@ -1856,6 +2343,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
     st.session_state[base_ges_key] = df_ges_view.copy()
 
     col_cfg_ges = dict(col_cfg_common)
+    col_cfg_ges.pop("Partida", None)
     col_cfg_ges["Descripcion"] = st.column_config.TextColumn("Concepto", width="medium", disabled=True)
 
     def _on_edit_pagos_ges(b_key, w_key, p_name):

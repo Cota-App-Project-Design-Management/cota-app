@@ -70,9 +70,10 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
     pdf.set_text_color(255, 255, 255)
     pdf.set_font('Helvetica', 'B', 9)
     pdf.cell(0, 7, '  1. DATOS DEL PROYECTO Y REUNION', fill=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_fill_color(255, 255, 255)
+    pdf.set_text_color(38, 35, 32)
     pdf.ln(2)
 
-    pdf.set_text_color(38, 35, 32)
     info_fields = [
         ('Proyecto:', r_ses.get('Proyecto', '')),
         ('Tipo de Reunión:', r_ses.get('Tipo_Reunion', r_ses.get('Tipo', 'Coordinación'))),
@@ -97,17 +98,28 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
     pdf.set_text_color(255, 255, 255)
     pdf.set_font('Helvetica', 'B', 9)
     pdf.cell(0, 7, '  2. ASISTENCIA Y PARTICIPANTES', fill=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_fill_color(255, 255, 255)
+    pdf.set_text_color(38, 35, 32)
     pdf.ln(2)
 
     hs = FontFace(emphasis="B", fill_color=(239, 236, 230), color=(38, 35, 32))
+    rs = FontFace(emphasis="", fill_color=(255, 255, 255), color=(38, 35, 32))
 
     if invitados_df is None or invitados_df.empty:
         pdf.set_text_color(110, 102, 94)
         pdf.set_font('Helvetica', 'I', 8)
         pdf.cell(0, 6, 'No hay participantes registrados.', border=1, new_x="LMARGIN", new_y="NEXT")
     else:
+        pdf.set_fill_color(255, 255, 255)
         pdf.set_text_color(38, 35, 32)
-        with pdf.table(col_widths=(65, 45, 45, 25), line_height=5, headings_style=hs, borders_layout="HORIZONTAL_LINES") as table:
+        with pdf.table(
+            col_widths=(65, 45, 45, 25),
+            line_height=5.5,
+            headings_style=hs,
+            cell_fill_color=(255, 255, 255),
+            cell_fill_mode="ALL",
+            borders_layout="HORIZONTAL_LINES",
+        ) as table:
             headers = table.row()
             pdf.set_font('Helvetica', 'B', 8)
             headers.cell(safe_pdf_str("Nombre"))
@@ -117,7 +129,7 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
 
             pdf.set_font('Helvetica', '', 8)
             for _, row in invitados_df.iterrows():
-                r = table.row()
+                r = table.row(style=rs)
                 r.cell(safe_pdf_str(row.get('Nombre', '')))
                 r.cell(safe_pdf_str(row.get('Empresa', '')))
                 r.cell(safe_pdf_str(row.get('Cargo', row.get('Rol', ''))))
@@ -130,6 +142,8 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
     pdf.set_text_color(255, 255, 255)
     pdf.set_font('Helvetica', 'B', 9)
     pdf.cell(0, 7, '  3. ACUERDOS, COMPROMISOS Y PROXIMOS PASOS', fill=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_fill_color(255, 255, 255)
+    pdf.set_text_color(38, 35, 32)
     pdf.ln(2)
 
     if acuerdos_df is None or acuerdos_df.empty:
@@ -137,8 +151,16 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
         pdf.set_font('Helvetica', 'I', 8)
         pdf.cell(0, 6, 'No hay acuerdos registrados.', border=1, new_x="LMARGIN", new_y="NEXT")
     else:
+        pdf.set_fill_color(255, 255, 255)
         pdf.set_text_color(38, 35, 32)
-        with pdf.table(col_widths=(65, 45, 70), line_height=5, headings_style=hs, borders_layout="HORIZONTAL_LINES") as table:
+        with pdf.table(
+            col_widths=(65, 45, 70),
+            line_height=5.5,
+            headings_style=hs,
+            cell_fill_color=(255, 255, 255),
+            cell_fill_mode="ALL",
+            borders_layout="HORIZONTAL_LINES",
+        ) as table:
             headers = table.row()
             pdf.set_font('Helvetica', 'B', 8)
             headers.cell(safe_pdf_str("Tema / Entregable"))
@@ -147,7 +169,7 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
 
             pdf.set_font('Helvetica', '', 8)
             for _, row in acuerdos_df.iterrows():
-                r = table.row()
+                r = table.row(style=rs)
                 r.cell(safe_pdf_str(row.get('Descripcion', row.get('Acuerdo', ''))))
                 r.cell(safe_pdf_str(row.get('Responsable', '')))
                 r.cell(safe_pdf_str(row.get('Acuerdo', '')))

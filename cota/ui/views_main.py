@@ -88,7 +88,7 @@ def render_main_view(conn, sheet_url, nube_ok, lista_socios):
 
     # Tabs principales
     t_proy, t_con, t_fin, t_ope, t_cal, t_arc = st.tabs([
-        "DISEÑO",
+        "PROYECTOS",
         "BASE DE DATOS",
         "FINANZAS",
         "CONTROL OPERATIVO",
