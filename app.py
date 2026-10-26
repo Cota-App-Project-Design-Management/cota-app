@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import importlib
 import os
+import re
 import pandas as pd
 import streamlit as st
 
@@ -69,6 +70,7 @@ from cota.db import (
     clear_base_dfs,
     guardar_tabla,
     inicializar_conexion_gsheets,
+    obtener_catalogo_estudio,
 )
 from cota.ui.components import render_header
 from cota.ui.styles import get_app_css
@@ -199,16 +201,38 @@ def calcular_hash_df(df: pd.DataFrame) -> str:
 
 def recalcular_partidas():
     partidas_list = []
-    if "tasks" in st.session_state and not st.session_state.tasks.empty and "Partida" in st.session_state.tasks.columns:
-        df_tasks_p = st.session_state.tasks[["Proyecto", "Partida"]].rename(columns={"Partida": "Nombre_Partida"})
-        partidas_list.append(df_tasks_p)
+    if "partidas" in st.session_state and isinstance(st.session_state.partidas, pd.DataFrame) and not st.session_state.partidas.empty:
+        if "Proyecto" in st.session_state.partidas.columns and "Nombre_Partida" in st.session_state.partidas.columns:
+            partidas_list.append(st.session_state.partidas[["Proyecto", "Nombre_Partida"]])
     if "p_info" in st.session_state and not st.session_state.p_info.empty and "Nombre_Partida" in st.session_state.p_info.columns:
         df_pinfo_p = st.session_state.p_info[["Proyecto", "Nombre_Partida"]]
         partidas_list.append(df_pinfo_p)
+    if "tasks" in st.session_state and not st.session_state.tasks.empty and "Partida" in st.session_state.tasks.columns:
+        df_tasks_p = st.session_state.tasks[["Proyecto", "Partida"]].rename(columns={"Partida": "Nombre_Partida"})
+        partidas_list.append(df_tasks_p)
 
     if partidas_list:
+        df_comb = pd.concat(partidas_list, ignore_index=True).drop_duplicates().reset_index(drop=True)
+        df_comb = df_comb[df_comb["Nombre_Partida"].astype(str).str.strip() != ""].reset_index(drop=True)
+
+        def _num_partida_sort(row_tuple):
+            pos_orig, nom = row_tuple
+            m = re.match(r"^\s*(\d+)(?:\.|\s|-|$)", str(nom).strip())
+            if m:
+                return (0, int(m.group(1)), pos_orig)
+            return (1, pos_orig, pos_orig)
+
+        grupos_ordenados = []
+        for _, grp in df_comb.groupby("Proyecto", sort=False):
+            pares = list( enumerate(grp["Nombre_Partida"].tolist()) )
+            pares_ord = sorted(pares, key=_num_partida_sort)
+            idxs_ord = [ grp.index[i] for i, _ in pares_ord ]
+            grupos_ordenados.append(df_comb.loc[idxs_ord])
+
         st.session_state.partidas = (
-            pd.concat(partidas_list, ignore_index=True).drop_duplicates().reset_index(drop=True)
+            pd.concat(grupos_ordenados, ignore_index=True)
+            if grupos_ordenados
+            else pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
         )
     else:
         st.session_state.partidas = pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
@@ -325,11 +349,14 @@ with st.sidebar:
             st.rerun()
         st.divider()
 
-    equipo_default = get_secret("EQUIPO", "Socio 1, Socio 2")
+    socios_cat = obtener_catalogo_estudio("socios")
+    equipo_default = ", ".join(socios_cat) if socios_cat else get_secret("EQUIPO", "Socio 1, Socio 2")
     socios_input = st.text_input("Directores / Equipo de Diseño", value=equipo_default)
     lista_socios = [s.strip() for s in socios_input.split(",") if s.strip()]
     if not lista_socios:
-        lista_socios = ["Socio 1", "Socio 2"]
+        lista_socios = socios_cat if socios_cat else ["Socio 1", "Socio 2"]
+    else:
+        st.session_state.setdefault("catalogos_estudio", {})["socios"] = lista_socios
 
     st.divider()
 

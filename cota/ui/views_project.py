@@ -31,8 +31,12 @@ from cota.db import (
     COLS_TASKS,
     _normalizar_supervisado,
     agregar_fase_banco,
+    agregar_nota_chat_proyecto,
     clear_base_dfs,
+    eliminar_nota_chat_proyecto,
     obtener_banco_fases,
+    obtener_catalogo_estudio,
+    obtener_notas_chat_proyecto,
     on_table_edit,
     sanitizar_fases_estudio,
     sembrar_fases_default,
@@ -52,11 +56,13 @@ from cota.cotizacion import (
     guardar_cuadro_pagos_semanales_proyecto,
     guardar_parametros_presupuesto_proyecto,
     limpiar_nombre_partida,
+    mover_tarea_presupuesto,
     obtener_columnas_pago_semanal,
     obtener_cuadro_pagos_semanales_proyecto,
     obtener_parametros_presupuesto_proyecto,
     parsear_cotizacion_venti,
     parsear_cuadro_pagos_semanales,
+    parsear_presupuesto_flexible,
     recalcular_totales_presupuesto_proyecto,
     renombrar_partida_presupuesto,
 )
@@ -137,7 +143,7 @@ def render_proyecto_view(proy_name):
     # Tabs especializadas del proyecto
     t_resumen, t_diseno, t_presupuesto, t_obra, t_finanzas, t_actas, t_observaciones = st.tabs([
         "01. RESUMEN",
-        "02. DISEÑO",
+        "02. FASES DEL PROYECTO",
         "03. PRESUPUESTO",
         "05. PARTIDAS Y TAREAS",
         "06. COBROS & FINANZAS",
@@ -272,15 +278,44 @@ def _render_tab_resumen(proy_name, proy_data):
             unsafe_allow_html=True
         )
 
-        st.markdown("#### BRIEF Y OBJETIVOS DE DISEÑO")
-        notas_p = str(proy_data.get('Notas', '')).strip()
-        if notas_p and notas_p.lower() not in ['nan', 'none']:
-            st.markdown(
-                f"<div style='background:#FAF8F5; border:1px solid #DFD9CE; border-left:4px solid #C85A32; border-radius:8px; padding:12px 16px; color:#262320; font-size:13.5px; line-height:1.6;'>{notas_p}</div>",
-                unsafe_allow_html=True
-            )
-        else:
-            st.markdown("<p style='color:#8C8277; font-style:italic;'>Sin notas registradas en el brief de este proyecto.</p>", unsafe_allow_html=True)
+        st.markdown("#### 💬 NOTAS")
+        notas_chat = obtener_notas_chat_proyecto(proy_name)
+        socios_disp = obtener_catalogo_estudio("socios") or ["Alvaro", "Socio 2", "Socio 3"]
+        with st.container(border=True):
+            if notas_chat:
+                for idx_msg, msg in enumerate(notas_chat):
+                    c_m1, c_m2 = st.columns([9.0, 1.0])
+                    with c_m1:
+                        st.markdown(
+                            f"<div style='background:#FAF8F5; border:1px solid #DFD9CE; border-left:4px solid #C85A32; border-radius:8px; padding:8px 12px; margin-bottom:6px;'>"
+                            f"<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;'>"
+                            f"<span style='color:#C85A32; font-weight:700; font-size:12px;'>👤 {msg['socio']}</span>"
+                            f"<span style='color:#8C8278; font-family:monospace; font-size:11px;'>{msg['fecha']}</span>"
+                            f"</div>"
+                            f"<div style='color:#262320; font-size:13px; line-height:1.5; white-space:pre-wrap;'>{msg['texto']}</div>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+                    with c_m2:
+                        if st.button("🗑️", key=f"del_nota_chat_{proy_name}_{idx_msg}", help="Eliminar esta nota"):
+                            eliminar_nota_chat_proyecto(proy_name, idx_msg)
+                            st.rerun()
+            else:
+                st.caption("Aún no hay notas registradas en este proyecto. Escribe la primera nota abajo.")
+
+            with st.form(f"form_chat_notas_res_{proy_name}", clear_on_submit=True):
+                c_sn1, c_sn2 = st.columns([3.5, 6.5])
+                with c_sn1:
+                    soc_act = st.session_state.get("socio_activo", socios_disp[0])
+                    idx_s = socios_disp.index(soc_act) if soc_act in socios_disp else 0
+                    socio_autor = st.selectbox("Socio que deja la nota:", socios_disp, index=idx_s, key=f"sel_soc_nota_{proy_name}")
+                with c_sn2:
+                    texto_nueva_nota = st.text_area("Mensaje / Nota:", height=68, placeholder="Escribe aquí una nota, acuerdo con el cliente o pendiente del proyecto...")
+                if st.form_submit_button("💬 ENVIAR NOTA AL PROYECTO", type="primary", use_container_width=True):
+                    if texto_nueva_nota and texto_nueva_nota.strip():
+                        agregar_nota_chat_proyecto(proy_name, socio_autor, texto_nueva_nota.strip())
+                        st.success("Nota agregada.")
+                        st.rerun()
 
     with col_d2:
         ch_f1, ch_f2 = st.columns([6.2, 3.8])
@@ -335,9 +370,9 @@ def _render_tab_resumen(proy_name, proy_data):
 
 
 def _render_tab_fases(proy_name, proy_data):
-    """Pestaña 2: Diseño, Banco de Fases configurable, cronograma y presentación en Drive."""
-    st.markdown("### 🎨 02. DISEÑO Y PRESENTACIÓN DEL PROYECTO")
-    st.caption("Fases del ciclo de diseño del proyecto, cronograma Gantt y conexión directa con la presentación en Google Drive / Slides.")
+    """Pestaña 2: Fases del Proyecto, Banco de Fases configurable, cronograma y presentación en Drive."""
+    st.markdown("### 🗂️ 02. FASES DEL PROYECTO Y PRESENTACIÓN")
+    st.caption("Fases del proyecto, avance porcentual editable, cronograma Gantt y conexión directa con la presentación en Google Drive / Slides.")
 
     # Conectar con la presentación de diseño en Google Drive / Slides / Figma
     drive_link = safe_str(proy_data.get('Link_Drive', '')).strip()
@@ -475,8 +510,7 @@ def _render_tab_fases(proy_name, proy_data):
     display_fases['Avance_Pct'] = pd.to_numeric(display_fases['Avance_Pct'], errors='coerce').fillna(0).astype(int)
     display_fases['Aprobado_Cliente'] = display_fases['Aprobado_Cliente'].apply(to_bool)
 
-    if base_fases_key not in st.session_state:
-        st.session_state[base_fases_key] = display_fases.copy()
+    st.session_state[base_fases_key] = display_fases.copy()
 
     st.data_editor(
         st.session_state[base_fases_key],
@@ -487,12 +521,12 @@ def _render_tab_fases(proy_name, proy_data):
         column_config={
             "ID": None,
             "Orden": st.column_config.NumberColumn("N°", width="small"),
-            "Fase": st.column_config.TextColumn("Fase de Diseño", width="large", required=True),
+            "Fase": st.column_config.TextColumn("Fase del Proyecto", width="large", required=True),
             "Etapa": st.column_config.SelectboxColumn("Etapa", options=["Conceptual", "Diseño", "Documentación", "Adquisiciones", "Construcción", "Cierre"]),
             "Inicio": st.column_config.DateColumn("Inicio", format="DD/MM/YYYY"),
             "Fin": st.column_config.DateColumn("Fin", format="DD/MM/YYYY"),
             "Estado": st.column_config.SelectboxColumn("Estado", options=STATUS_FASES),
-            "Avance_Pct": st.column_config.ProgressColumn("Avance %", min_value=0, max_value=100, format="%d%%"),
+            "Avance_Pct": st.column_config.NumberColumn("Avance %", min_value=0, max_value=100, step=5, format="%d%%", width="small", help="Edita directamente el porcentaje de avance de la fase (0 a 100%)."),
             "Aprobado_Cliente": st.column_config.CheckboxColumn("Aprobado Cliente"),
             "Responsable": st.column_config.TextColumn("Responsable"),
             "Notas": st.column_config.TextColumn("Notas / Entregable Clave")
@@ -517,8 +551,8 @@ def _render_tab_presupuesto(proy_name, proy_data):
     """
     Pestaña 3: Constructor y Editor de Presupuesto All-in-One dentro de COTA.
     Permite definir dinámicamente la cantidad de Partidas (1, 2, 3, 4...), sus nombres,
-    y la cantidad de Tareas por cada Partida (1.01, 1.02, 1.03...), editándolas constantemente.
-    Se sincroniza automáticamente con 05. EJECUCIÓN & PARTIDAS y permite exportar a Excel (.xlsx).
+    y la cantidad de Tareas por cada Partida (1.01, 1.02, 1.03...), reordenarlas verticalmente,
+    asignar Especialidad y Contratista (uso interno), o importar presupuestos de Gemini Spark / Excel / CSV.
     """
     asegurar_estructura_presupuesto_proyecto(proy_name, n_partidas_default=3, n_tareas_default=3)
     totales = recalcular_totales_presupuesto_proyecto(proy_name)
@@ -527,18 +561,22 @@ def _render_tab_presupuesto(proy_name, proy_data):
     parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
     n_partidas_actual = max(1, len(parts_proy))
 
-    col_tit_p, col_exp_p = st.columns([6.8, 3.2])
+    col_tit_p, col_imp_top, col_exp_p = st.columns([5.2, 2.4, 2.4])
     with col_tit_p:
         st.markdown("### 📐 PRESUPUESTO Y COTIZACIÓN DEL PROYECTO")
         st.caption(
-            "Define la cantidad de partidas y tareas, edita nombres, metrados y precios unitarios en tiempo real. "
-            "Todas las partidas y tareas se sincronizan automáticamente con **05. EJECUCIÓN & PARTIDAS**."
+            "Define partidas, tareas, metrados y precios unitarios en tiempo real. "
+            "Se sincroniza automáticamente con **05. PARTIDAS Y TAREAS** y **06. COBROS & FINANZAS**."
         )
+    with col_imp_top:
+        st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
+        if st.button("🤖 IMPORTAR GEMINI / EXCEL", key=f"btn_toggle_imp_ppto_{proy_name}", use_container_width=True):
+            st.session_state[f"show_imp_ppto_{proy_name}"] = not st.session_state.get(f"show_imp_ppto_{proy_name}", False)
     with col_exp_p:
         st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
         xlsx_export_bytes = exportar_proyecto_a_formato_venti(proy_name)
         st.download_button(
-            "📥 EXPORTAR PRESUPUESTO A EXCEL (.XLSX)",
+            "📥 EXPORTAR EXCEL CLIENTE (.XLSX)",
             data=xlsx_export_bytes,
             file_name=f"Presupuesto_{proy_name.replace(' ', '_')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -547,16 +585,97 @@ def _render_tab_presupuesto(proy_name, proy_data):
             key=f"btn_exp_excel_top_{proy_name}",
         )
 
-    # Panel de Configuración Global del Presupuesto
+    # Panel Importador Inteligente de Presupuesto (Gemini Spark / Markdown / Excel / CSV)
+    if st.session_state.get(f"show_imp_ppto_{proy_name}", False):
+        with st.container(border=True):
+            ci_1, ci_2 = st.columns([8.5, 1.5])
+            with ci_1:
+                st.markdown("##### 🤖 Importar Presupuesto desde Gemini Spark, Excel o CSV")
+                st.caption(
+                    "Pega directamente la tabla generada en **Gemini Spark** (con columnas como *Partida, Tarea / Sub-partida, Unidad, Metraje, Valor Unitario, Valor Parcial*) "
+                    "o sube un archivo `.xlsx` / `.csv`. El sistema la transformará automáticamente al formato oficial de COTA."
+                )
+            with ci_2:
+                if st.button("✖ Cerrar", key=f"btn_close_imp_ppto_{proy_name}", use_container_width=True):
+                    st.session_state[f"show_imp_ppto_{proy_name}"] = False
+                    st.rerun()
+
+            fuente_imp = st.radio(
+                "Método de importación:",
+                options=["texto", "archivo"],
+                format_func=lambda x: "📋 Pegar tabla de Gemini Spark / Excel / Markdown" if x == "texto" else "📁 Subir archivo (.xlsx / .xls / .csv)",
+                horizontal=True,
+                key=f"rad_fuente_ppto_{proy_name}",
+            )
+
+            parsed_imp = None
+            if fuente_imp == "texto":
+                txt_spark = st.text_area(
+                    "Pega aquí el presupuesto de Gemini Spark o Excel:",
+                    height=165,
+                    placeholder=(
+                        "| Item | Partida / Tarea | Unidad | Metraje | V. Unitario | Valor Parcial |\n"
+                        "|---|---|---|---|---|---|\n"
+                        "| 1 | OBRAS PROVISIONALES Y DEMOLICIÓN | | | | |\n"
+                        "| 1.01 | Desmontaje y eliminación de desmonte | glb | 1.00 | 1800.00 | 1800.00 |\n"
+                        "| 1.02 | Protección de áreas comunes | m2 | 45.00 | 25.00 | 1125.00 |\n"
+                        "| 2 | PISOS Y REVESTIMIENTOS | | | | |\n"
+                        "| 2.01 | Instalación de piso porcelanato | m2 | 60.00 | 95.00 | 5700.00 |"
+                    ),
+                    key=f"txt_spark_in_{proy_name}",
+                )
+                if txt_spark and txt_spark.strip():
+                    parsed_imp = parsear_presupuesto_flexible(txt_spark, tc_default=float(params["tc"]))
+            else:
+                up_f_ppto = st.file_uploader(
+                    "Selecciona el archivo (.xlsx, .xls, .csv):",
+                    type=["xlsx", "xls", "csv"],
+                    key=f"up_f_ppto_in_{proy_name}",
+                )
+                if up_f_ppto is not None:
+                    parsed_imp = parsear_presupuesto_flexible(up_f_ppto, tc_default=float(params["tc"]))
+
+            if parsed_imp is not None and parsed_imp.get("partidas"):
+                n_p_det = len(parsed_imp["partidas"])
+                n_t_det = sum(len(p.get("tareas", [])) for p in parsed_imp["partidas"])
+                st.markdown(
+                    f"**✅ Presupuesto detectado:** `{n_p_det}` Partida(s) · `{n_t_det}` Tarea(s) · "
+                    f"Sub Total Casco: `{format_currency(parsed_imp['subtotal_casco'])}` · "
+                    f"**TOTAL: `{format_currency(parsed_imp['presupuesto_total'])}`**"
+                )
+                modo_aplicar = st.radio(
+                    "Modo de carga:",
+                    options=["reemplazar", "agregar"],
+                    format_func=lambda x: "🔄 Reemplazar el presupuesto actual del proyecto" if x == "reemplazar" else "➕ Agregar a las partidas actuales",
+                    horizontal=True,
+                    key=f"rad_modo_imp_ppto_{proy_name}",
+                )
+                if st.button("✅ TRANSFORMAR Y CARGAR EN EL PRESUPUESTO", type="primary", use_container_width=True, key=f"btn_apply_spark_{proy_name}"):
+                    res_imp = aplicar_cotizacion_a_proyecto(
+                        proy_name=proy_name,
+                        parsed_data=parsed_imp,
+                        modo=modo_aplicar,
+                        actualizar_ficha=True,
+                        incluir_partidas_vacias=True,
+                    )
+                    st.session_state[f"show_imp_ppto_{proy_name}"] = False
+                    st.success(f"Presupuesto cargado con éxito: {res_imp['partidas_importadas']} partidas y {res_imp['tareas_importadas']} tareas.")
+                    st.rerun()
+
+    # Panel de Configuración Global del Presupuesto (incluye Honorarios de Diseño)
     with st.container(border=True):
         st.markdown("##### ⚙️ Configuración de Estructura y Parámetros Financieros")
-        c_cfg1, c_cfg2, c_cfg3, c_cfg4, c_cfg5 = st.columns([1.8, 1.8, 2.0, 2.2, 2.2])
+        c_cfg1, c_cfg2, c_cfg3, c_cfg4, c_cfg_hon, c_cfg5 = st.columns([1.5, 1.5, 1.7, 1.9, 1.9, 1.5])
 
         key_n_part = f"cfg_n_partidas_{proy_name}"
         key_tc = f"cfg_tc_ppto_{proy_name}"
         key_gg = f"cfg_gg_pct_{proy_name}"
         key_util = f"cfg_util_pct_{proy_name}"
+        key_hon = f"cfg_hon_diseno_{proy_name}"
         key_igv = f"cfg_igv_chk_{proy_name}"
+
+        st.session_state[key_n_part] = n_partidas_actual
+        hon_actual = safe_float(proy_data.get("Honorarios_Diseno", 0.0), 0.0)
 
         def _on_change_cant_partidas():
             nueva_cant = st.session_state.get(key_n_part, n_partidas_actual)
@@ -570,13 +689,19 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 utilidades_pct=safe_float(st.session_state.get(key_util, params["utilidades_pct"]), 15.0),
                 incluir_igv=bool(st.session_state.get(key_igv, params["incluir_igv"])),
             )
+            if key_hon in st.session_state and "proyectos" in st.session_state and not st.session_state.proyectos.empty:
+                st.session_state.proyectos["Honorarios_Diseno"] = pd.to_numeric(
+                    st.session_state.proyectos.get("Honorarios_Diseno", 0.0), errors="coerce"
+                ).fillna(0.0).astype(float)
+                idx_p_m = st.session_state.proyectos[st.session_state.proyectos["Nombre"] == proy_name].index
+                if not idx_p_m.empty:
+                    st.session_state.proyectos.loc[idx_p_m, "Honorarios_Diseno"] = float(safe_float(st.session_state.get(key_hon, 0.0), 0.0))
 
         with c_cfg1:
             st.number_input(
-                "Cantidad de Partidas",
+                "N° Partidas",
                 min_value=1,
                 max_value=40,
-                value=n_partidas_actual,
                 step=1,
                 key=key_n_part,
                 on_change=_on_change_cant_partidas,
@@ -584,7 +709,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
             )
         with c_cfg2:
             st.number_input(
-                "Tipo de Cambio (TC)",
+                "Tipo de Cambio",
                 min_value=1.0,
                 max_value=10.0,
                 value=float(params["tc"]),
@@ -595,7 +720,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
             )
         with c_cfg3:
             st.number_input(
-                "% Gastos Generales",
+                "% Gastos Gen.",
                 min_value=0.0,
                 max_value=100.0,
                 value=float(params["gg_pct"]),
@@ -606,7 +731,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
             )
         with c_cfg4:
             st.number_input(
-                "% Gestión y Supervisión",
+                "% Gestión / Util.",
                 min_value=0.0,
                 max_value=100.0,
                 value=float(params["utilidades_pct"]),
@@ -615,10 +740,21 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 key=key_util,
                 on_change=_on_change_params_ppto,
             )
+        with c_cfg_hon:
+            st.number_input(
+                "Honorarios Diseño (S/)",
+                min_value=0.0,
+                value=float(hon_actual),
+                step=100.0,
+                format="%.2f",
+                key=key_hon,
+                on_change=_on_change_params_ppto,
+                help="Honorarios de diseño del proyecto (se reflejan en el Resumen y Finanzas).",
+            )
         with c_cfg5:
             st.markdown("<div style='padding-top: 26px;'></div>", unsafe_allow_html=True)
             st.checkbox(
-                "Aplicar IGV (18%)",
+                "IGV (18%)",
                 value=bool(params["incluir_igv"]),
                 key=key_igv,
                 on_change=_on_change_params_ppto,
@@ -629,6 +765,10 @@ def _render_tab_presupuesto(proy_name, proy_data):
     totales = recalcular_totales_presupuesto_proyecto(proy_name)
     parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
     total_tareas_proy = len(st.session_state.tasks[st.session_state.tasks["Proyecto"] == proy_name])
+
+    unidades_cat = obtener_catalogo_estudio("unidades") or UNIDADES_MEDIDA
+    especialidades_cat = list(dict.fromkeys([""] + (obtener_catalogo_estudio("especialidades") or ESPECIALIDADES_DEFAULT) + extraer_esp(st.session_state.maestro)))
+    contratistas_cat = [""] + (st.session_state.maestro["ID_Contratista"].dropna().unique().tolist() if "maestro" in st.session_state and not st.session_state.maestro.empty else [])
 
     # 5 Tarjetas de Resumen del Presupuesto en Vivo
     k1, k2, k3, k4, k5 = st.columns(5)
@@ -694,9 +834,10 @@ def _render_tab_presupuesto(proy_name, proy_data):
             "Ítem": str(idx_p),
             "Descripción": p_nom_limpio,
             "Moneda": "Soles",
-            "Porcentaje / Factor": "",
-            "Monto (S/.)": sub_partida,
-            "Mix (%)": f"{mix_partida:.1f}%",
+            "Factor": "",
+            "Importe_Fmt": format_currency(sub_partida),
+            "Mix": f"{mix_partida:.1f}%",
+            "Tipo_Fila": "partida",
         })
 
         with st.container(border=True):
@@ -705,6 +846,10 @@ def _render_tab_presupuesto(proy_name, proy_data):
 
             key_pnom = f"ppto_pnom_{proy_name}_{idx_p}"
             key_ntasks = f"ppto_ntasks_{proy_name}_{idx_p}"
+
+            # Sincronizar el widget de N° de Tareas con la cantidad real de filas de esta partida
+            st.session_state[key_ntasks] = int(n_tareas_p)
+            st.session_state[key_pnom] = p_nom_limpio
 
             def _make_on_rename(p_idx_1b, curr_full, k_nom):
                 def _cb():
@@ -721,17 +866,15 @@ def _render_tab_presupuesto(proy_name, proy_data):
             with cp_nom:
                 st.text_input(
                     f"Partida {idx_p} — Nombre de la Partida",
-                    value=p_nom_limpio,
                     key=key_pnom,
                     on_change=_make_on_rename(idx_p, p_nom_completo, key_pnom),
-                    placeholder=f"ej. Obras Civiles, Carpintería, Inst. Eléctricas...",
+                    placeholder="ej. Obras Civiles, Carpintería, Inst. Eléctricas...",
                 )
             with cp_cnt:
                 st.number_input(
                     f"N° de Tareas ({idx_p}.01, {idx_p}.02...)",
                     min_value=1,
                     max_value=100,
-                    value=n_tareas_p,
                     step=1,
                     key=key_ntasks,
                     on_change=_make_on_cant_tasks(idx_p, p_nom_completo, key_ntasks),
@@ -753,8 +896,9 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     unsafe_allow_html=True,
                 )
 
-            # Construir DataFrame editable para las tareas de esta partida
+            # Construir DataFrame editable para las tareas de esta partida (incluye Especialidad y Contratista para uso interno)
             rows_ed = []
+            opciones_orden_t = []
             for pos_t, (_, t_r) in enumerate(df_t_p.iterrows(), start=1):
                 cod_item = f"{idx_p}.{pos_t:02d}"
                 desc_t = extraer_descripcion_tarea(t_r.get("Tarea", ""), cod_item)
@@ -762,31 +906,44 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 if mon_t not in ["Soles", "Dólares"]:
                     mon_t = "Soles"
                 und_t = safe_str(t_r.get("Unidad", "glb")) or "glb"
-                met_t = safe_float(t_r.get("Metrado", 1.0), 1.0)
+                if und_t not in unidades_cat:
+                    unidades_cat.append(und_t)
+                met_t = float(safe_float(t_r.get("Metrado", 1.0), 1.0))
                 if met_t <= 0:
                     met_t = 1.0
-                vu_t = safe_float(t_r.get("Valor_Unitario", 0.0), 0.0)
-                vp_t = safe_float(t_r.get("Presupuesto", 0.0), 0.0)
+                vu_t = float(safe_float(t_r.get("Valor_Unitario", 0.0), 0.0))
+                vp_t = float(safe_float(t_r.get("Presupuesto", 0.0), 0.0))
+                esp_t = safe_str(t_r.get("Especialidad", "")).strip()
+                if esp_t and esp_t not in especialidades_cat:
+                    especialidades_cat.append(esp_t)
+                con_t = safe_str(t_r.get("Contratista", "")).strip()
+                if con_t and con_t not in contratistas_cat:
+                    contratistas_cat.append(con_t)
 
+                opciones_orden_t.append((pos_t - 1, f"{cod_item} — {desc_t or '(Sin descripción)'}"))
                 rows_ed.append({
-                    "Item": cod_item,
-                    "Descripcion": desc_t,
-                    "Moneda": mon_t,
-                    "Unidad": und_t,
-                    "Metrado": met_t,
-                    "Valor_Unitario": vu_t,
-                    "Valor_Parcial": vp_t,
+                    "Item": str(cod_item),
+                    "Descripcion": str(desc_t),
+                    "Especialidad": str(esp_t),
+                    "Contratista": str(con_t),
+                    "Moneda": str(mon_t),
+                    "Unidad": str(und_t),
+                    "Metrado": float(met_t),
+                    "Valor_Unitario": float(vu_t),
+                    "Valor_Parcial": float(vp_t),
                 })
 
             df_ed_p = pd.DataFrame(rows_ed)
+            for c_num in ["Metrado", "Valor_Unitario", "Valor_Parcial"]:
+                if c_num in df_ed_p.columns:
+                    df_ed_p[c_num] = pd.to_numeric(df_ed_p[c_num], errors="coerce").fillna(0.0).astype(float)
 
-            base_ppto_key = f"base_df_ppto_{proy_name}_{idx_p}_{n_tareas_p}"
+            base_ppto_key = f"base_df_ppto_{proy_name}_{idx_p}"
             c_ppto_key = f"c_{base_ppto_key}"
             c_ppto_val = st.session_state.get(c_ppto_key, 0)
-            w_ppto_key = f"ed_ppto_{proy_name}_{idx_p}_{n_tareas_p}_{c_ppto_val}"
+            w_ppto_key = f"ed_ppto_{proy_name}_{idx_p}_{c_ppto_val}"
 
-            if base_ppto_key not in st.session_state:
-                st.session_state[base_ppto_key] = df_ed_p.copy()
+            st.session_state[base_ppto_key] = df_ed_p.copy()
 
             st.data_editor(
                 st.session_state[base_ppto_key],
@@ -798,8 +955,20 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 column_config={
                     "Item": st.column_config.TextColumn("Ítem", width="small"),
                     "Descripcion": st.column_config.TextColumn("Descripción de la Tarea / Sub-partida", width="large"),
+                    "Especialidad": st.column_config.SelectboxColumn(
+                        "Especialidad 🔒",
+                        options=especialidades_cat,
+                        width="small",
+                        help="Uso interno (conecta con 05. Partidas y 06. Pagos). No se exporta al Excel del cliente.",
+                    ),
+                    "Contratista": st.column_config.SelectboxColumn(
+                        "Contratista 🔒",
+                        options=contratistas_cat,
+                        width="small",
+                        help="Uso interno (conecta con 05. Partidas y 06. Pagos). No se exporta al Excel del cliente.",
+                    ),
                     "Moneda": st.column_config.SelectboxColumn("Moneda", options=["Soles", "Dólares"], width="small", required=True),
-                    "Unidad": st.column_config.SelectboxColumn("Unidad", options=UNIDADES_MEDIDA, width="small", required=True),
+                    "Unidad": st.column_config.SelectboxColumn("Unidad", options=unidades_cat, width="small", required=True),
                     "Metrado": st.column_config.NumberColumn("Metrado", min_value=0.01, step=1.0, format="%.2f", width="small", required=True),
                     "Valor_Unitario": st.column_config.NumberColumn("Valor Unitario", min_value=0.0, step=10.0, format="%.2f", width="medium", required=True),
                     "Valor_Parcial": st.column_config.NumberColumn("Valor Parcial (S/.)", format="S/ %.2f", width="medium"),
@@ -814,80 +983,141 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 ),
             )
 
+            # Barra para mover tareas verticalmente (Subir / Bajar) sin reescribir
+            if len(opciones_orden_t) > 1:
+                cm_sel, cm_up, cm_dn, cm_info = st.columns([4.5, 1.5, 1.5, 2.5])
+                with cm_sel:
+                    pos_t_sel = st.selectbox(
+                        f"↕️ Reordenar tarea en Partida {idx_p}:",
+                        options=[o[0] for o in opciones_orden_t],
+                        format_func=lambda x: dict(opciones_orden_t).get(x, ""),
+                        key=f"sel_move_t_ppto_{proy_name}_{idx_p}",
+                        label_visibility="collapsed",
+                    )
+                with cm_up:
+                    if st.button("⬆️ Subir", key=f"btn_up_t_ppto_{proy_name}_{idx_p}", use_container_width=True, disabled=(pos_t_sel == 0)):
+                        if mover_tarea_presupuesto(proy_name, idx_p, p_nom_completo, pos_t_sel, "subir"):
+                            st.session_state[c_ppto_key] = c_ppto_val + 1
+                            st.rerun()
+                with cm_dn:
+                    if st.button("⬇️ Bajar", key=f"btn_dn_t_ppto_{proy_name}_{idx_p}", use_container_width=True, disabled=(pos_t_sel >= len(opciones_orden_t) - 1)):
+                        if mover_tarea_presupuesto(proy_name, idx_p, p_nom_completo, pos_t_sel, "bajar"):
+                            st.session_state[c_ppto_key] = c_ppto_val + 1
+                            st.rerun()
+                with cm_info:
+                    st.caption("🔒 *Especialidad y Contratista son internos (no se exportan al cliente).*")
+
     # Cuadro Resumen de Cierre del Presupuesto + Exportación a Excel
     st.divider()
     st.markdown("#### 📊 CUADRO DE CIERRE DEL PRESUPUESTO")
+    st.caption("Resumen ejecutivo alineado al 100% con las partidas, gastos generales, gestión/supervisión, IGV y tipo de cambio configurados arriba.")
 
     resumen_rows.extend([
         {
             "Ítem": "",
-            "Descripción": "SUB TOTAL (Casco)",
+            "Descripción": "SUB TOTAL (Costo Directo / Casco)",
             "Moneda": "Soles",
-            "Porcentaje / Factor": "",
-            "Monto (S/.)": totales["subtotal_casco"],
-            "Mix (%)": "100.0%" if totales["subtotal_casco"] > 0 else "0.0%",
+            "Factor": "",
+            "Importe_Fmt": format_currency(totales["subtotal_casco"]),
+            "Mix": "100.0%" if totales["subtotal_casco"] > 0 else "0.0%",
+            "Tipo_Fila": "subtotal",
         },
         {
             "Ítem": "",
-            "Descripción": "Gastos generales",
+            "Descripción": "Gastos Generales",
             "Moneda": "Soles",
-            "Porcentaje / Factor": f"{totales['gg_pct']:g}%",
-            "Monto (S/.)": totales["gg_monto"],
-            "Mix (%)": "",
+            "Factor": f"{totales['gg_pct']:g}%",
+            "Importe_Fmt": format_currency(totales["gg_monto"]),
+            "Mix": f"{totales['gg_pct']:.1f}%" if totales["subtotal_casco"] > 0 else "",
+            "Tipo_Fila": "cargo",
         },
         {
             "Ítem": "",
-            "Descripción": "Gestión y supervisión de obras",
+            "Descripción": "Gestión y Supervisión de Obras (Utilidades)",
             "Moneda": "Soles",
-            "Porcentaje / Factor": f"{totales['utilidades_pct']:g}%",
-            "Monto (S/.)": totales["utilidades_monto"],
-            "Mix (%)": "",
+            "Factor": f"{totales['utilidades_pct']:g}%",
+            "Importe_Fmt": format_currency(totales["utilidades_monto"]),
+            "Mix": f"{totales['utilidades_pct']:.1f}%" if totales["subtotal_casco"] > 0 else "",
+            "Tipo_Fila": "cargo",
         },
         {
             "Ítem": "",
-            "Descripción": "IGV",
+            "Descripción": "IGV (Impuesto General a las Ventas)",
             "Moneda": "Soles",
-            "Porcentaje / Factor": "18%" if totales["incluir_igv"] else "0%",
-            "Monto (S/.)": totales["igv_monto"],
-            "Mix (%)": "",
+            "Factor": "18%" if totales["incluir_igv"] else "0%",
+            "Importe_Fmt": format_currency(totales["igv_monto"]),
+            "Mix": "",
+            "Tipo_Fila": "cargo",
         },
         {
             "Ítem": "",
-            "Descripción": "TOTAL (Soles)",
+            "Descripción": "TOTAL PRESUPUESTO (SOLES)",
             "Moneda": "Soles",
-            "Porcentaje / Factor": "",
-            "Monto (S/.)": totales["presupuesto_total"],
-            "Mix (%)": f"{(totales['presupuesto_total'] / totales['subtotal_casco'] * 100.0):.1f}%" if totales["subtotal_casco"] > 0 else "0.0%",
+            "Factor": "",
+            "Importe_Fmt": format_currency(totales["presupuesto_total"]),
+            "Mix": f"{(totales['presupuesto_total'] / totales['subtotal_casco'] * 100.0):.1f}%" if totales["subtotal_casco"] > 0 else "0.0%",
+            "Tipo_Fila": "total_soles",
         },
         {
             "Ítem": "",
-            "Descripción": "TOTAL (USD)",
+            "Descripción": "TOTAL PRESUPUESTO (DÓLARES USD)",
             "Moneda": "Dólares",
-            "Porcentaje / Factor": f"TC: {totales['tc']:.2f}",
-            "Monto (S/.)": totales["presupuesto_dolares"],
-            "Mix (%)": "",
+            "Factor": f"TC: {totales['tc']:.2f}",
+            "Importe_Fmt": f"US$ {totales['presupuesto_dolares']:,.2f}",
+            "Mix": "",
+            "Tipo_Fila": "total_usd",
         },
     ])
 
-    df_resumen_cierre = pd.DataFrame(resumen_rows)
-    st.dataframe(
-        df_resumen_cierre,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Ítem": st.column_config.TextColumn("Ítem", width="small"),
-            "Descripción": st.column_config.TextColumn("Concepto / Partida", width="large"),
-            "Moneda": st.column_config.TextColumn("Moneda", width="small"),
-            "Porcentaje / Factor": st.column_config.TextColumn("% / TC", width="small"),
-            "Monto (S/.)": st.column_config.NumberColumn("Importe", format="%.2f", width="medium"),
-            "Mix (%)": st.column_config.TextColumn("Mix", width="small"),
-        },
+    trs_cierre_html = []
+    for r_c in resumen_rows:
+        t_fila = r_c.get("Tipo_Fila", "partida")
+        if t_fila == "subtotal":
+            row_style = "background:#EFECE6; font-weight:700; border-top:2px solid #262320; border-bottom:1px solid #DFD9CE; color:#262320;"
+        elif t_fila == "total_soles":
+            row_style = "background:#262320; color:#FFFFFF; font-weight:700; font-size:14px; border-top:2px solid #262320;"
+        elif t_fila == "total_usd":
+            row_style = "background:#FAF8F5; color:#C85A32; font-weight:700; font-size:13.5px; border-top:1px solid #DFD9CE;"
+        elif t_fila == "cargo":
+            row_style = "background:#FAF8F5; color:#4A453F; border-bottom:1px solid #EFECE6;"
+        else:
+            row_style = "background:#FFFFFF; color:#262320; border-bottom:1px solid #EFECE6;"
+
+        imp_color = "#FFFFFF" if t_fila == "total_soles" else ("#C85A32" if t_fila == "total_usd" else "#262320")
+        trs_cierre_html.append(
+            f"<tr style='{row_style}'>"
+            f"<td style='padding:9px 12px; text-align:center; font-family:monospace; width:60px;'>{r_c['Ítem']}</td>"
+            f"<td style='padding:9px 12px; text-align:left;'>{r_c['Descripción']}</td>"
+            f"<td style='padding:9px 12px; text-align:center; width:95px;'>{r_c['Moneda']}</td>"
+            f"<td style='padding:9px 12px; text-align:center; font-family:monospace; width:100px;'>{r_c['Factor']}</td>"
+            f"<td style='padding:9px 14px; text-align:right; font-family:monospace; font-weight:700; color:{imp_color}; width:170px;'>{r_c['Importe_Fmt']}</td>"
+            f"<td style='padding:9px 12px; text-align:right; font-family:monospace; width:90px;'>{r_c['Mix']}</td>"
+            f"</tr>"
+        )
+
+    tabla_cierre_html = (
+        "<div style='border:1px solid #DFD9CE; border-radius:10px; overflow:hidden; margin-bottom:16px; box-shadow:0 2px 6px rgba(38,35,32,0.04);'>"
+        "<table style='width:100%; border-collapse:collapse; font-size:13px;'>"
+        "<thead>"
+        "<tr style='background:#F0ECE1; color:#6E665E; text-transform:uppercase; font-size:11px; letter-spacing:0.5px; border-bottom:2px solid #DFD9CE;'>"
+        "<th style='padding:10px 12px; text-align:center;'>Ítem</th>"
+        "<th style='padding:10px 12px; text-align:left;'>Concepto / Partida</th>"
+        "<th style='padding:10px 12px; text-align:center;'>Moneda</th>"
+        "<th style='padding:10px 12px; text-align:center;'>% / TC</th>"
+        "<th style='padding:10px 14px; text-align:right;'>Importe</th>"
+        "<th style='padding:10px 12px; text-align:right;'>Mix (%)</th>"
+        "</tr>"
+        "</thead>"
+        f"<tbody>{''.join(trs_cierre_html)}</tbody>"
+        "</table>"
+        "</div>"
     )
+    st.markdown(tabla_cierre_html, unsafe_allow_html=True)
 
     col_bot_exp1, col_bot_exp2 = st.columns([5, 5])
     with col_bot_exp1:
         st.download_button(
-            "📥 EXPORTAR PRESUPUESTO A EXCEL (.XLSX) PARA COMPARTIR CON CLIENTE",
+            "📥 EXPORTAR PRESUPUESTO A EXCEL (.XLSX) PARA EL CLIENTE",
             data=xlsx_export_bytes,
             file_name=f"Presupuesto_{proy_name.replace(' ', '_')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -896,7 +1126,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
             key=f"btn_exp_excel_bot_{proy_name}",
         )
     with col_bot_exp2:
-        st.info("✅ **Sincronizado en tiempo real:** Todas las partidas y tareas de este presupuesto están listas en **05. EJECUCIÓN & PARTIDAS**.")
+        st.info("✅ **Sincronizado en tiempo real:** Las partidas, tareas, contratistas y montos están conectados con **05. PARTIDAS Y TAREAS** y **06. COBROS & FINANZAS**.")
 
 
 def _render_tab_entregables(proy_name, proy_data):
@@ -998,14 +1228,14 @@ def _render_tab_entregables(proy_name, proy_data):
 
 
 def _render_tab_obra(proy_name, proy_data):
-    """Pestaña 5: Partidas y Tareas (Sincronizada con 03. Presupuesto)."""
-    st.markdown("### 🏗️ PARTIDAS Y TAREAS")
+    """Pestaña 5: Partidas y Tareas (Sincronizada con 03. Presupuesto, con Cronograma Gantt y Rango Rápido de Fechas)."""
+    st.markdown("### 🏗️ 05. PARTIDAS Y TAREAS")
     st.caption(
-        "Control operativo de contratistas, cronograma de obra y pagos por partida. "
-        "Las partidas, tareas (1.01, 1.02...) y sus presupuestos provienen automáticamente de **03. PRESUPUESTO**."
+        "Control operativo de contratistas, cronograma Gantt de obra y supervisión por partida. "
+        "Las partidas y tareas mantienen exactamente el mismo orden que en **03. PRESUPUESTO**."
     )
 
-    col_ap1, col_ap2, _ = st.columns([2.8, 3.2, 4.0])
+    col_ap1, col_ap2, col_ap3 = st.columns([2.8, 3.4, 3.8])
     with col_ap1:
         with st.popover("➕ AGREGAR PARTIDA DE OBRA", use_container_width=True):
             with st.form(f"f_new_part_{proy_name}", clear_on_submit=True):
@@ -1013,23 +1243,125 @@ def _render_tab_obra(proy_name, proy_data):
                 n_pac = st.number_input("Presupuesto Pactado Contratista (S/)", value=0.0)
                 if st.form_submit_button("CREAR PARTIDA") and n_pa:
                     st.session_state.partidas = pd.concat([st.session_state.partidas, pd.DataFrame([{'Proyecto': proy_name, 'Nombre_Partida': n_pa}])], ignore_index=True)
-                    st.session_state.p_info = pd.concat([st.session_state.p_info, pd.DataFrame([{'Proyecto': proy_name, 'Nombre_Partida': n_pa, 'Monto_Pactado': n_pac}])], ignore_index=True)
+                    st.session_state.p_info = pd.concat([st.session_state.p_info, pd.DataFrame([{'Proyecto': proy_name, 'Nombre_Partida': n_pa, 'Monto_Pactado': float(n_pac)}])], ignore_index=True)
                     clear_base_dfs()
                     st.rerun()
 
     with col_ap2:
-        if st.button("🔄 SINCRONIZAR MONTOS CON 03. PRESUPUESTO", key=f"btn_sync_obra_ppto_{proy_name}", use_container_width=True):
+        if st.button("🔄 SINCRONIZAR CON 03. PRESUPUESTO", key=f"btn_sync_obra_ppto_{proy_name}", use_container_width=True):
             recalcular_totales_presupuesto_proyecto(proy_name, sincronizar_pactado=True)
             clear_base_dfs()
             st.rerun()
 
-    parts_proy = st.session_state.partidas[st.session_state.partidas['Proyecto'] == proy_name]
+    # Ordenar las partidas estrictamente por su prefijo numérico (1., 2., 3...) para mantener el orden de 03. Presupuesto
+    parts_proy = st.session_state.partidas[st.session_state.partidas['Proyecto'] == proy_name].copy()
     if parts_proy.empty:
         st.info("No hay partidas registradas para este proyecto. Configura tus partidas en **03. PRESUPUESTO** o crea una arriba.")
         return
 
-    # Iterar partidas
-    for idx_part, part_r in parts_proy.iterrows():
+    def _orden_partida_num(nom_p: str) -> tuple:
+        s_p = str(nom_p or "").strip()
+        import re as _re
+        m_p = _re.match(r"^(\d+)", s_p)
+        if m_p:
+            return (0, int(m_p.group(1)), s_p)
+        return (1, 999999, s_p)
+
+    parts_proy["_sort_key"] = parts_proy["Nombre_Partida"].apply(_orden_partida_num)
+    parts_proy = parts_proy.sort_values(by="_sort_key", kind="mergesort").drop(columns=["_sort_key"])
+
+    # Cronograma Gantt Interactivo de Tareas (Inicio a Fin y Estados)
+    df_all_t_proy = st.session_state.tasks[st.session_state.tasks["Proyecto"] == proy_name].copy() if "tasks" in st.session_state else pd.DataFrame()
+    with col_ap3:
+        if not df_all_t_proy.empty:
+            sin_fecha_mask = df_all_t_proy["Inicio"].apply(lambda x: parse_date(x) is None) | df_all_t_proy["Fin"].apply(lambda x: parse_date(x) is None)
+            n_sin_fecha = int(sin_fecha_mask.sum())
+            if n_sin_fecha > 0:
+                if st.button(f"📅 Auto-asignar fechas a {n_sin_fecha} tarea(s) para el Gantt", key=f"btn_autofechas_{proy_name}", use_container_width=True):
+                    f_base = parse_date(proy_data.get("Inicio")) or datetime.date.today()
+                    offset_d = 0
+                    for idx_t_g in df_all_t_proy.index:
+                        d_i_cur = parse_date(st.session_state.tasks.at[idx_t_g, "Inicio"])
+                        d_f_cur = parse_date(st.session_state.tasks.at[idx_t_g, "Fin"])
+                        if d_i_cur is None:
+                            d_i_cur = f_base + datetime.timedelta(days=offset_d)
+                            st.session_state.tasks.at[idx_t_g, "Inicio"] = d_i_cur.strftime("%d/%m/%Y")
+                            offset_d += 3
+                        if d_f_cur is None or d_f_cur < d_i_cur:
+                            d_f_cur = d_i_cur + datetime.timedelta(days=4)
+                            st.session_state.tasks.at[idx_t_g, "Fin"] = d_f_cur.strftime("%d/%m/%Y")
+                    clear_base_dfs()
+                    st.rerun()
+
+    with st.expander("📊 CRONOGRAMA GANTT DE PARTIDAS Y TAREAS (INICIO → FIN Y ESTADOS)", expanded=True):
+        if not df_all_t_proy.empty:
+            df_gantt = df_all_t_proy.copy()
+            df_gantt["Inicio_DT"] = df_gantt["Inicio"].apply(lambda x: pd.to_datetime(parse_date(x)))
+            df_gantt["Fin_DT"] = df_gantt["Fin"].apply(lambda x: pd.to_datetime(parse_date(x)))
+            df_gantt = df_gantt.dropna(subset=["Inicio_DT", "Fin_DT"]).copy()
+
+            if not df_gantt.empty:
+                mask_eq = df_gantt["Inicio_DT"].dt.date == df_gantt["Fin_DT"].dt.date
+                df_gantt.loc[mask_eq, "Fin_DT"] = df_gantt["Fin_DT"] + datetime.timedelta(days=1)
+                df_gantt["Duracion_Dias"] = (df_gantt["Fin_DT"] - df_gantt["Inicio_DT"]).dt.days.clip(lower=1)
+                df_gantt["Etiqueta_Tarea"] = df_gantt.apply(
+                    lambda r: f"{safe_str(r.get('Codigo_Item', '')).strip()} {extraer_descripcion_tarea(r.get('Tarea', ''), r.get('Codigo_Item', ''))}"[:55].strip(),
+                    axis=1,
+                )
+                df_gantt["Orden_Gantt"] = range(len(df_gantt))
+
+                escala_color_t = alt.Scale(
+                    domain=STATUS_TASKS,
+                    range=["#D98A2B", "#2B6CB0", "#4A7C59", "#C93B2B"],
+                )
+                alto_gantt = max(220, min(680, len(df_gantt) * 28 + 60))
+                chart_gantt_t = (
+                    alt.Chart(df_gantt)
+                    .mark_bar(cornerRadius=4, height=16)
+                    .encode(
+                        x=alt.X(
+                            "Inicio_DT:T",
+                            title="Cronograma de Ejecución (Inicio → Fin)",
+                            axis=alt.Axis(gridColor="#DFD9CE", domainColor="#DFD9CE", labelColor="#6E665E", titleColor="#262320", format="%d %b"),
+                        ),
+                        x2="Fin_DT:T",
+                        y=alt.Y(
+                            "Etiqueta_Tarea:N",
+                            sort=alt.SortField(field="Orden_Gantt", order="ascending"),
+                            title="",
+                            axis=alt.Axis(labelColor="#262320", labelFontWeight="bold", labelLimit=280),
+                        ),
+                        color=alt.Color(
+                            "Estado:N",
+                            scale=escala_color_t,
+                            legend=alt.Legend(title="Estado de Tarea", orient="top", labelColor="#262320", titleColor="#6E665E"),
+                        ),
+                        tooltip=[
+                            alt.Tooltip("Partida:N", title="Partida"),
+                            alt.Tooltip("Tarea:N", title="Tarea"),
+                            alt.Tooltip("Contratista:N", title="Contratista"),
+                            alt.Tooltip("Estado:N", title="Estado"),
+                            alt.Tooltip("Inicio:N", title="Inicio"),
+                            alt.Tooltip("Fin:N", title="Fin"),
+                            alt.Tooltip("Duracion_Dias:Q", title="Duración (días)"),
+                        ],
+                    )
+                    .properties(height=alto_gantt)
+                    .configure_view(strokeOpacity=0)
+                    .configure_axis(grid=True)
+                )
+                st.altair_chart(chart_gantt_t, use_container_width=True)
+            else:
+                st.caption("💡 Asigna fechas de **Inicio** y **Fin** a las tareas abajo (o usa el botón **📅 Auto-asignar fechas**) para visualizar las barras en el Cronograma Gantt.")
+        else:
+            st.caption("No hay tareas registradas en este proyecto.")
+
+    especialidades_obra = list(dict.fromkeys([""] + (obtener_catalogo_estudio("especialidades") or ESPECIALIDADES_DEFAULT) + extraer_esp(st.session_state.maestro)))
+    contratistas_obra = [""] + (st.session_state.maestro['ID_Contratista'].dropna().unique().tolist() if not st.session_state.maestro.empty else [])
+
+    # Iterar partidas en el orden exacto del presupuesto
+    for pos_part_0b, (idx_part, part_r) in enumerate(parts_proy.iterrows()):
+        idx_p_1b = pos_part_0b + 1
         p_nom = part_r['Nombre_Partida']
         st.markdown(f"<div class='cota-section-header'><span>■</span> PARTIDA // {p_nom.upper()}</div>", unsafe_allow_html=True)
 
@@ -1047,7 +1379,7 @@ def _render_tab_obra(proy_name, proy_data):
                 with st.form(f"ren_{proy_name}_{p_nom}_{idx_part}"):
                     nuevo_nombre = st.text_input("Nuevo Nombre", value=p_nom)
                     if st.form_submit_button("GUARDAR") and nuevo_nombre and nuevo_nombre != p_nom:
-                        renombrar_partida_presupuesto(proy_name, p_nom, nuevo_nombre)
+                        renombrar_partida_presupuesto(proy_name, idx_p_1b, p_nom, nuevo_nombre)
                         st.rerun()
 
         with col_b2:
@@ -1056,9 +1388,9 @@ def _render_tab_obra(proy_name, proy_data):
                     n_pac = st.number_input("Pactado (S/)", value=monto_pactado)
                     if st.form_submit_button("FIJAR"):
                         if df_pactado.empty:
-                            st.session_state.p_info = pd.concat([st.session_state.p_info, pd.DataFrame([{'Proyecto': proy_name, 'Nombre_Partida': p_nom, 'Monto_Pactado': n_pac}])], ignore_index=True)
+                            st.session_state.p_info = pd.concat([st.session_state.p_info, pd.DataFrame([{'Proyecto': proy_name, 'Nombre_Partida': p_nom, 'Monto_Pactado': float(n_pac)}])], ignore_index=True)
                         else:
-                            st.session_state.p_info.loc[df_pactado.index, 'Monto_Pactado'] = n_pac
+                            st.session_state.p_info.loc[df_pactado.index, 'Monto_Pactado'] = float(n_pac)
                         clear_base_dfs()
                         st.rerun()
 
@@ -1077,7 +1409,7 @@ def _render_tab_obra(proy_name, proy_data):
                             'Partida': p_nom,
                             'Contratista': p_contra,
                             'Fecha': p_fecha.strftime("%d/%m/%Y"),
-                            'Monto': p_monto,
+                            'Monto': float(p_monto),
                             'Tipo': p_tipo,
                             'Notas': p_notas
                         }])
@@ -1118,10 +1450,10 @@ def _render_tab_obra(proy_name, proy_data):
             )
             st.markdown(html_badges, unsafe_allow_html=True)
 
-        base_t_key = f"base_df_tasks_{proy_name}_{p_nom}_{idx_part}"
+        base_t_key = f"base_df_tasks_{proy_name}_{p_nom}"
         counter_key = f"c_{base_t_key}"
         c_val = st.session_state.get(counter_key, 0)
-        w_key = f"t_{proy_name}_{p_nom}_{idx_part}_{c_val}"
+        w_key = f"t_{proy_name}_{p_nom}_{c_val}"
 
         cols_task_ed = [
             'Codigo_Item', 'Tarea', 'Moneda', 'Unidad', 'Metrado', 'Valor_Unitario', 'Presupuesto',
@@ -1139,17 +1471,23 @@ def _render_tab_obra(proy_name, proy_data):
                 else:
                     df_tasks_p[c_req] = ""
 
+        for esp_v in df_tasks_p['Especialidad'].dropna().unique().tolist():
+            if safe_str(esp_v) and safe_str(esp_v) not in especialidades_obra:
+                especialidades_obra.append(safe_str(esp_v))
+        for con_v in df_tasks_p['Contratista'].dropna().unique().tolist():
+            if safe_str(con_v) and safe_str(con_v) not in contratistas_obra:
+                contratistas_obra.append(safe_str(con_v))
+
         display_t = df_tasks_p[cols_task_ed].copy() if not df_tasks_p.empty else pd.DataFrame(columns=cols_task_ed)
         display_t['Inicio'] = display_t['Inicio'].apply(lambda x: parse_date(x))
         display_t['Fin'] = display_t['Fin'].apply(lambda x: parse_date(x))
-        display_t['Metrado'] = pd.to_numeric(display_t['Metrado'], errors='coerce').fillna(0.0)
-        display_t['Valor_Unitario'] = pd.to_numeric(display_t['Valor_Unitario'], errors='coerce').fillna(0.0)
-        display_t['Presupuesto'] = pd.to_numeric(display_t['Presupuesto'], errors='coerce').fillna(0.0)
+        display_t['Metrado'] = pd.to_numeric(display_t['Metrado'], errors='coerce').fillna(0.0).astype(float)
+        display_t['Valor_Unitario'] = pd.to_numeric(display_t['Valor_Unitario'], errors='coerce').fillna(0.0).astype(float)
+        display_t['Presupuesto'] = pd.to_numeric(display_t['Presupuesto'], errors='coerce').fillna(0.0).astype(float)
         if 'Supervisado' in display_t.columns:
             display_t['Supervisado'] = display_t['Supervisado'].apply(_normalizar_supervisado)
 
-        if base_t_key not in st.session_state:
-            st.session_state[base_t_key] = display_t.copy()
+        st.session_state[base_t_key] = display_t.copy()
 
         st.data_editor(
             st.session_state[base_t_key],
@@ -1176,8 +1514,8 @@ def _render_tab_obra(proy_name, proy_data):
                 "Metrado": None,
                 "Valor_Unitario": None,
                 "Presupuesto": None,
-                "Especialidad": st.column_config.SelectboxColumn("Especialidad", options=extraer_esp(st.session_state.maestro)),
-                "Contratista": st.column_config.SelectboxColumn("Contratista", options=st.session_state.maestro['ID_Contratista'].tolist() if not st.session_state.maestro.empty else []),
+                "Especialidad": st.column_config.SelectboxColumn("Especialidad", options=especialidades_obra),
+                "Contratista": st.column_config.SelectboxColumn("Contratista", options=contratistas_obra),
                 "Estado": st.column_config.SelectboxColumn("Estado", options=STATUS_TASKS),
                 "Supervisado": st.column_config.SelectboxColumn("Supervisado ✓", options=["No", "Sí"], default="No", width="small"),
                 "Inicio": st.column_config.DateColumn("Inicio", format="DD/MM/YYYY"),
@@ -1199,21 +1537,77 @@ def _render_tab_obra(proy_name, proy_data):
             )
         )
 
-        # Botón para sugerir contratistas
-        if st.button("🔍 Sugerir contratista disponible", key=f"sug_{proy_name}_{p_nom}_{idx_part}"):
-            for _, row_s in st.session_state[base_t_key].iterrows():
-                if pd.notna(row_s.get('Especialidad')) and str(row_s.get('Especialidad')).strip() not in ["Ninguna", ""]:
-                    sug = sugerir_contratista(
-                        row_s['Especialidad'],
-                        proy_data.get('Ubicación', 'Lima'),
-                        row_s.get('Inicio'),
-                        row_s.get('Fin'),
-                        st.session_state.maestro,
-                        st.session_state.tasks,
-                        st.session_state.df_historial
-                    )
-                    if sug:
-                        st.info(f"**{row_s.get('Tarea')}**: {sug}")
+        # Barra rápida: Selector de Rango de Fechas (Inicio → Fin en el mismo calendario con resaltado) + Mover Tarea (Subir / Bajar) + Sugerir Contratista
+        if not df_tasks_p.empty:
+            opciones_t_obra = [
+                (i_t, f"{safe_str(r_t.get('Codigo_Item', f'{idx_p_1b}.{i_t+1:02d}'))} — {extraer_descripcion_tarea(r_t.get('Tarea', ''), r_t.get('Codigo_Item', ''))}")
+                for i_t, (_, r_t) in enumerate(df_tasks_p.iterrows())
+            ]
+            cr_t, cr_cal, cr_btn, cr_up, cr_dn, cr_sug = st.columns([3.0, 2.8, 1.5, 0.85, 0.85, 1.0])
+            with cr_t:
+                idx_t_sel_obra = st.selectbox(
+                    "Tarea seleccionada:",
+                    options=[o[0] for o in opciones_t_obra],
+                    format_func=lambda x: dict(opciones_t_obra).get(x, ""),
+                    key=f"sel_t_obra_fast_{proy_name}_{idx_p_1b}",
+                    label_visibility="collapsed",
+                )
+            fila_t_sel = df_tasks_p.iloc[idx_t_sel_obra]
+            d_ini_sel = parse_date(fila_t_sel.get("Inicio")) or parse_date(proy_data.get("Inicio")) or datetime.date.today()
+            d_fin_sel = parse_date(fila_t_sel.get("Fin")) or (d_ini_sel + datetime.timedelta(days=3))
+            if d_fin_sel < d_ini_sel:
+                d_fin_sel = d_ini_sel
+
+            with cr_cal:
+                rango_fechas_sel = st.date_input(
+                    "📅 Inicio → Fin (mismo calendario):",
+                    value=(d_ini_sel, d_fin_sel),
+                    format="DD/MM/YYYY",
+                    key=f"rng_cal_obra_{proy_name}_{idx_p_1b}_{idx_t_sel_obra}",
+                    label_visibility="collapsed",
+                    help="Selecciona la fecha de Inicio y ahí mismo la fecha de Fin; el calendario resaltará todos los días que durará la tarea.",
+                )
+            with cr_btn:
+                dur_txt = ""
+                if isinstance(rango_fechas_sel, (tuple, list)) and len(rango_fechas_sel) == 2:
+                    dias_dur = (rango_fechas_sel[1] - rango_fechas_sel[0]).days + 1
+                    dur_txt = f" ({dias_dur}d)"
+                if st.button(f"📅 Fijar{dur_txt}", key=f"btn_set_rng_{proy_name}_{idx_p_1b}", use_container_width=True, help="Aplicar rango de fechas Inicio → Fin a la tarea seleccionada"):
+                    if isinstance(rango_fechas_sel, (tuple, list)) and len(rango_fechas_sel) >= 1:
+                        f_i_new = rango_fechas_sel[0]
+                        f_f_new = rango_fechas_sel[1] if len(rango_fechas_sel) > 1 else f_i_new
+                        indices_p_global = st.session_state.tasks[mask_t].index.tolist()
+                        if idx_t_sel_obra < len(indices_p_global):
+                            g_idx = indices_p_global[idx_t_sel_obra]
+                            st.session_state.tasks.at[g_idx, "Inicio"] = f_i_new.strftime("%d/%m/%Y")
+                            st.session_state.tasks.at[g_idx, "Fin"] = f_f_new.strftime("%d/%m/%Y")
+                            st.session_state[counter_key] = c_val + 1
+                            st.rerun()
+            with cr_up:
+                if st.button("⬆️", key=f"btn_up_obra_{proy_name}_{idx_p_1b}", use_container_width=True, disabled=(idx_t_sel_obra == 0), help="Subir tarea"):
+                    if mover_tarea_presupuesto(proy_name, idx_p_1b, p_nom, idx_t_sel_obra, "subir"):
+                        st.session_state[counter_key] = c_val + 1
+                        st.rerun()
+            with cr_dn:
+                if st.button("⬇️", key=f"btn_dn_obra_{proy_name}_{idx_p_1b}", use_container_width=True, disabled=(idx_t_sel_obra >= len(opciones_t_obra) - 1), help="Bajar tarea"):
+                    if mover_tarea_presupuesto(proy_name, idx_p_1b, p_nom, idx_t_sel_obra, "bajar"):
+                        st.session_state[counter_key] = c_val + 1
+                        st.rerun()
+            with cr_sug:
+                if st.button("🔍 Sugerir", key=f"sug_{proy_name}_{p_nom}_{idx_part}", use_container_width=True, help="Sugerir contratista disponible para esta partida"):
+                    for _, row_s in st.session_state[base_t_key].iterrows():
+                        if pd.notna(row_s.get('Especialidad')) and str(row_s.get('Especialidad')).strip() not in ["Ninguna", ""]:
+                            sug = sugerir_contratista(
+                                row_s['Especialidad'],
+                                proy_data.get('Ubicación', 'Lima'),
+                                row_s.get('Inicio'),
+                                row_s.get('Fin'),
+                                st.session_state.maestro,
+                                st.session_state.tasks,
+                                st.session_state.df_historial
+                            )
+                            if sug:
+                                st.info(f"**{row_s.get('Tarea')}**: {sug}")
 
 
 def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
@@ -1497,24 +1891,65 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
     )
 
     # 3. Tabla de Resumen de Cierre (SUB TOTAL, Gestión, Gastos Generales, TOTAL Soles, Dólares)
-    st.markdown("##### 📋 RESUMEN DE CIERRE (SUB TOTAL · TOTAL SOLES · DÓLARES)")
+    st.markdown("##### 📋 CUADRO DE CIERRE CONSOLIDADO (SUB TOTAL · GESTIÓN · GG · TOTAL SOLES · DÓLARES)")
     filas_cierre = [
-        res_calc["sub_total"],
-        res_calc["fila_gestion"],
-        res_calc["fila_gg"],
-        res_calc["total_soles"],
-        res_calc["total_dolares"],
+        ("subtotal", res_calc["sub_total"]),
+        ("cargo", res_calc["fila_gestion"]),
+        ("cargo", res_calc["fila_gg"]),
+        ("total_soles", res_calc["total_soles"]),
+        ("total_usd", res_calc["total_dolares"]),
     ]
-    df_cierre = pd.DataFrame(filas_cierre)[ordered_cols].copy()
-    col_cfg_cierre = dict(col_cfg_common)
-    col_cfg_cierre["Descripcion"] = st.column_config.TextColumn("Resumen", width="medium")
-    col_cfg_cierre["Moneda"] = st.column_config.TextColumn("Moneda", width="small")
-    st.dataframe(
-        df_cierre,
-        use_container_width=True,
-        hide_index=True,
-        column_config=col_cfg_cierre,
+
+    ths_sem_html = "".join(
+        f"<th style='padding:9px 8px; text-align:right;'>{'⏳ ' + c_s if c_s in cols_por_pagar_actual else c_s}</th>"
+        for c_s in cols_pago
     )
+    trs_pag_cierre = []
+    for tipo_r, fila_r in filas_cierre:
+        es_usd = (tipo_r == "total_usd") or ("dólar" in str(fila_r.get("Moneda", "")).lower())
+        pref_m = "US$ " if es_usd else "S/ "
+        if tipo_r == "subtotal":
+            r_st = "background:#EFECE6; color:#262320; font-weight:700; border-top:2px solid #262320; border-bottom:1px solid #DFD9CE;"
+        elif tipo_r == "total_soles":
+            r_st = "background:#262320; color:#FFFFFF; font-weight:700; font-size:13.5px; border-top:2px solid #262320;"
+        elif tipo_r == "total_usd":
+            r_st = "background:#FAF8F5; color:#C85A32; font-weight:700; font-size:13px; border-top:1px solid #DFD9CE;"
+        else:
+            r_st = "background:#FFFFFF; color:#262320; border-bottom:1px solid #EFECE6;"
+
+        tds_sem = "".join(
+            f"<td style='padding:8px 8px; text-align:right; font-family:monospace;'>{pref_m}{safe_float(fila_r.get(c_s, 0.0)):,.2f}</td>"
+            for c_s in cols_pago
+        )
+        trs_pag_cierre.append(
+            f"<tr style='{r_st}'>"
+            f"<td style='padding:8px 12px; text-align:left;'>{safe_str(fila_r.get('Descripcion', ''))}</td>"
+            f"<td style='padding:8px 8px; text-align:center;'>{safe_str(fila_r.get('Moneda', 'Soles'))}</td>"
+            f"<td style='padding:8px 10px; text-align:right; font-family:monospace; font-weight:700;'>{pref_m}{safe_float(fila_r.get('TOTAL', 0.0)):,.2f}</td>"
+            f"{tds_sem}"
+            f"<td style='padding:8px 10px; text-align:right; font-family:monospace; font-weight:700;'>{pref_m}{safe_float(fila_r.get('PAGADO', 0.0)):,.2f}</td>"
+            f"<td style='padding:8px 10px; text-align:right; font-family:monospace; font-weight:700;'>{pref_m}{safe_float(fila_r.get('SALDO', 0.0)):,.2f}</td>"
+            f"</tr>"
+        )
+
+    html_cierre_pagos = (
+        "<div style='border:1px solid #DFD9CE; border-radius:10px; overflow-x:auto; margin-bottom:12px; box-shadow:0 2px 6px rgba(38,35,32,0.04);'>"
+        "<table style='width:100%; border-collapse:collapse; font-size:12.5px; white-space:nowrap;'>"
+        "<thead>"
+        "<tr style='background:#F0ECE1; color:#6E665E; text-transform:uppercase; font-size:11px; border-bottom:2px solid #DFD9CE;'>"
+        "<th style='padding:9px 12px; text-align:left;'>Resumen de Cierre</th>"
+        "<th style='padding:9px 8px; text-align:center;'>Moneda</th>"
+        "<th style='padding:9px 10px; text-align:right;'>TOTAL</th>"
+        f"{ths_sem_html}"
+        "<th style='padding:9px 10px; text-align:right;'>PAGADO ✓</th>"
+        "<th style='padding:9px 10px; text-align:right;'>SALDO</th>"
+        "</tr>"
+        "</thead>"
+        f"<tbody>{''.join(trs_pag_cierre)}</tbody>"
+        "</table>"
+        "</div>"
+    )
+    st.markdown(html_cierre_pagos, unsafe_allow_html=True)
 
 
 def _render_tab_finanzas(proy_name, proy_data):

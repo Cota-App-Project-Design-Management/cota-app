@@ -662,6 +662,136 @@ def test_asegurar_estructura_presupuesto_float64_columns_no_lossy_error():
     assert tot["subtotal_casco"] == 500.0
 
 
+def test_valor_unitario_250_int64_no_crash():
+    import streamlit as st
+    from cota.cotizacion import recalcular_totales_presupuesto_proyecto
+
+    # Simular que Presupuesto, Utilidades y GG_Presupuesto fueron inferidos como int64
+    st.session_state["proyectos"] = pd.DataFrame([
+        {
+            "Nombre": "Proy 250",
+            "Presupuesto": 0,       # int64!
+            "Utilidades": 0,        # int64!
+            "GG_Presupuesto": 0,    # int64!
+            "TC_Presupuesto": 3.42,
+            "GG_Pct": 2.0,
+            "Utilidades_Pct": 15.0,
+            "Incluir_IGV": False,
+        }
+    ])
+    st.session_state["partidas"] = pd.DataFrame([
+        {"Proyecto": "Proy 250", "Nombre_Partida": "1. Partida 1"}
+    ])
+    st.session_state["p_info"] = pd.DataFrame([
+        {"Proyecto": "Proy 250", "Nombre_Partida": "1. Partida 1", "Monto_Pactado": 0}
+    ])
+    st.session_state["tasks"] = pd.DataFrame([
+        {
+            "Proyecto": "Proy 250",
+            "Partida": "1. Partida 1",
+            "Orden": 1,
+            "Codigo_Item": "1.01",
+            "Tarea": "1.01 Tarea Test",
+            "Moneda": "Soles",
+            "Unidad": "glb",
+            "Metrado": 1,
+            "Valor_Unitario": 250,
+            "Presupuesto": 250,
+        }
+    ])
+    # 250 * 15% = 37.5 (float no entero) -> no debe lanzar LossySetitemError
+    tot = recalcular_totales_presupuesto_proyecto("Proy 250", sincronizar_pactado=True)
+    assert tot["subtotal_casco"] == 250.0
+    assert tot["utilidades_monto"] == 37.5
+    assert tot["gg_monto"] == 5.0
+    assert tot["presupuesto_total"] == 292.5
+
+
+def test_mover_tarea_presupuesto_y_orden_partidas():
+    import streamlit as st
+    from cota.cotizacion import (
+        asegurar_estructura_presupuesto_proyecto,
+        ajustar_cantidad_tareas_partida,
+        mover_tarea_presupuesto,
+    )
+    from cota.db import COLS_P_INFO, COLS_TASKS
+
+    st.session_state["proyectos"] = pd.DataFrame([{"Nombre": "Proy Orden", "Presupuesto": 0.0}])
+    st.session_state["partidas"] = pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
+    st.session_state["p_info"] = pd.DataFrame(columns=COLS_P_INFO)
+    st.session_state["tasks"] = pd.DataFrame(columns=COLS_TASKS)
+
+    asegurar_estructura_presupuesto_proyecto("Proy Orden", n_partidas_default=3, n_tareas_default=3)
+    p1_name = st.session_state["partidas"].iloc[0]["Nombre_Partida"]
+    mask_p1 = (st.session_state["tasks"]["Proyecto"] == "Proy Orden") & (st.session_state["tasks"]["Partida"] == p1_name)
+    idxs_p1 = st.session_state["tasks"][mask_p1].index.tolist()
+    st.session_state["tasks"].at[idxs_p1[0], "Tarea"] = "1.01 Poner pisos"
+    st.session_state["tasks"].at[idxs_p1[1], "Tarea"] = "1.02 Eliminar desmonte"
+
+    # Subir la tarea en índice 1 ("Eliminar desmonte") a la posición 0
+    ok = mover_tarea_presupuesto("Proy Orden", 1, p1_name, 1, "subir")
+    assert ok is True
+    tasks_after = st.session_state["tasks"][
+        (st.session_state["tasks"]["Proyecto"] == "Proy Orden") & (st.session_state["tasks"]["Partida"] == p1_name)
+    ].reset_index(drop=True)
+    assert tasks_after.iloc[0]["Tarea"] == "1.01 Eliminar desmonte"
+    assert tasks_after.iloc[1]["Tarea"] == "1.02 Poner pisos"
+
+    # Ajustar cantidad de tareas en Partida 1 (a 4 y luego a 2) y verificar que Partida 1 sigue primera
+    ajustar_cantidad_tareas_partida("Proy Orden", 1, p1_name, 4)
+    assert len(st.session_state["tasks"][st.session_state["tasks"]["Partida"] == p1_name]) == 4
+    ajustar_cantidad_tareas_partida("Proy Orden", 1, p1_name, 2)
+    assert len(st.session_state["tasks"][st.session_state["tasks"]["Partida"] == p1_name]) == 2
+    assert st.session_state["partidas"].iloc[0]["Nombre_Partida"] == p1_name
+
+
+def test_parsear_presupuesto_flexible_gemini_spark():
+    from cota.cotizacion import parsear_presupuesto_flexible
+
+    md_table = """
+| Item | Partida / Tarea | Unidad | Metraje | Valor Unitario | Valor Parcial |
+|---|---|---|---|---|---|
+| 1 | OBRAS PRELIMINARES | | | | |
+| 1.01 | Desmontaje y limpieza | glb | 1 | 1500 | 1500 |
+| 1.02 | Eliminación de desmonte | m3 | 10 | 85 | 850 |
+| 2 | PISOS Y ENCHAPES | | | | |
+| 2.01 | Instalación de porcelanato | m2 | 50 | 120 | 6000 |
+"""
+    parsed = parsear_presupuesto_flexible(md_table, tc_default=3.42)
+    assert len(parsed["partidas"]) == 2
+    assert len(parsed["partidas"][0]["tareas"]) == 2
+    assert len(parsed["partidas"][1]["tareas"]) == 1
+    assert parsed["subtotal_casco"] == 8350.0
+
+
+def test_catalogo_estudio_y_notas_chat():
+    import streamlit as st
+    from cota.db import (
+        obtener_catalogo_estudio,
+        agregar_item_catalogo_estudio,
+        obtener_notas_chat_proyecto,
+        agregar_nota_chat_proyecto,
+    )
+
+    st.session_state["proyectos"] = pd.DataFrame([
+        {"Nombre": "Proy Chat", "Ubicación": "Miraflores", "Notas": "Nota inicial del cliente"}
+    ])
+    st.session_state["config_estudio"] = pd.DataFrame(columns=["Clave", "Valor"])
+
+    ubis = agregar_item_catalogo_estudio("ubicaciones", "Chacarilla")
+    assert "Chacarilla" in ubis
+    assert "Chacarilla" in obtener_catalogo_estudio("ubicaciones")
+
+    notas_ini = obtener_notas_chat_proyecto("Proy Chat")
+    assert len(notas_ini) == 1
+    assert notas_ini[0]["texto"] == "Nota inicial del cliente"
+
+    notas_nuevas = agregar_nota_chat_proyecto("Proy Chat", "Alvaro", "Revisión de planos lista")
+    assert len(notas_nuevas) == 2
+    assert notas_nuevas[1]["socio"] == "Alvaro"
+    assert notas_nuevas[1]["texto"] == "Revisión de planos lista"
+
+
 
 
 

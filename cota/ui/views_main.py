@@ -17,16 +17,23 @@ from cota.config import (
     STATUS_PROYECTOS,
     STATUS_TASKS,
     TIPOS_PROYECTO,
+    UNIDADES_MEDIDA,
 )
 from cota.db import (
     COLS_MAESTRO,
     COLS_PROY,
     agregar_fase_banco,
+    agregar_item_catalogo_estudio,
+    agregar_nota_chat_proyecto,
     clear_base_dfs,
+    eliminar_item_catalogo_estudio,
+    eliminar_nota_chat_proyecto,
     get_proyectos_activos,
     get_proyectos_archivados,
     guardar_tabla,
     obtener_banco_fases,
+    obtener_catalogo_estudio,
+    obtener_notas_chat_proyecto,
     purgar_proyecto_cascada,
     renombrar_proyecto,
     sembrar_fases_default,
@@ -36,6 +43,7 @@ from cota.cotizacion import (
     aplicar_cotizacion_a_proyecto,
     generar_plantilla_cotizacion_venti,
     parsear_cotizacion_venti,
+    parsear_presupuesto_flexible,
 )
 from cota.ui.components import render_metric_card, render_metric_row
 from cota.utils import (
@@ -70,14 +78,18 @@ def render_main_view(conn, sheet_url, nube_ok, lista_socios):
     elif "General" not in exist_divs:
         exist_divs.insert(0, "General")
 
-    exist_ubis = sorted(list(set([u for u in st.session_state.proyectos['Ubicación'].dropna().unique().tolist() if u])))
+    exist_ubis = obtener_catalogo_estudio("ubicaciones")
     if not exist_ubis:
         exist_ubis = ["Lima", "Miraflores", "San Isidro", "Barranco", "Surco", "La Molina"]
+
+    socios_cat = obtener_catalogo_estudio("socios")
+    if socios_cat:
+        lista_socios = socios_cat
 
     # Tabs principales
     t_proy, t_con, t_fin, t_ope, t_cal, t_arc = st.tabs([
         "DISEÑO",
-        "BASE CONTRATISTAS",
+        "BASE DE DATOS",
         "FINANZAS",
         "CONTROL OPERATIVO",
         "CALENDARIO",
@@ -341,6 +353,8 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
     nombres_banco_all = [f["Fase"] for f in banco_fases_estudio]
     nombres_banco_def = [f["Fase"] for f in banco_fases_estudio if f.get("Por_Defecto", True)]
 
+    tipos_cat = obtener_catalogo_estudio("tipos_proyecto") or TIPOS_PROYECTO
+
     with col_new:
         with st.popover("➕ NUEVO PROYECTO DE DISEÑO", use_container_width=True):
             with st.form("form_nuevo_proy", clear_on_submit=True):
@@ -348,10 +362,11 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 sel_div = st.selectbox("Carpeta / Cliente", exist_divs + ["+ Crear Nueva Carpeta"])
                 p_div = st.text_input("Nombre de Nueva Carpeta") if sel_div == "+ Crear Nueva Carpeta" else sel_div
                 sel_ubi = st.selectbox("Ubicación", exist_ubis + ["+ Agregar Ubicación"])
-                p_ubi = st.text_input("Nueva Ubicación") if sel_ubi == "+ Agregar Ubicación" else sel_ubi
+                p_ubi_new = st.text_input("Nueva Ubicación (si elegiste '+ Agregar Ubicación')", placeholder="ej. Chacarilla, Surco").strip()
+                p_ubi = p_ubi_new if (sel_ubi == "+ Agregar Ubicación" and p_ubi_new) else (exist_ubis[0] if sel_ubi == "+ Agregar Ubicación" else sel_ubi)
                 pe = st.selectbox("Líder de Proyecto", lista_socios)
                 ps = st.selectbox("Estado Inicial", STATUS_PROYECTOS)
-                p_tipo = st.selectbox("Tipo de Proyecto", TIPOS_PROYECTO)
+                p_tipo = st.selectbox("Tipo de Proyecto", tipos_cat)
                 p_cliente = st.text_input("Nombre del Cliente", placeholder="ej. Familia Gómez")
                 p_color = st.color_picker("Color Identificador", value="#C85A32")
 
@@ -361,14 +376,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                     options=[f for f in nombres_banco_all if "ff&e" not in f.lower() and "ffe" not in f.lower()],
                     default=[f for f in nombres_banco_def if "ff&e" not in f.lower() and "ffe" not in f.lower()],
                 )
-
-                st.markdown("##### Presupuestos Iniciales (Opcional)")
-                col_m1, col_m2 = st.columns(2)
-                p_presupuesto = col_m1.number_input("Ppto Total Venta (S/)", value=0.0)
-                p_util = col_m2.number_input("Utilidades Proyectadas (S/)", value=0.0, help="Si se deja en 0, se calcula el 20% del contrato por defecto.")
-                col_m3, col_m4 = st.columns(2)
-                p_hon = col_m3.number_input("Honorarios Diseño (S/)", value=0.0)
-                p_gg = col_m4.number_input("Ppto Caja Chica (S/)", value=0.0)
+                st.caption("💡 El presupuesto total, utilidades, gastos generales y honorarios se definen directamente en la pestaña **03. PRESUPUESTO** del proyecto.")
 
                 if st.form_submit_button("CREAR PROYECTO", type="primary", use_container_width=True):
                     if not pn:
@@ -376,7 +384,9 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                     elif pn in st.session_state.proyectos['Nombre'].tolist():
                         st.error(f"Ya existe un proyecto con el nombre '{pn}'. Elige un nombre único.")
                     else:
-                        util_final = p_util if p_util > 0 else (p_presupuesto * 0.20)
+                        if p_ubi_new:
+                            agregar_item_catalogo_estudio("ubicaciones", p_ubi_new)
+                            p_ubi = p_ubi_new
                         n_p_dict = {
                             'Nombre': pn,
                             'Encargado': pe,
@@ -386,9 +396,9 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                             'Fin': (fecha_hoy + datetime.timedelta(days=90)).strftime('%Y-%m-%d'),
                             'Color': p_color,
                             'Cliente': p_cliente,
-                            'Presupuesto': p_presupuesto,
-                            'Utilidades': util_final,
-                            'GG_Presupuesto': p_gg,
+                            'Presupuesto': 0.0,
+                            'Utilidades': 0.0,
+                            'GG_Presupuesto': 0.0,
                             'Archivado': False,
                             'Metodologia': 'Diseño Interior',
                             'Division': p_div,
@@ -396,7 +406,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                             'Num_Pisos': 0,
                             'Num_Sotanos': 0,
                             'Presupuesto_FFE': 0.0,
-                            'Honorarios_Diseno': p_hon,
+                            'Honorarios_Diseno': 0.0,
                             'Notas': '',
                             'TC_Presupuesto': 3.42,
                             'GG_Pct': 2.0,
@@ -480,14 +490,34 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 )
 
             with col_imp_p:
-                st.markdown("##### 2. Importar Presupuesto Llenado (.xlsx o .csv)")
-                up_port_file = st.file_uploader(
-                    "Sube el archivo de presupuesto llenado:",
-                    type=["xlsx", "xls", "csv"],
-                    key="up_cot_file_portafolio",
+                st.markdown("##### 2. Importar Presupuesto (Excel / CSV / Gemini Spark)")
+                modo_imp_port = st.radio(
+                    "Fuente del presupuesto:",
+                    options=["archivo", "texto"],
+                    format_func=lambda x: "📁 Subir archivo (.xlsx / .csv)" if x == "archivo" else "🤖 Pegar tabla de Gemini Spark / Excel / Markdown",
+                    horizontal=True,
+                    key="rad_fuente_imp_port",
                 )
-                if up_port_file is not None:
-                    parsed_p = parsear_cotizacion_venti(up_port_file)
+                parsed_p = None
+                if modo_imp_port == "archivo":
+                    up_port_file = st.file_uploader(
+                        "Sube el archivo de presupuesto llenado:",
+                        type=["xlsx", "xls", "csv"],
+                        key="up_cot_file_portafolio",
+                    )
+                    if up_port_file is not None:
+                        parsed_p = parsear_presupuesto_flexible(up_port_file)
+                else:
+                    txt_spark_port = st.text_area(
+                        "Pega aquí la tabla generada en Gemini Spark, Excel o CSV (con Partidas, Tareas, Unidad, Metraje, V. Unitario, Valor Parcial):",
+                        height=150,
+                        placeholder="| Item | Descripción | Unidad | Metraje | V. Unitario | Valor Parcial |\n|---|---|---|---|---|---|\n| 1.0 | OBRAS PROVISIONALES | | | | |\n| 1.01 | Desmontaje y limpieza | glb | 1 | 1500 | 1500 |",
+                        key="txt_spark_portafolio",
+                    )
+                    if txt_spark_port and txt_spark_port.strip():
+                        parsed_p = parsear_presupuesto_flexible(txt_spark_port)
+
+                if parsed_p is not None and parsed_p.get("partidas"):
                     st.markdown(
                         f"**Resumen detectado:** Sub Total Casco: `{format_currency(parsed_p['subtotal_casco'])}` · "
                         f"Gastos Generales ({parsed_p['gg_pct']:g}%): `{format_currency(parsed_p['gg_monto'])}` · "
@@ -735,35 +765,35 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                     n_nom = st.text_input("Nombre", value=p_nom)
                                     n_cli = st.text_input("Cliente", value=safe_str(proy.get('Cliente', '')))
                                     n_div = st.selectbox("Carpeta", exist_divs, index=exist_divs.index(proy.get('Division', 'General')) if proy.get('Division', 'General') in exist_divs else 0)
-                                    n_ubi = st.selectbox("Ubicación", exist_ubis, index=exist_ubis.index(proy.get('Ubicación', 'Lima')) if proy.get('Ubicación', 'Lima') in exist_ubis else 0)
+                                    opciones_ubi_ed = exist_ubis + ["+ Agregar Ubicación"]
+                                    idx_ubi_ed = exist_ubis.index(proy.get('Ubicación', 'Lima')) if proy.get('Ubicación', 'Lima') in exist_ubis else 0
+                                    n_ubi_sel = st.selectbox("Ubicación", opciones_ubi_ed, index=idx_ubi_ed)
+                                    n_ubi_new = st.text_input("Nueva Ubicación (opcional)", placeholder="ej. San Borja").strip()
                                     n_est = st.selectbox("Estado", STATUS_PROYECTOS, index=STATUS_PROYECTOS.index(proy.get('Estado')) if proy.get('Estado') in STATUS_PROYECTOS else 0)
-                                    n_tipo = st.selectbox("Tipo", TIPOS_PROYECTO, index=TIPOS_PROYECTO.index(proy.get('Tipo_Proyecto')) if proy.get('Tipo_Proyecto') in TIPOS_PROYECTO else 0)
+                                    n_tipo = st.selectbox("Tipo", tipos_cat, index=tipos_cat.index(proy.get('Tipo_Proyecto')) if proy.get('Tipo_Proyecto') in tipos_cat else 0)
                                     col_d1, col_d2 = st.columns(2)
                                     d_i = col_d1.date_input("Inicio", value=parse_date(proy.get('Inicio')) or fecha_hoy)
                                     d_f = col_d2.date_input("Fin", value=parse_date(proy.get('Fin')) or fecha_hoy)
-                                    v_p = st.number_input("Ppto Total (S/)", value=safe_float(proy.get('Presupuesto', 0)))
-                                    v_util = st.number_input("Utilidades Proyectadas (S/)", value=safe_float(proy.get('Utilidades', 0)))
-                                    v_hon = st.number_input("Honorarios Diseño (S/)", value=safe_float(proy.get('Honorarios_Diseno', 0)))
-                                    v_gg = st.number_input("Ppto Caja Chica (S/)", value=safe_float(proy.get('GG_Presupuesto', 0)))
                                     n_drive = st.text_input("Presentación Drive / Slides (URL)", value=safe_str(proy.get('Link_Drive', '')))
+                                    st.caption("💡 El presupuesto total, utilidades, gastos generales y honorarios se administran en **03. PRESUPUESTO**.")
 
                                     if st.form_submit_button("ACTUALIZAR DATOS"):
                                         if n_nom != p_nom:
                                              renombrar_proyecto(p_nom, n_nom)
+                                        if n_ubi_new:
+                                            agregar_item_catalogo_estudio("ubicaciones", n_ubi_new)
+                                            n_ubi_final = n_ubi_new
+                                        else:
+                                            n_ubi_final = proy.get('Ubicación', 'Lima') if n_ubi_sel == "+ Agregar Ubicación" else n_ubi_sel
 
                                         st.session_state.proyectos.at[idx_p, 'Nombre'] = n_nom
                                         st.session_state.proyectos.at[idx_p, 'Cliente'] = n_cli
                                         st.session_state.proyectos.at[idx_p, 'Division'] = n_div
-                                        st.session_state.proyectos.at[idx_p, 'Ubicación'] = n_ubi
+                                        st.session_state.proyectos.at[idx_p, 'Ubicación'] = n_ubi_final
                                         st.session_state.proyectos.at[idx_p, 'Estado'] = n_est
                                         st.session_state.proyectos.at[idx_p, 'Tipo_Proyecto'] = n_tipo
                                         st.session_state.proyectos.at[idx_p, 'Inicio'] = d_i.strftime('%Y-%m-%d')
                                         st.session_state.proyectos.at[idx_p, 'Fin'] = d_f.strftime('%Y-%m-%d')
-                                        st.session_state.proyectos.at[idx_p, 'Presupuesto'] = v_p
-                                        st.session_state.proyectos.at[idx_p, 'Utilidades'] = v_util
-                                        st.session_state.proyectos.at[idx_p, 'Honorarios_Diseno'] = v_hon
-                                        st.session_state.proyectos.at[idx_p, 'Presupuesto_FFE'] = 0.0
-                                        st.session_state.proyectos.at[idx_p, 'GG_Presupuesto'] = v_gg
                                         st.session_state.proyectos.at[idx_p, 'Link_Drive'] = n_drive.strip()
                                         clear_base_dfs()
                                         st.success("Datos actualizados correctamente.")
@@ -792,13 +822,29 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                         st.rerun()
 
                         with c_btn3:
-                            with st.popover("📝 BRIEF / NOTAS", use_container_width=True):
-                                with st.form(f"f_notes_m_{ukey}"):
-                                    c_notas = st.text_area("Notas / Brief del Cliente", value=safe_str(proy.get('Notas', '')), height=140)
-                                    if st.form_submit_button("GUARDAR BRIEF"):
-                                        st.session_state.proyectos.at[idx_p, 'Notas'] = c_notas
-                                        st.success("Notas guardadas.")
-                                        st.rerun()
+                            notas_chat_card = obtener_notas_chat_proyecto(p_nom)
+                            with st.popover(f"💬 NOTAS ({len(notas_chat_card)})", use_container_width=True):
+                                st.markdown(f"##### 💬 Notas del Proyecto: {p_nom}")
+                                if notas_chat_card:
+                                    for msg in notas_chat_card[-6:]:
+                                        st.markdown(
+                                            f"<div style='background:#FAF8F5; border:1px solid #DFD9CE; border-left:3px solid #C85A32; border-radius:6px; padding:6px 10px; margin-bottom:6px; font-size:12px;'>"
+                                            f"<b style='color:#C85A32;'>{msg['socio']}</b> <span style='color:#8C8278; font-size:10.5px;'>· {msg['fecha']}</span><br>"
+                                            f"<span style='color:#262320;'>{msg['texto']}</span></div>",
+                                            unsafe_allow_html=True,
+                                        )
+                                else:
+                                    st.caption("Aún no hay notas registradas en este proyecto.")
+                                with st.form(f"f_notes_m_{ukey}", clear_on_submit=True):
+                                    socio_def = st.session_state.get("socio_activo", lista_socios[0] if lista_socios else "Alvaro")
+                                    idx_soc = lista_socios.index(socio_def) if socio_def in lista_socios else 0
+                                    soc_nota = st.selectbox("Socio", lista_socios, index=idx_soc, key=f"soc_n_card_{ukey}")
+                                    c_notas = st.text_area("Escribir nueva nota...", height=80, placeholder="Escribe un acuerdo, comentario o pendiente...")
+                                    if st.form_submit_button("ENVIAR NOTA", type="primary", use_container_width=True):
+                                        if c_notas and c_notas.strip():
+                                            agregar_nota_chat_proyecto(p_nom, soc_nota, c_notas.strip())
+                                            st.success("Nota publicada.")
+                                            st.rerun()
 
                         with c_btn4:
                             if st.button("📦 ARCHIVAR", key=f"arch_{ukey}", use_container_width=True):
@@ -808,109 +854,224 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
 
 
 def _render_tab_contratistas(fecha_hoy, df_hoy):
-    """Directorio de contratistas, proveedores y especialistas con rating y disponibilidad en tiempo real."""
-    c_tit, c_add = st.columns([7, 3])
-    with c_tit:
-        st.markdown("### 🛠️ DIRECTORIO DE CONTRATISTAS, PROVEEDORES Y ESPECIALISTAS")
-        st.caption("Evaluación histórica de desempeño, carga de trabajo actual y bitácora de obra.")
-    with c_add:
-        with st.popover("➕ REGISTRAR CONTRATISTA", use_container_width=True):
-            with st.form("form_nuevo_contratista", clear_on_submit=True):
-                nc_nom = st.text_input("Nombre / Empresa Especialista", placeholder="ej. Carpintería Hnos. Silva").strip()
-                nc_esp = st.selectbox("Especialidad Principal", ESPECIALIDADES_DEFAULT + ["Mobiliario a Medida", "Mármol y Piedra", "Drywall y Pintura", "Instalaciones Eléctricas", "Sanitarias / Gasfitería", "Vidrios y Espejos", "Tapicería y Cortinas", "Otro"])
-                nc_ubi = st.text_input("Distrito / Ubicación Base", value="Lima")
-                nc_not = st.text_area("Datos de Contacto / Observaciones Iniciales", placeholder="Teléfono, correo, RUC o referencias")
-                if st.form_submit_button("GUARDAR EN DIRECTORIO", type="primary", use_container_width=True):
-                    if not nc_nom:
-                        st.error("El nombre del contratista es obligatorio.")
-                    elif not st.session_state.maestro.empty and nc_nom in st.session_state.maestro['ID_Contratista'].tolist():
-                        st.error("Este contratista ya está registrado.")
-                    else:
-                        n_row = pd.DataFrame([{
-                            'ID_Contratista': nc_nom,
-                            'Especialidad': nc_esp,
-                            'Ubicación_Base': nc_ubi,
-                            'Notas': f"[+] {nc_not}" if nc_not else ""
-                        }])
-                        st.session_state.maestro = pd.concat([st.session_state.maestro, n_row[COLS_MAESTRO]], ignore_index=True)
-                        clear_base_dfs()
-                        st.success(f"Contratista '{nc_nom}' registrado.")
-                        st.rerun()
+    """Base de Datos Maestra del Estudio: Contratistas, Ubicaciones, Especialidades, Socios, Unidades y Tipologías."""
+    st.markdown("### 🗄️ BASE DE DATOS DEL ESTUDIO")
+    st.caption("Administra contratistas, ubicaciones, especialidades, socios, unidades de medida y tipologías para armar presupuestos y proyectos.")
 
-    df_tasks_act = st.session_state.tasks.copy()
-    df_tasks_act['Inicio_DT'] = df_tasks_act['Inicio'].apply(lambda x: pd.to_datetime(parse_date(x)))
-    df_tasks_act['Fin_DT'] = df_tasks_act['Fin'].apply(lambda x: pd.to_datetime(parse_date(x)))
-    df_tasks_act = df_tasks_act.dropna(subset=['Inicio_DT', 'Fin_DT'])
+    sub_con, sub_ubi, sub_esp, sub_soc = st.tabs([
+        "👷 Contratistas y Proveedores",
+        "📍 Ubicaciones",
+        "🛠️ Especialidades y Unidades",
+        "👥 Socios y Tipologías",
+    ])
 
-    estado_din = {}
-    carga_din = {}
+    especialidades_cat = obtener_catalogo_estudio("especialidades")
+    ubicaciones_cat = obtener_catalogo_estudio("ubicaciones")
+    unidades_cat = obtener_catalogo_estudio("unidades")
+    socios_cat = obtener_catalogo_estudio("socios")
+    tipos_cat = obtener_catalogo_estudio("tipos_proyecto")
 
-    for _, m_row in st.session_state.maestro.iterrows():
-        n_c = m_row['ID_Contratista']
-        t_c = df_tasks_act[df_tasks_act['Contratista'] == n_c]
-        en_obra = t_c[(t_c['Inicio_DT'].dt.date <= fecha_hoy) & (t_c['Fin_DT'].dt.date >= fecha_hoy)]
-        if not en_obra.empty:
-            fecha_hasta = en_obra['Fin_DT'].max().date()
-            estado_din[n_c] = f"🔵 En Obra Hoy (hasta {fecha_hasta.strftime('%d/%m/%Y')})"
-        else:
-            estado_din[n_c] = "🟢 Disponible"
+    with sub_con:
+        c_tit, c_add = st.columns([7, 3])
+        with c_tit:
+            st.markdown("#### 🛠️ DIRECTORIO DE CONTRATISTAS, PROVEEDORES Y ESPECIALISTAS")
+            st.caption("Evaluación histórica de desempeño, carga de trabajo actual y bitácora de obra.")
+        with c_add:
+            with st.popover("➕ REGISTRAR CONTRATISTA", use_container_width=True):
+                with st.form("form_nuevo_contratista", clear_on_submit=True):
+                    nc_nom = st.text_input("Nombre / Empresa Especialista", placeholder="ej. Carpintería Hnos. Silva").strip()
+                    nc_esp = st.selectbox("Especialidad Principal", especialidades_cat)
+                    nc_ubi = st.selectbox("Distrito / Ubicación Base", ubicaciones_cat if ubicaciones_cat else ["Lima"])
+                    nc_not = st.text_area("Datos de Contacto / Observaciones Iniciales", placeholder="Teléfono, correo, RUC o referencias")
+                    if st.form_submit_button("GUARDAR EN DIRECTORIO", type="primary", use_container_width=True):
+                        if not nc_nom:
+                            st.error("El nombre del contratista es obligatorio.")
+                        elif not st.session_state.maestro.empty and nc_nom in st.session_state.maestro['ID_Contratista'].tolist():
+                            st.error("Este contratista ya está registrado.")
+                        else:
+                            n_row = pd.DataFrame([{
+                                'ID_Contratista': nc_nom,
+                                'Especialidad': nc_esp,
+                                'Ubicación_Base': nc_ubi,
+                                'Notas': f"[+] {nc_not}" if nc_not else ""
+                            }])
+                            st.session_state.maestro = pd.concat([st.session_state.maestro, n_row[COLS_MAESTRO]], ignore_index=True)
+                            clear_base_dfs()
+                            st.success(f"Contratista '{nc_nom}' registrado.")
+                            st.rerun()
 
-        t_7d = t_c[(t_c['Inicio_DT'].dt.date <= fecha_hoy + datetime.timedelta(days=7)) & (t_c['Fin_DT'].dt.date >= fecha_hoy)]
-        frentes = t_7d['Proyecto'].nunique()
-        carga_din[n_c] = "Libre" if frentes == 0 else ("Carga Óptima (1 Obra)" if frentes == 1 else f"Alta Carga ({frentes} Obras)")
+        df_tasks_act = st.session_state.tasks.copy()
+        df_tasks_act['Inicio_DT'] = df_tasks_act['Inicio'].apply(lambda x: pd.to_datetime(parse_date(x)))
+        df_tasks_act['Fin_DT'] = df_tasks_act['Fin'].apply(lambda x: pd.to_datetime(parse_date(x)))
+        df_tasks_act = df_tasks_act.dropna(subset=['Inicio_DT', 'Fin_DT'])
 
-    df_m = st.session_state.maestro.copy()
-    df_m['Estatus'] = df_m['ID_Contratista'].map(estado_din).fillna("🟢 Disponible")
-    df_m['Carga_Trabajo'] = df_m['ID_Contratista'].map(carga_din).fillna("Libre")
-    df_m['Rating'] = [calcular_rating(n, st.session_state.df_historial, st.session_state.tasks, st.session_state.maestro) for n in df_m['ID_Contratista']]
+        estado_din = {}
+        carga_din = {}
 
-    st.dataframe(
-        df_m[['ID_Contratista', 'Especialidad', 'Ubicación_Base', 'Estatus', 'Carga_Trabajo', 'Rating', 'Notas']],
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "ID_Contratista": st.column_config.TextColumn("Nombre / Empresa", width="medium"),
-            "Especialidad": st.column_config.TextColumn("Especialidad"),
-            "Ubicación_Base": st.column_config.TextColumn("Ubicación Base"),
-            "Estatus": st.column_config.TextColumn("Estatus Hoy", width="medium"),
-            "Carga_Trabajo": st.column_config.TextColumn("Disponibilidad (7 Días)"),
-            "Rating": st.column_config.NumberColumn("Rating (1-5 ⭐)", format="%d ⭐"),
-            "Notas": st.column_config.TextColumn("Observaciones / Historial")
-        }
-    )
-
-    st.divider()
-
-    # Bitácora de incidencias y reportes
-    st.markdown("#### BITÁCORA TÉCNICA DE DESEMPEÑO")
-    if not df_m.empty:
-        c_sel = st.selectbox("Seleccionar Contratista / Proveedor:", df_m['ID_Contratista'].tolist(), key="sb_bitacora_m")
-        idx_c = st.session_state.maestro[st.session_state.maestro['ID_Contratista'] == c_sel].index[0]
-        notas_c = st.session_state.maestro.at[idx_c, 'Notas']
-
-        with st.container(border=True):
-            if notas_c and str(notas_c).strip():
-                html_n = (
-                    str(notas_c)
-                    .replace("[+]", "<span style='color:#4A7C59; font-weight:700;'>[+ MÉRITO]</span>")
-                    .replace("[-]", "<span style='color:#C93B2B; font-weight:700;'>[- INCIDENCIA]</span>")
-                )
-                st.markdown(f"<div style='font-family:monospace; font-size:12.5px; color:#262320; line-height:1.6;'>{html_n}</div>", unsafe_allow_html=True)
+        for _, m_row in st.session_state.maestro.iterrows():
+            n_c = m_row['ID_Contratista']
+            t_c = df_tasks_act[df_tasks_act['Contratista'] == n_c]
+            en_obra = t_c[(t_c['Inicio_DT'].dt.date <= fecha_hoy) & (t_c['Fin_DT'].dt.date >= fecha_hoy)]
+            if not en_obra.empty:
+                fecha_hasta = en_obra['Fin_DT'].max().date()
+                estado_din[n_c] = f"🔵 En Obra Hoy (hasta {fecha_hasta.strftime('%d/%m/%Y')})"
             else:
-                st.info("Sin reportes registrados en la bitácora para este especialista.")
+                estado_din[n_c] = "🟢 Disponible"
 
-        n_rep = st.text_input(f"Añadir evaluación sobre {c_sel}:", placeholder="ej. Cumplió entrega de carpintería antes de fecha pactada...", key="txt_rep_c")
-        col_r1, col_r2, _ = st.columns([2.5, 2.5, 5])
+            t_7d = t_c[(t_c['Inicio_DT'].dt.date <= fecha_hoy + datetime.timedelta(days=7)) & (t_c['Fin_DT'].dt.date >= fecha_hoy)]
+            frentes = t_7d['Proyecto'].nunique()
+            carga_din[n_c] = "Libre" if frentes == 0 else ("Carga Óptima (1 Obra)" if frentes == 1 else f"Alta Carga ({frentes} Obras)")
 
-        if col_r1.button("👍 MÉRITO POSITIVO (+)", use_container_width=True) and n_rep:
-            n_line = f"**[{fecha_hoy.strftime('%d/%m/%Y')}]** [+] {n_rep}"
-            st.session_state.maestro.at[idx_c, 'Notas'] = f"{notas_c}\n<br>{n_line}" if notas_c and str(notas_c).strip() else n_line
-            st.rerun()
+        df_m = st.session_state.maestro.copy()
+        df_m['Estatus'] = df_m['ID_Contratista'].map(estado_din).fillna("🟢 Disponible")
+        df_m['Carga_Trabajo'] = df_m['ID_Contratista'].map(carga_din).fillna("Libre")
+        df_m['Rating'] = [calcular_rating(n, st.session_state.df_historial, st.session_state.tasks, st.session_state.maestro) for n in df_m['ID_Contratista']]
 
-        if col_r2.button("⚠️ INCIDENCIA NEGATIVA (-)", use_container_width=True) and n_rep:
-            n_line = f"**[{fecha_hoy.strftime('%d/%m/%Y')}]** [-] {n_rep}"
-            st.session_state.maestro.at[idx_c, 'Notas'] = f"{notas_c}\n<br>{n_line}" if notas_c and str(notas_c).strip() else n_line
-            st.rerun()
+        st.dataframe(
+            df_m[['ID_Contratista', 'Especialidad', 'Ubicación_Base', 'Estatus', 'Carga_Trabajo', 'Rating', 'Notas']],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "ID_Contratista": st.column_config.TextColumn("Nombre / Empresa", width="medium"),
+                "Especialidad": st.column_config.TextColumn("Especialidad"),
+                "Ubicación_Base": st.column_config.TextColumn("Ubicación Base"),
+                "Estatus": st.column_config.TextColumn("Estatus Hoy", width="medium"),
+                "Carga_Trabajo": st.column_config.TextColumn("Disponibilidad (7 Días)"),
+                "Rating": st.column_config.NumberColumn("Rating (1-5 ⭐)", format="%d ⭐"),
+                "Notas": st.column_config.TextColumn("Observaciones / Historial")
+            }
+        )
+
+        st.divider()
+
+        # Bitácora de incidencias y reportes
+        st.markdown("#### BITÁCORA TÉCNICA DE DESEMPEÑO")
+        if not df_m.empty:
+            c_sel = st.selectbox("Seleccionar Contratista / Proveedor:", df_m['ID_Contratista'].tolist(), key="sb_bitacora_m")
+            idx_c = st.session_state.maestro[st.session_state.maestro['ID_Contratista'] == c_sel].index[0]
+            notas_c = st.session_state.maestro.at[idx_c, 'Notas']
+
+            with st.container(border=True):
+                if notas_c and str(notas_c).strip():
+                    html_n = (
+                        str(notas_c)
+                        .replace("[+]", "<span style='color:#4A7C59; font-weight:700;'>[+ MÉRITO]</span>")
+                        .replace("[-]", "<span style='color:#C93B2B; font-weight:700;'>[- INCIDENCIA]</span>")
+                    )
+                    st.markdown(f"<div style='font-family:monospace; font-size:12.5px; color:#262320; line-height:1.6;'>{html_n}</div>", unsafe_allow_html=True)
+                else:
+                    st.info("Sin reportes registrados en la bitácora para este especialista.")
+
+            n_rep = st.text_input(f"Añadir evaluación sobre {c_sel}:", placeholder="ej. Cumplió entrega de carpintería antes de fecha pactada...", key="txt_rep_c")
+            col_r1, col_r2, _ = st.columns([2.5, 2.5, 5])
+
+            if col_r1.button("👍 MÉRITO POSITIVO (+)", use_container_width=True) and n_rep:
+                n_line = f"**[{fecha_hoy.strftime('%d/%m/%Y')}]** [+] {n_rep}"
+                st.session_state.maestro.at[idx_c, 'Notas'] = f"{notas_c}\n<br>{n_line}" if notas_c and str(notas_c).strip() else n_line
+                st.rerun()
+
+            if col_r2.button("⚠️ INCIDENCIA NEGATIVA (-)", use_container_width=True) and n_rep:
+                n_line = f"**[{fecha_hoy.strftime('%d/%m/%Y')}]** [-] {n_rep}"
+                st.session_state.maestro.at[idx_c, 'Notas'] = f"{notas_c}\n<br>{n_line}" if notas_c and str(notas_c).strip() else n_line
+                st.rerun()
+
+    with sub_ubi:
+        st.markdown("#### 📍 CATÁLOGO DE UBICACIONES Y DISTRITOS")
+        st.caption("Agrega o elimina ubicaciones para asignarlas rápidamente al crear proyectos, contratistas o presupuestos.")
+        c_u1, c_u2 = st.columns([1, 1.5])
+        with c_u1:
+            with st.form("form_add_ubicacion_bd", clear_on_submit=True):
+                nueva_ubi = st.text_input("➕ Nueva Ubicación / Distrito:", placeholder="ej. San Borja, Asia, Punta Hermosa...")
+                if st.form_submit_button("AGREGAR UBICACIÓN", type="primary", use_container_width=True):
+                    if nueva_ubi and nueva_ubi.strip():
+                        agregar_item_catalogo_estudio("ubicaciones", nueva_ubi.strip())
+                        st.success(f"Ubicación '{nueva_ubi.strip()}' agregada a la Base de Datos.")
+                        st.rerun()
+            if ubicaciones_cat:
+                with st.form("form_del_ubicacion_bd"):
+                    ubi_del = st.selectbox("🗑️ Eliminar Ubicación de la lista:", ubicaciones_cat)
+                    if st.form_submit_button("ELIMINAR UBICACIÓN", use_container_width=True):
+                        eliminar_item_catalogo_estudio("ubicaciones", ubi_del)
+                        st.rerun()
+        with c_u2:
+            df_ubis = pd.DataFrame({"N°": range(1, len(ubicaciones_cat) + 1), "Ubicación / Distrito": ubicaciones_cat})
+            st.dataframe(df_ubis, use_container_width=True, hide_index=True)
+
+    with sub_esp:
+        col_esp_bd, col_uni_bd = st.columns(2)
+        with col_esp_bd:
+            st.markdown("#### 🛠️ ESPECIALIDADES DE OBRA Y PRESUPUESTO")
+            st.caption("Se utilizan en el Directorio de Contratistas, en `03. Presupuesto` y en `05. Partidas y Tareas`.")
+            with st.form("form_add_esp_bd", clear_on_submit=True):
+                nueva_esp = st.text_input("➕ Nueva Especialidad:", placeholder="ej. Paisajismo, Domótica, Acústica...")
+                if st.form_submit_button("AGREGAR ESPECIALIDAD", type="primary", use_container_width=True):
+                    if nueva_esp and nueva_esp.strip():
+                        agregar_item_catalogo_estudio("especialidades", nueva_esp.strip())
+                        st.success(f"Especialidad '{nueva_esp.strip()}' agregada.")
+                        st.rerun()
+            if especialidades_cat:
+                with st.form("form_del_esp_bd"):
+                    esp_del = st.selectbox("🗑️ Eliminar Especialidad:", especialidades_cat)
+                    if st.form_submit_button("ELIMINAR ESPECIALIDAD", use_container_width=True):
+                        eliminar_item_catalogo_estudio("especialidades", esp_del)
+                        st.rerun()
+            st.dataframe(pd.DataFrame({"Especialidad": especialidades_cat}), use_container_width=True, hide_index=True)
+
+        with col_uni_bd:
+            st.markdown("#### 📏 UNIDADES DE MEDIDA (PRESUPUESTO)")
+            st.caption("Unidades disponibles al armar partidas y tareas en `03. Presupuesto` (ej. glb, m2, ml, und, pto).")
+            with st.form("form_add_uni_bd", clear_on_submit=True):
+                nueva_uni = st.text_input("➕ Nueva Unidad de Medida:", placeholder="ej. pza, jgo, mes...")
+                if st.form_submit_button("AGREGAR UNIDAD", type="primary", use_container_width=True):
+                    if nueva_uni and nueva_uni.strip():
+                        agregar_item_catalogo_estudio("unidades", nueva_uni.strip())
+                        st.success(f"Unidad '{nueva_uni.strip()}' agregada.")
+                        st.rerun()
+            if unidades_cat:
+                with st.form("form_del_uni_bd"):
+                    uni_del = st.selectbox("🗑️ Eliminar Unidad:", unidades_cat)
+                    if st.form_submit_button("ELIMINAR UNIDAD", use_container_width=True):
+                        eliminar_item_catalogo_estudio("unidades", uni_del)
+                        st.rerun()
+            st.dataframe(pd.DataFrame({"Unidad": unidades_cat}), use_container_width=True, hide_index=True)
+
+    with sub_soc:
+        col_soc_bd, col_tip_bd = st.columns(2)
+        with col_soc_bd:
+            st.markdown("#### 👥 SOCIOS Y LÍDERES DE PROYECTO")
+            st.caption("Socios y encargados disponibles para liderar proyectos, dejar notas y registrar control operativo.")
+            with st.form("form_add_soc_bd", clear_on_submit=True):
+                nuevo_soc = st.text_input("➕ Nuevo Socio / Encargado:", placeholder="ej. Camila")
+                if st.form_submit_button("AGREGAR SOCIO", type="primary", use_container_width=True):
+                    if nuevo_soc and nuevo_soc.strip():
+                        agregar_item_catalogo_estudio("socios", nuevo_soc.strip())
+                        st.success(f"Socio '{nuevo_soc.strip()}' agregado.")
+                        st.rerun()
+            if socios_cat:
+                with st.form("form_del_soc_bd"):
+                    soc_del = st.selectbox("🗑️ Eliminar Socio:", socios_cat)
+                    if st.form_submit_button("ELIMINAR SOCIO", use_container_width=True):
+                        eliminar_item_catalogo_estudio("socios", soc_del)
+                        st.rerun()
+            st.dataframe(pd.DataFrame({"Socio / Encargado": socios_cat}), use_container_width=True, hide_index=True)
+
+        with col_tip_bd:
+            st.markdown("#### 🏛️ TIPOLOGÍAS DE PROYECTO")
+            st.caption("Tipos de proyecto disponibles al crear o editar una ficha de proyecto.")
+            with st.form("form_add_tip_bd", clear_on_submit=True):
+                nuevo_tip = st.text_input("➕ Nuevo Tipo de Proyecto:", placeholder="ej. Hotel / Hospitality")
+                if st.form_submit_button("AGREGAR TIPO DE PROYECTO", type="primary", use_container_width=True):
+                    if nuevo_tip and nuevo_tip.strip():
+                        agregar_item_catalogo_estudio("tipos_proyecto", nuevo_tip.strip())
+                        st.success(f"Tipo '{nuevo_tip.strip()}' agregado.")
+                        st.rerun()
+            if tipos_cat:
+                with st.form("form_del_tip_bd"):
+                    tip_del = st.selectbox("🗑️ Eliminar Tipo de Proyecto:", tipos_cat)
+                    if st.form_submit_button("ELIMINAR TIPO", use_container_width=True):
+                        eliminar_item_catalogo_estudio("tipos_proyecto", tip_del)
+                        st.rerun()
+            st.dataframe(pd.DataFrame({"Tipo de Proyecto": tipos_cat}), use_container_width=True, hide_index=True)
 
 
 def _render_tab_finanzas_estudio(fecha_hoy):

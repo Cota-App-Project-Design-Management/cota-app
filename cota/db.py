@@ -4,13 +4,24 @@ migraciones automáticas no destructivas y operaciones en cascada.
 """
 
 import datetime
+import json
 import os
+import re
 import time
 import uuid
 import openpyxl
 import pandas as pd
 import streamlit as st
-from cota.config import BANCO_FASES_DEFAULT, FASES_CANONICAS, get_secret
+from cota.config import (
+    BANCO_FASES_DEFAULT,
+    ESPECIALIDADES_DEFAULT,
+    FASES_CANONICAS,
+    SOCIOS_DEFAULT,
+    TIPOS_PROYECTO,
+    UBICACIONES_DEFAULT,
+    UNIDADES_MEDIDA,
+    get_secret,
+)
 from cota.utils import to_bool, parse_date
 
 
@@ -768,6 +779,186 @@ def clear_base_dfs():
             del st.session_state[k]
 
 
+# ==========================================
+# CATÁLOGOS MAESTROS DEL ESTUDIO (BASE DE DATOS)
+# ==========================================
+
+def _init_catalogos_estudio():
+    """Inicializa los catálogos maestros del estudio en st.session_state combinando valores por defecto y existentes."""
+    if "catalogos_estudio" not in st.session_state or not isinstance(st.session_state.catalogos_estudio, dict):
+        eq_sec = get_secret("EQUIPO", "")
+        socios_init = [s.strip() for s in str(eq_sec).split(",") if s.strip()] if eq_sec else list(SOCIOS_DEFAULT)
+        if not socios_init:
+            socios_init = list(SOCIOS_DEFAULT)
+        st.session_state.catalogos_estudio = {
+            "ubicaciones": list(UBICACIONES_DEFAULT),
+            "especialidades": list(ESPECIALIDADES_DEFAULT),
+            "socios": socios_init,
+            "tipos_proyecto": list(TIPOS_PROYECTO),
+            "unidades": list(UNIDADES_MEDIDA),
+        }
+
+
+def obtener_catalogo_estudio(clave: str) -> list[str]:
+    """
+    Retorna la lista de opciones para el catálogo solicitado:
+    'ubicaciones', 'especialidades', 'socios', 'tipos_proyecto', 'unidades'.
+    Combina el catálogo configurado con los valores ya usados en proyectos/maestro.
+    """
+    _init_catalogos_estudio()
+    base_list = list(st.session_state.catalogos_estudio.get(clave, []))
+    eliminados = set(st.session_state.get(f"_cat_del_{clave}", []))
+
+    extras = []
+    if clave == "ubicaciones":
+        df_p = st.session_state.get("proyectos", pd.DataFrame())
+        if isinstance(df_p, pd.DataFrame) and not df_p.empty and "Ubicación" in df_p.columns:
+            extras.extend([str(u).strip() for u in df_p["Ubicación"].dropna().unique().tolist() if str(u).strip()])
+        df_m = st.session_state.get("maestro", pd.DataFrame())
+        if isinstance(df_m, pd.DataFrame) and not df_m.empty and "Ubicación_Base" in df_m.columns:
+            extras.extend([str(u).strip() for u in df_m["Ubicación_Base"].dropna().unique().tolist() if str(u).strip()])
+    elif clave == "especialidades":
+        df_m = st.session_state.get("maestro", pd.DataFrame())
+        if isinstance(df_m, pd.DataFrame) and not df_m.empty and "Especialidad" in df_m.columns:
+            extras.extend([str(e).strip() for e in df_m["Especialidad"].dropna().unique().tolist() if str(e).strip()])
+    elif clave == "socios":
+        df_p = st.session_state.get("proyectos", pd.DataFrame())
+        if isinstance(df_p, pd.DataFrame) and not df_p.empty and "Encargado" in df_p.columns:
+            extras.extend([str(s).strip() for s in df_p["Encargado"].dropna().unique().tolist() if str(s).strip()])
+    elif clave == "tipos_proyecto":
+        df_p = st.session_state.get("proyectos", pd.DataFrame())
+        if isinstance(df_p, pd.DataFrame) and not df_p.empty and "Tipo_Proyecto" in df_p.columns:
+            extras.extend([str(t).strip() for t in df_p["Tipo_Proyecto"].dropna().unique().tolist() if str(t).strip()])
+
+    resultado = []
+    vistos = set()
+    for item in base_list + extras:
+        it_s = str(item).strip()
+        if it_s and it_s.lower() not in ("nan", "none", "ninguna") and it_s not in vistos and it_s not in eliminados:
+            vistos.add(it_s)
+            resultado.append(it_s)
+    return resultado
+
+
+def agregar_item_catalogo_estudio(clave: str, nuevo_valor: str) -> bool:
+    """Agrega un nuevo elemento al catálogo maestro especificado."""
+    _init_catalogos_estudio()
+    val = str(nuevo_valor or "").strip()
+    if not val:
+        return False
+    del_key = f"_cat_del_{clave}"
+    if del_key in st.session_state and val in st.session_state[del_key]:
+        st.session_state[del_key].remove(val)
+    actual = st.session_state.catalogos_estudio.get(clave, [])
+    if val not in actual:
+        actual.append(val)
+        st.session_state.catalogos_estudio[clave] = actual
+    return True
+
+
+def eliminar_item_catalogo_estudio(clave: str, valor: str) -> bool:
+    """Elimina un elemento del catálogo maestro especificado."""
+    _init_catalogos_estudio()
+    val = str(valor or "").strip()
+    if not val:
+        return False
+    actual = st.session_state.catalogos_estudio.get(clave, [])
+    if val in actual:
+        actual.remove(val)
+        st.session_state.catalogos_estudio[clave] = actual
+    del_key = f"_cat_del_{clave}"
+    if del_key not in st.session_state:
+        st.session_state[del_key] = []
+    if val not in st.session_state[del_key]:
+        st.session_state[del_key].append(val)
+    return True
+
+
+# ==========================================
+# SISTEMA DE NOTAS TIPO CHAT POR SOCIO
+# ==========================================
+
+def obtener_notas_chat_proyecto(proy_name: str) -> list[dict]:
+    """
+    Obtiene el historial de notas del proyecto en formato lista de mensajes:
+    [{"socio": str, "fecha": str, "texto": str}].
+    Soporta notas previas en texto plano convirtiéndolas automáticamente en el primer mensaje.
+    """
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if df_p.empty or "Nombre" not in df_p.columns:
+        return []
+    m = df_p[df_p["Nombre"] == proy_name]
+    if m.empty:
+        return []
+    row = m.iloc[0]
+    raw_notas = str(row.get("Notas", "") or "").strip()
+    if not raw_notas or raw_notas.lower() in ("nan", "none"):
+        return []
+    if raw_notas.startswith("["):
+        try:
+            parsed = json.loads(raw_notas)
+            if isinstance(parsed, list):
+                return [
+                    {
+                        "socio": str(it.get("socio", "Socio")).strip() or "Socio",
+                        "fecha": str(it.get("fecha", "")).strip(),
+                        "texto": str(it.get("texto", "")).strip(),
+                    }
+                    for it in parsed
+                    if isinstance(it, dict) and str(it.get("texto", "")).strip()
+                ]
+        except Exception:
+            pass
+    enc = str(row.get("Encargado", "Socio") or "Socio").strip()
+    return [{"socio": enc, "fecha": "Nota inicial", "texto": raw_notas}]
+
+
+def agregar_nota_chat_proyecto(proy_name: str, socio: str, texto: str) -> bool:
+    """Agrega un nuevo mensaje al chat de notas del proyecto en `st.session_state.proyectos`."""
+    txt = str(texto or "").strip()
+    if not txt:
+        return False
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if df_p.empty or "Nombre" not in df_p.columns:
+        return False
+    mask = df_p["Nombre"] == proy_name
+    if not mask.any():
+        return False
+    notas_actuales = obtener_notas_chat_proyecto(proy_name)
+    ahora_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+    notas_actuales.append({
+        "socio": str(socio or "Socio").strip() or "Socio",
+        "fecha": ahora_str,
+        "texto": txt,
+    })
+    idx_p = df_p[mask].index[0]
+    if st.session_state.proyectos["Notas"].dtype != object:
+        st.session_state.proyectos["Notas"] = st.session_state.proyectos["Notas"].astype(object)
+    st.session_state.proyectos.at[idx_p, "Notas"] = json.dumps(notas_actuales, ensure_ascii=False)
+    return True
+
+
+def eliminar_nota_chat_proyecto(proy_name: str, idx_nota: int) -> bool:
+    """Elimina un mensaje específico por su índice en el chat de notas del proyecto."""
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if df_p.empty or "Nombre" not in df_p.columns:
+        return False
+    mask = df_p["Nombre"] == proy_name
+    if not mask.any():
+        return False
+    notas_actuales = obtener_notas_chat_proyecto(proy_name)
+    if 0 <= idx_nota < len(notas_actuales):
+        notas_actuales.pop(idx_nota)
+        idx_p = df_p[mask].index[0]
+        if st.session_state.proyectos["Notas"].dtype != object:
+            st.session_state.proyectos["Notas"] = st.session_state.proyectos["Notas"].astype(object)
+        st.session_state.proyectos.at[idx_p, "Notas"] = (
+            json.dumps(notas_actuales, ensure_ascii=False) if notas_actuales else ""
+        )
+        return True
+    return False
+
+
 def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group_vals=None,
                   date_cols=None, text_cols=None, bool_cols=None, num_cols=None, id_col=None):
     """
@@ -835,6 +1026,15 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
                 if c in df_new.columns:
                     df_new[c] = pd.to_numeric(df_new[c], errors='coerce').fillna(0.0)
 
+        # Normalizar Avance_Pct en fases (0..100 editable)
+        if master_state_key == 'fases' and 'Avance_Pct' in df_new.columns:
+            df_new['Avance_Pct'] = pd.to_numeric(df_new['Avance_Pct'], errors='coerce').fillna(0).clip(0, 100).astype(int)
+            for idx, cols in edits.get("edited_rows", {}).items():
+                r_idx = int(idx)
+                if r_idx in df_new.index and 'Avance_Pct' not in cols:
+                    if cols.get('Aprobado_Cliente') is True or 'Aprobada' in str(cols.get('Estado', '')):
+                        df_new.at[r_idx, 'Avance_Pct'] = 100
+
         # Recalcular Costo_Estimado automáticamente en FF&E si cambian Cantidad o Precio Unitario
         if master_state_key == 'materiales' and 'Cantidad' in df_new.columns and 'Precio_Unit_Estimado' in df_new.columns:
             for idx, cols in edits.get("edited_rows", {}).items():
@@ -865,7 +1065,7 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
                 if p_est == 0.0 and met > 0 and v_unit > 0:
                     df_new.at[i, 'Presupuesto'] = round(met * v_unit, 2)
 
-        # Normalizar Supervisado y defaults en tasks
+        # Normalizar Supervisado, fechas Inicio->Fin y defaults en tasks
         if master_state_key == 'tasks':
             if 'Supervisado' in df_new.columns:
                 df_new['Supervisado'] = df_new['Supervisado'].apply(_normalizar_supervisado)
@@ -877,20 +1077,20 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
                 df_new['Metrado'] = pd.to_numeric(df_new['Metrado'], errors='coerce').fillna(1.0)
             if 'Valor_Unitario' in df_new.columns:
                 df_new['Valor_Unitario'] = pd.to_numeric(df_new['Valor_Unitario'], errors='coerce').fillna(0.0)
+            if 'Inicio' in df_new.columns and 'Fin' in df_new.columns:
+                for i_r, r_t in df_new.iterrows():
+                    d_i = parse_date(r_t.get('Inicio'))
+                    d_f = parse_date(r_t.get('Fin'))
+                    if d_i is not None and (d_f is None or d_f < d_i):
+                        df_new.at[i_r, 'Fin'] = d_i
+            if 'Orden' in df_new.columns:
+                df_new['Orden'] = list(range(1, len(df_new) + 1))
 
         st.session_state[base_key] = df_new
 
-        # 6. Actualizar dataframe maestro en session state
+        # 6. Actualizar dataframe maestro en session state preservando el orden original de las partidas
         if master_state_key in st.session_state:
-            master_df = st.session_state[master_state_key]
-            if group_cols and group_vals:
-                clean_mask = pd.Series(True, index=master_df.index)
-                for g_col, g_val in zip(group_cols, group_vals):
-                    clean_mask = clean_mask & (master_df[g_col] == g_val)
-                master_df = master_df[~clean_mask]
-            else:
-                master_df = pd.DataFrame(columns=master_df.columns)
-
+            master_df = st.session_state[master_state_key].reset_index(drop=True)
             n_t = df_new.copy()
             if group_cols and group_vals:
                 for g_col, g_val in zip(group_cols, group_vals):
@@ -898,9 +1098,25 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
 
             for c in master_df.columns:
                 if c not in n_t.columns:
-                    n_t[c] = None
+                    n_t[c] = "" if master_df[c].dtype == object else 0
 
-            st.session_state[master_state_key] = pd.concat([master_df, n_t[master_df.columns]], ignore_index=True)
+            if group_cols and group_vals and not master_df.empty:
+                clean_mask = pd.Series(True, index=master_df.index)
+                for g_col, g_val in zip(group_cols, group_vals):
+                    clean_mask = clean_mask & (master_df[g_col] == g_val)
+                if clean_mask.any():
+                    first_pos = int(master_df.index[clean_mask][0])
+                    df_before = master_df.iloc[:first_pos][~clean_mask.iloc[:first_pos]]
+                    df_after = master_df.iloc[first_pos:][~clean_mask.iloc[first_pos:]]
+                    st.session_state[master_state_key] = pd.concat(
+                        [df_before, n_t[master_df.columns], df_after], ignore_index=True
+                    )
+                else:
+                    st.session_state[master_state_key] = pd.concat(
+                        [master_df, n_t[master_df.columns]], ignore_index=True
+                    )
+            else:
+                st.session_state[master_state_key] = n_t[master_df.columns].reset_index(drop=True)
 
             if master_state_key == 'tasks':
                 for k in list(st.session_state.keys()):

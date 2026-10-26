@@ -149,7 +149,27 @@ TIPOS_REUNION = [
 ]
 
 # Unidades de medida
-UNIDADES_MEDIDA = ["und", "m2", "m", "m3", "kg", "glb", "juego", "rollo", "bolsa"]
+UNIDADES_MEDIDA = ["und", "m2", "m", "m3", "kg", "glb", "juego", "rollo", "bolsa", "ml", "pto", "paq"]
+
+# Ubicaciones por defecto
+UBICACIONES_DEFAULT = [
+    "Lima",
+    "Miraflores",
+    "San Isidro",
+    "Barranco",
+    "Surco",
+    "La Molina",
+    "San Borja",
+    "Magdalena",
+    "Jesús María",
+    "Lince",
+    "Punta Hermosa",
+    "Asia",
+    "Cieneguilla",
+]
+
+# Socios / Líderes por defecto
+SOCIOS_DEFAULT = ["Alvaro", "Socio 1", "Socio 2"]
 
 # Especialidades de Contratistas
 ESPECIALIDADES_DEFAULT = [
@@ -167,5 +187,6 @@ ESPECIALIDADES_DEFAULT = [
     "Climatización / Venti",
     "Equipamiento / Audio",
     "Albañilería General",
+    "Demolición y Preliminares",
     "Otros"
 ]

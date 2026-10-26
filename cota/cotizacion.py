@@ -109,11 +109,18 @@ def _sanitizar_dtypes_tasks_y_proyectos():
         if "Orden" in st.session_state.tasks.columns:
             st.session_state.tasks["Orden"] = pd.to_numeric(st.session_state.tasks["Orden"], errors="coerce").fillna(0).astype(int)
 
+    if "p_info" in st.session_state and isinstance(st.session_state.p_info, pd.DataFrame):
+        if "Monto_Pactado" in st.session_state.p_info.columns:
+            st.session_state.p_info["Monto_Pactado"] = pd.to_numeric(st.session_state.p_info["Monto_Pactado"], errors="coerce").fillna(0.0).astype(float)
+        for c_pi in ["Proyecto", "Nombre_Partida", "Contratista", "Estado", "Etapa"]:
+            if c_pi in st.session_state.p_info.columns and st.session_state.p_info[c_pi].dtype != object:
+                st.session_state.p_info[c_pi] = st.session_state.p_info[c_pi].fillna("").astype(str).replace({"nan": "", "None": ""}).astype(object)
+
     if "proyectos" in st.session_state and isinstance(st.session_state.proyectos, pd.DataFrame):
-        for c_num_p in ["Presupuesto", "Utilidades", "GG_Presupuesto", "TC_Presupuesto", "GG_Pct", "Utilidades_Pct"]:
+        for c_num_p in ["Presupuesto", "Utilidades", "GG_Presupuesto", "Honorarios_Diseno", "Presupuesto_FFE", "TC_Presupuesto", "GG_Pct", "Utilidades_Pct"]:
             if c_num_p in st.session_state.proyectos.columns:
                 st.session_state.proyectos[c_num_p] = pd.to_numeric(st.session_state.proyectos[c_num_p], errors="coerce").fillna(0.0).astype(float)
-        for c_txt_p in ["Link_Drive", "Pagos_Semanales_JSON"]:
+        for c_txt_p in ["Link_Drive", "Pagos_Semanales_JSON", "Notas"]:
             if c_txt_p in st.session_state.proyectos.columns and st.session_state.proyectos[c_txt_p].dtype != object:
                 st.session_state.proyectos[c_txt_p] = st.session_state.proyectos[c_txt_p].fillna("").astype(str).replace({"nan": "", "None": ""}).astype(object)
 
@@ -238,7 +245,7 @@ def asegurar_estructura_presupuesto_proyecto(
         clear_base_dfs()
 
 
-def recalcular_totales_presupuesto_proyecto(proy_name: str) -> dict:
+def recalcular_totales_presupuesto_proyecto(proy_name: str, sincronizar_pactado: bool = True) -> dict:
     """
     Recalcula en cascada:
     1. El Valor Parcial (Presupuesto en S/) de cada tarea según su Metrado, Valor Unitario, Moneda y TC.
@@ -264,6 +271,7 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str) -> dict:
         df_t_p = st.session_state.tasks[mask_t]
 
         sub_p = 0.0
+        contratistas_p = []
         for r_idx, t_row in df_t_p.iterrows():
             mon = safe_str(t_row.get("Moneda", "Soles")) or "Soles"
             met = safe_float(t_row.get("Metrado", 1.0), 1.0)
@@ -273,24 +281,31 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str) -> dict:
             es_usd = any(d in mon.lower() for d in ["dolar", "dólar", "usd", "$"])
             factor_tc = tc if es_usd else 1.0
             parcial_soles = round(met * vu * factor_tc, 2)
-            st.session_state.tasks.at[r_idx, "Presupuesto"] = parcial_soles
+            st.session_state.tasks.at[r_idx, "Presupuesto"] = float(parcial_soles)
             sub_p += parcial_soles
+            c_t = safe_str(t_row.get("Contratista", "")).strip()
+            if c_t and c_t not in contratistas_p:
+                contratistas_p.append(c_t)
 
         sub_p = round(sub_p, 2)
         subtotales_por_partida[p_nom] = sub_p
         subtotal_casco += sub_p
 
-        # Actualizar Monto_Pactado en p_info
+        # Actualizar Monto_Pactado y Contratista en p_info
         mask_pi = (st.session_state.p_info["Proyecto"] == proy_name) & (st.session_state.p_info["Nombre_Partida"] == p_nom)
+        contra_str = ", ".join(contratistas_p)
         if mask_pi.any():
-            st.session_state.p_info.loc[mask_pi, "Monto_Pactado"] = sub_p
+            if sincronizar_pactado:
+                st.session_state.p_info.loc[mask_pi, "Monto_Pactado"] = float(sub_p)
+            if contra_str:
+                st.session_state.p_info.loc[mask_pi, "Contratista"] = contra_str
         else:
             nueva_pi = pd.DataFrame([{
                 "Proyecto": proy_name,
                 "Nombre_Partida": p_nom,
-                "Monto_Pactado": sub_p,
+                "Monto_Pactado": float(sub_p),
                 "Nivel_Actual": "",
-                "Contratista": "",
+                "Contratista": contra_str,
                 "Inicio": "",
                 "Fin": "",
                 "Estado": "🟡 Planificado",
@@ -313,11 +328,9 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str) -> dict:
         mask_p = st.session_state.proyectos["Nombre"] == proy_name
         if mask_p.any():
             idx_p = st.session_state.proyectos[mask_p].index[0]
-            st.session_state.proyectos.at[idx_p, "Presupuesto"] = total_soles
-            st.session_state.proyectos.at[idx_p, "GG_Presupuesto"] = gg_monto
-            st.session_state.proyectos.at[idx_p, "Utilidades"] = util_monto
-
-    clear_base_dfs()
+            st.session_state.proyectos.at[idx_p, "Presupuesto"] = float(total_soles)
+            st.session_state.proyectos.at[idx_p, "GG_Presupuesto"] = float(gg_monto)
+            st.session_state.proyectos.at[idx_p, "Utilidades"] = float(util_monto)
 
     return {
         "tc": tc,
@@ -405,20 +418,30 @@ def ajustar_cantidad_partidas_proyecto(proy_name: str, nueva_cantidad: int, n_ta
             ~((st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"].isin(partidas_a_eliminar)))
         ].reset_index(drop=True)
 
+    clear_base_dfs()
     recalcular_totales_presupuesto_proyecto(proy_name)
 
 
 def renombrar_partida_presupuesto(
     proy_name: str,
-    idx_partida_1based: int,
+    idx_partida_1based,
     nombre_actual_completo: str,
-    nuevo_nombre_limpio: str,
+    nuevo_nombre_limpio: str = None,
 ):
     """
     Renombra una Partida en el presupuesto y propaga el nuevo nombre automáticamente
     a partidas, p_info, tasks (05. Ejecución & Partidas) y pagos.
+    Soporta llamada con 4 argumentos (proy_name, idx_p, nombre_actual, nuevo_limpio)
+    o 3 argumentos (proy_name, nombre_actual, nuevo_nombre).
     """
-    nuevo_completo = formatear_nombre_partida(idx_partida_1based, nuevo_nombre_limpio)
+    if nuevo_nombre_limpio is None:
+        # Llamada con 3 argumentos: (proy_name, nombre_actual_completo, nuevo_nombre)
+        nuevo_nombre_limpio = str(nombre_actual_completo)
+        nombre_actual_completo = str(idx_partida_1based)
+        m_idx = re.match(r"^\s*(\d+)", nombre_actual_completo)
+        idx_partida_1based = int(m_idx.group(1)) if m_idx else 1
+
+    nuevo_completo = formatear_nombre_partida(int(idx_partida_1based), nuevo_nombre_limpio)
     if nuevo_completo == nombre_actual_completo:
         return nuevo_completo
 
@@ -447,6 +470,24 @@ def renombrar_partida_presupuesto(
     return nuevo_completo
 
 
+def _reemplazar_tareas_partida_in_place(proy_name: str, nombre_partida_completo: str, df_nuevas_partida: pd.DataFrame):
+    """Reemplaza las tareas de una partida conservando la posición exacta de la partida dentro de st.session_state.tasks."""
+    master_df = st.session_state.tasks.reset_index(drop=True)
+    for c in master_df.columns:
+        if c not in df_nuevas_partida.columns:
+            df_nuevas_partida[c] = "" if master_df[c].dtype == object else 0
+    df_nuevas_partida = df_nuevas_partida[master_df.columns].copy()
+
+    mask_t = (master_df["Proyecto"] == proy_name) & (master_df["Partida"] == nombre_partida_completo)
+    if mask_t.any():
+        first_pos = int(master_df.index[mask_t][0])
+        df_before = master_df.iloc[:first_pos][~mask_t.iloc[:first_pos]]
+        df_after = master_df.iloc[first_pos:][~mask_t.iloc[first_pos:]]
+        st.session_state.tasks = pd.concat([df_before, df_nuevas_partida, df_after], ignore_index=True)
+    else:
+        st.session_state.tasks = pd.concat([master_df, df_nuevas_partida], ignore_index=True)
+
+
 def ajustar_cantidad_tareas_partida(
     proy_name: str,
     idx_partida_1based: int,
@@ -455,8 +496,9 @@ def ajustar_cantidad_tareas_partida(
 ):
     """
     Ajusta dinámicamente la cantidad de tareas (1.01, 1.02, 1.03...) dentro de una Partida,
-    preservando las tareas existentes y sincronizando con 05. Ejecución & Partidas.
+    preservando las tareas existentes y su posición sin alterar el orden de las partidas.
     """
+    _sanitizar_dtypes_tasks_y_proyectos()
     nueva_cant_tareas = max(1, int(nueva_cant_tareas))
     mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
     df_t_p = st.session_state.tasks[mask_t].copy().reset_index(drop=True)
@@ -477,7 +519,7 @@ def ajustar_cantidad_tareas_partida(
                 "Estado": "🟡 Planificado",
                 "Supervisado": "No",
                 "Inicio": datetime.date.today().strftime("%Y-%m-%d"),
-                "Fin": "",
+                "Fin": datetime.date.today().strftime("%Y-%m-%d"),
                 "Causa_Cumplimiento": "",
                 "Culpa_Contratista": False,
                 "Permitir_Cruce": False,
@@ -489,16 +531,67 @@ def ajustar_cantidad_tareas_partida(
                 "Valor_Unitario": 0.0,
                 "Presupuesto": 0.0,
             })
-        st.session_state.tasks = pd.concat(
-            [st.session_state.tasks, pd.DataFrame(nuevas_filas)[COLS_TASKS]],
-            ignore_index=True,
-        )
+        df_res_p = pd.concat([df_t_p, pd.DataFrame(nuevas_filas)[COLS_TASKS]], ignore_index=True)
+        _reemplazar_tareas_partida_in_place(proy_name, nombre_partida_completo, df_res_p)
     elif nueva_cant_tareas < actual_cant:
         df_keep = df_t_p.iloc[:nueva_cant_tareas].copy()
-        df_rest = st.session_state.tasks[~mask_t].copy()
-        st.session_state.tasks = pd.concat([df_rest, df_keep[COLS_TASKS]], ignore_index=True)
+        for i_k in range(len(df_keep)):
+            cod_k = f"{idx_partida_1based}.{i_k + 1:02d}"
+            desc_k = extraer_descripcion_tarea(df_keep.at[i_k, "Tarea"], safe_str(df_keep.at[i_k, "Codigo_Item"]))
+            df_keep.at[i_k, "Orden"] = i_k + 1
+            df_keep.at[i_k, "Codigo_Item"] = cod_k
+            df_keep.at[i_k, "Tarea"] = f"{cod_k} {desc_k}".strip() if desc_k else cod_k
+        _reemplazar_tareas_partida_in_place(proy_name, nombre_partida_completo, df_keep)
 
+    clear_base_dfs()
     recalcular_totales_presupuesto_proyecto(proy_name)
+
+
+def mover_tarea_presupuesto(
+    proy_name: str,
+    idx_partida_1based: int,
+    nombre_partida_completo: str,
+    pos_tarea_0based: int,
+    direccion: str,
+) -> bool:
+    """
+    Mueve verticalmente una tarea ('subir' o 'bajar') dentro de su Partida,
+    renumerando automáticamente Codigo_Item (1.01, 1.02...) y Orden sin perder datos.
+    """
+    _sanitizar_dtypes_tasks_y_proyectos()
+    mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
+    df_t_p = st.session_state.tasks[mask_t].copy().reset_index(drop=True)
+    n = len(df_t_p)
+    if n <= 1:
+        return False
+
+    target_pos = pos_tarea_0based - 1 if direccion == "subir" else pos_tarea_0based + 1
+    if not (0 <= pos_tarea_0based < n and 0 <= target_pos < n):
+        return False
+
+    # Extraer descripciones limpias antes de intercambiar filas
+    descs = [
+        extraer_descripcion_tarea(df_t_p.at[i, "Tarea"], f"{idx_partida_1based}.{i + 1:02d}")
+        for i in range(n)
+    ]
+
+    # Intercambiar posiciones
+    orden_idx = list(range(n))
+    orden_idx[pos_tarea_0based], orden_idx[target_pos] = orden_idx[target_pos], orden_idx[pos_tarea_0based]
+    descs[pos_tarea_0based], descs[target_pos] = descs[target_pos], descs[pos_tarea_0based]
+
+    df_reord = df_t_p.iloc[orden_idx].copy().reset_index(drop=True)
+    for i_new in range(n):
+        cod_new = f"{idx_partida_1based}.{i_new + 1:02d}"
+        d_limp = descs[i_new]
+        df_reord.at[i_new, "Orden"] = i_new + 1
+        df_reord.at[i_new, "Codigo_Item"] = cod_new
+        df_reord.at[i_new, "Tarea"] = f"{cod_new} {d_limp}".strip() if d_limp else cod_new
+
+    _reemplazar_tareas_partida_in_place(proy_name, nombre_partida_completo, df_reord)
+    clear_base_dfs()
+    recalcular_totales_presupuesto_proyecto(proy_name)
+    return True
 
 
 def aplicar_edicion_tabla_presupuesto_partida(
@@ -510,8 +603,8 @@ def aplicar_edicion_tabla_presupuesto_partida(
 ):
     """
     Callback on_change para el st.data_editor de cada Partida en '03. PRESUPUESTO'.
-    Actualiza Descripción, Moneda, Unidad, Metrado, Valor Unitario y Presupuesto en st.session_state.tasks
-    preservando Contratista, Especialidad, Estado, Inicio, Fin y Dependencia de '05. EJECUCIÓN & PARTIDAS'.
+    Actualiza Descripción, Especialidad, Contratista, Moneda, Unidad, Metrado, Valor Unitario y Presupuesto
+    en st.session_state.tasks sincronizado con '05. PARTIDAS Y TAREAS' y '06. COBROS & FINANZAS'.
     """
     if widget_key not in st.session_state or base_key not in st.session_state:
         return
@@ -522,13 +615,23 @@ def aplicar_edicion_tabla_presupuesto_partida(
         return
 
     df_base = st.session_state[base_key].copy()
+    for c_num_b in ["Metrado", "Valor_Unitario", "Valor_Parcial"]:
+        if c_num_b in df_base.columns:
+            df_base[c_num_b] = pd.to_numeric(df_base[c_num_b], errors="coerce").fillna(0.0).astype(float)
+    for c_txt_b in ["Item", "Descripcion", "Especialidad", "Contratista", "Moneda", "Unidad"]:
+        if c_txt_b in df_base.columns and df_base[c_txt_b].dtype != object:
+            df_base[c_txt_b] = df_base[c_txt_b].fillna("").astype(str).astype(object)
+
     for r_str, changes in edited_rows.items():
         r_i = int(r_str)
         if r_i in df_base.index:
             for col_k, val in changes.items():
-                if col_k in df_base.columns and df_base[col_k].dtype != object and isinstance(val, str):
-                    df_base[col_k] = df_base[col_k].astype(object)
-                df_base.at[r_i, col_k] = val
+                if col_k in ("Metrado", "Valor_Unitario", "Valor_Parcial"):
+                    df_base.at[r_i, col_k] = safe_float(val, 0.0)
+                else:
+                    if col_k in df_base.columns and df_base[col_k].dtype != object:
+                        df_base[col_k] = df_base[col_k].astype(object)
+                    df_base.at[r_i, col_k] = safe_str(val)
 
     _sanitizar_dtypes_tasks_y_proyectos()
     params = obtener_parametros_presupuesto_proyecto(proy_name)
@@ -553,14 +656,20 @@ def aplicar_edicion_tabla_presupuesto_partida(
         es_usd = any(d in moneda.lower() for d in ["dolar", "dólar", "usd", "$"])
         ppto_soles = round(metrado * v_unit * (tc if es_usd else 1.0), 2)
 
-        st.session_state.tasks.at[t_idx_global, "Orden"] = pos_i + 1
+        st.session_state.tasks.at[t_idx_global, "Orden"] = int(pos_i + 1)
         st.session_state.tasks.at[t_idx_global, "Codigo_Item"] = cod_t
         st.session_state.tasks.at[t_idx_global, "Tarea"] = tarea_completa
         st.session_state.tasks.at[t_idx_global, "Moneda"] = moneda
         st.session_state.tasks.at[t_idx_global, "Unidad"] = unidad
-        st.session_state.tasks.at[t_idx_global, "Metrado"] = metrado
-        st.session_state.tasks.at[t_idx_global, "Valor_Unitario"] = v_unit
-        st.session_state.tasks.at[t_idx_global, "Presupuesto"] = ppto_soles
+        st.session_state.tasks.at[t_idx_global, "Metrado"] = float(metrado)
+        st.session_state.tasks.at[t_idx_global, "Valor_Unitario"] = float(v_unit)
+        st.session_state.tasks.at[t_idx_global, "Presupuesto"] = float(ppto_soles)
+        if "Especialidad" in row_ed:
+            esp_v = safe_str(row_ed.get("Especialidad", "Ninguna")).strip() or "Ninguna"
+            st.session_state.tasks.at[t_idx_global, "Especialidad"] = esp_v
+        if "Contratista" in row_ed:
+            con_v = safe_str(row_ed.get("Contratista", "")).strip()
+            st.session_state.tasks.at[t_idx_global, "Contratista"] = con_v
 
     if base_key in st.session_state:
         del st.session_state[base_key]
@@ -1219,11 +1328,28 @@ def _rows_from_input(file_or_df) -> list:
     elif isinstance(file_or_df, (bytes, bytearray)):
         raw_bytes = bytes(file_or_df)
     elif isinstance(file_or_df, str):
-        if "\n" in file_or_df or "," in file_or_df and not file_or_df.lower().endswith((".xlsx", ".xls", ".csv")):
-            df_csv = pd.read_csv(io.StringIO(file_or_df), header=None, dtype=object)
+        s_in = file_or_df.strip()
+        if "\n" in s_in or "|" in s_in or "\t" in s_in or ("," in s_in and not s_in.lower().endswith((".xlsx", ".xls", ".csv"))):
+            # Soportar tablas Markdown de Gemini Spark (| col1 | col2 | ...)
+            lines_md = [ln.strip() for ln in s_in.splitlines() if ln.strip()]
+            pipe_lines = [ln for ln in lines_md if "|" in ln]
+            if len(pipe_lines) >= 2:
+                md_rows = []
+                for ln in pipe_lines:
+                    # Ignorar separadores markdown como |---|---|
+                    if re.match(r"^\|?[\s\-\:\|]+\|?$", ln):
+                        continue
+                    parts = [p.strip() for p in ln.strip("|").split("|")]
+                    md_rows.append([""] + parts)  # Offset col 0 vacía para compatibilidad con col 1..N
+                if md_rows:
+                    return md_rows
+            if "\t" in s_in:
+                df_tsv = pd.read_csv(io.StringIO(s_in), sep="\t", header=None, dtype=object)
+                return df_tsv.values.tolist()
+            df_csv = pd.read_csv(io.StringIO(s_in), header=None, dtype=object)
             return df_csv.values.tolist()
         else:
-            filename = file_or_df.lower()
+            filename = s_in.lower()
             with open(file_or_df, "rb") as f:
                 raw_bytes = f.read()
 
@@ -1648,6 +1774,238 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
     resultado["presupuesto_total"] = presupuesto_total
     resultado["presupuesto_dolares"] = round(presupuesto_total / tc, 2) if tc > 0 else 0.0
 
+    # Si el parser estándar no encontró tareas (ej. tabla flexible de Gemini Spark / Excel con columnas Partida, Tarea, Metraje, P.U.), usar parser flexible
+    total_tareas_std = sum(len(p.get("tareas", [])) for p in resultado.get("partidas", []))
+    if total_tareas_std == 0 and subtotal_casco == 0.0:
+        flex_res = parsear_presupuesto_flexible(rows, tc_default=tc)
+        if flex_res and (flex_res.get("partidas") or flex_res.get("subtotal_casco", 0.0) > 0):
+            return flex_res
+
+    return resultado
+
+
+def parsear_presupuesto_flexible(rows_or_input, tc_default: float = 3.42) -> dict:
+    """
+    Parser flexible para importar presupuestos generados en Gemini Spark, Excel o CSV
+    que contengan columnas equivalentes a Partida, Ítem, Tarea/Sub-partida/Descripción,
+    Unidad, Metrado/Metraje/Cantidad, Valor Unitario/P.U., Valor Parcial/Subtotal,
+    Moneda, Especialidad y Contratista.
+    """
+    rows = rows_or_input if isinstance(rows_or_input, list) else _rows_from_input(rows_or_input)
+    resultado = {
+        "proyecto": "",
+        "cliente": "",
+        "fecha": "",
+        "tc": tc_default,
+        "partidas": [],
+        "subtotal_casco": 0.0,
+        "gg_pct": 2.0,
+        "gg_monto": 0.0,
+        "utilidades_pct": 15.0,
+        "utilidades_monto": 0.0,
+        "igv_pct": 0.0,
+        "igv_monto": 0.0,
+        "presupuesto_total": 0.0,
+        "presupuesto_dolares": 0.0,
+    }
+    if not rows:
+        return resultado
+
+    header_idx = None
+    cmap = {}
+    for r_i, row in enumerate(rows[:25]):
+        r_low = [_clean_cell_str(c).lower() for c in row]
+        score = sum(
+            1
+            for s in r_low
+            if any(
+                k in s
+                for k in [
+                    "partida", "categor", "capítulo", "capitulo", "item", "ítem", "cod", "cód",
+                    "tarea", "subpartida", "sub-partida", "descrip", "actividad",
+                    "unidad", "und", "u.m", "metrado", "metraje", "cant",
+                    "unitario", "p.u", "precio", "costo", "parcial", "total", "importe",
+                ]
+            )
+        )
+        if score >= 2:
+            header_idx = r_i
+            for c_i, s in enumerate(r_low):
+                if not s:
+                    continue
+                if any(k in s for k in ["subpartida", "sub-partida", "tarea", "descrip", "actividad", "concepto"]) and "descripcion" not in cmap:
+                    cmap["descripcion"] = c_i
+                elif any(k in s for k in ["partida", "categor", "capítulo", "capitulo", "fase"]) and "partida" not in cmap:
+                    cmap["partida"] = c_i
+                elif any(k in s for k in ["item", "ítem", "cod", "cód", "n°", "nro"]) and "codigo" not in cmap:
+                    cmap["codigo"] = c_i
+                elif any(k in s for k in ["moneda", "divisa"]) and "moneda" not in cmap:
+                    cmap["moneda"] = c_i
+                elif any(k in s for k in ["unidad", "und", "u.m", "medida"]) and "unidad" not in cmap:
+                    cmap["unidad"] = c_i
+                elif any(k in s for k in ["metrado", "metraje", "cantidad", "cant"]) and "metrado" not in cmap:
+                    cmap["metrado"] = c_i
+                elif any(k in s for k in ["unitario", "p.u", "pu", "precio unit", "v. unit", "v unit"]) and "valor_unitario" not in cmap:
+                    cmap["valor_unitario"] = c_i
+                elif any(k in s for k in ["parcial", "subtotal", "sub total", "importe", "total", "monto"]) and "valor_parcial" not in cmap:
+                    cmap["valor_parcial"] = c_i
+                elif "especialidad" in s and "especialidad" not in cmap:
+                    cmap["especialidad"] = c_i
+                elif any(k in s for k in ["contratista", "proveedor", "responsable"]) and "contratista" not in cmap:
+                    cmap["contratista"] = c_i
+            break
+
+    if header_idx is None:
+        return resultado
+
+    # Si no hay columna "descripcion" pero sí "partida", usar "partida" como descripción jerárquica
+    if "descripcion" not in cmap and "partida" in cmap:
+        cmap["descripcion"] = cmap.pop("partida")
+
+    def _cell(r, k):
+        idx = cmap.get(k)
+        return r[idx] if (idx is not None and 0 <= idx < len(r)) else None
+
+    partidas_map = {}
+    partidas_order = []
+    current_p_code = "1"
+    current_p_name = "Partida General"
+
+    def _ensure_partida(p_key: str, p_nom: str):
+        if p_key not in partidas_map:
+            partidas_map[p_key] = {
+                "codigo": str(len(partidas_order) + 1),
+                "nombre": limpiar_nombre_partida(p_nom, len(partidas_order) + 1),
+                "tareas": [],
+            }
+            partidas_order.append(p_key)
+
+    for r_i in range(header_idx + 1, len(rows)):
+        row = rows[r_i]
+        if not any(_clean_cell_str(x) for x in row):
+            continue
+
+        raw_cod = _clean_cell_str(_cell(row, "codigo"))
+        raw_part = _clean_cell_str(_cell(row, "partida"))
+        raw_desc = _clean_cell_str(_cell(row, "descripcion"))
+        raw_mon = _clean_cell_str(_cell(row, "moneda")) or "Soles"
+        raw_und = _clean_cell_str(_cell(row, "unidad")) or "glb"
+        raw_esp = _clean_cell_str(_cell(row, "especialidad")) or "Ninguna"
+        raw_con = _clean_cell_str(_cell(row, "contratista"))
+
+        met_v, _ = _parse_number_or_pct(_cell(row, "metrado"), 0.0)
+        vu_v, _ = _parse_number_or_pct(_cell(row, "valor_unitario"), 0.0)
+        vp_v, _ = _parse_number_or_pct(_cell(row, "valor_parcial"), 0.0)
+
+        texto_comb = f"{raw_part} {raw_desc}".strip().lower()
+        if any(
+            kw in texto_comb
+            for kw in [
+                "sub total", "subtotal", "gastos generales", "gestión y supervisión",
+                "gestion y supervision", "utilidad", "igv", "total general", "total presupuesto",
+            ]
+        ) or raw_desc.lower() == "total":
+            if "gastos generales" in texto_comb and vp_v > 0:
+                resultado["gg_monto"] = vp_v
+            elif any(k in texto_comb for k in ["gestión", "gestion", "supervisión", "supervision", "utilidad"]) and vp_v > 0:
+                resultado["utilidades_monto"] = vp_v
+            elif "igv" in texto_comb and vp_v > 0:
+                resultado["igv_monto"] = vp_v
+                resultado["igv_pct"] = 18.0
+            continue
+
+        # Caso 1: Existe columna explícita de Partida en cada fila
+        if raw_part and raw_desc:
+            p_key = raw_part.upper()
+            _ensure_partida(p_key, raw_part)
+            current_p_code = p_key
+        else:
+            # Caso 2: Tabla jerárquica donde una fila sin metrado ni precio unitario es cabecera de Partida
+            it_type, p_c, _ = _classify_item_code(raw_cod)
+            es_cabecera_partida = (
+                it_type == "partida"
+                or (bool(raw_desc) and met_v == 0.0 and vu_v == 0.0 and (vp_v == 0.0 or not _clean_cell_str(_cell(row, "unidad"))))
+            )
+            if es_cabecera_partida and raw_desc:
+                p_key = raw_desc.upper()
+                _ensure_partida(p_key, raw_desc)
+                current_p_code = p_key
+                continue
+
+        if not raw_desc and vu_v == 0.0 and vp_v == 0.0:
+            continue
+
+        _ensure_partida(current_p_code, current_p_name)
+        p_obj = partidas_map[current_p_code]
+        p_num_str = p_obj["codigo"]
+        t_idx = len(p_obj["tareas"]) + 1
+        t_code = f"{p_num_str}.{t_idx:02d}"
+
+        if met_v <= 0:
+            met_v = 1.0
+        if vp_v > 0 and vu_v <= 0:
+            vu_v = round(vp_v / met_v, 2)
+        parcial_calc = round(met_v * vu_v, 2) if vu_v > 0 else round(vp_v, 2)
+
+        es_usd = any(d in raw_mon.lower() for d in ["dolar", "dólar", "usd", "$"])
+        factor_tc = tc_default if es_usd else 1.0
+        ppto_soles = round(parcial_calc * factor_tc, 2)
+
+        p_obj["tareas"].append({
+            "codigo": t_code,
+            "descripcion": extraer_descripcion_tarea(raw_desc, t_code) or f"Tarea {t_code}",
+            "moneda": "Dólares" if es_usd else "Soles",
+            "unidad": raw_und,
+            "metrado": met_v,
+            "valor_unitario": vu_v,
+            "valor_unitario_soles": round(vu_v * factor_tc, 2),
+            "valor_parcial": parcial_calc,
+            "presupuesto_soles": ppto_soles,
+            "especialidad": raw_esp,
+            "contratista": raw_con,
+        })
+
+    partidas_final = []
+    subtotal_casco = 0.0
+    for idx_p, p_key in enumerate(partidas_order, start=1):
+        p_obj = partidas_map[p_key]
+        if not p_obj["tareas"]:
+            continue
+        p_code_str = str(idx_p)
+        for idx_t, t_it in enumerate(p_obj["tareas"], start=1):
+            t_it["codigo"] = f"{p_code_str}.{idx_t:02d}"
+        monto_p = round(sum(t["presupuesto_soles"] for t in p_obj["tareas"]), 2)
+        nom_limpio = limpiar_nombre_partida(p_obj["nombre"], idx_p)
+        nom_comp = formatear_nombre_partida(idx_p, nom_limpio)
+        partidas_final.append({
+            "codigo": p_code_str,
+            "nombre": nom_limpio,
+            "nombre_completo": nom_comp,
+            "monto_pactado": monto_p,
+            "mix_pct": 0.0,
+            "tareas": p_obj["tareas"],
+        })
+        subtotal_casco += monto_p
+
+    subtotal_casco = round(subtotal_casco, 2)
+    for p_it in partidas_final:
+        p_it["mix_pct"] = round((p_it["monto_pactado"] / subtotal_casco) * 100.0, 2) if subtotal_casco > 0 else 0.0
+
+    resultado["partidas"] = partidas_final
+    resultado["subtotal_casco"] = subtotal_casco
+    if resultado["gg_monto"] <= 0:
+        resultado["gg_monto"] = round(subtotal_casco * (resultado["gg_pct"] / 100.0), 2)
+    else:
+        resultado["gg_pct"] = round((resultado["gg_monto"] / subtotal_casco) * 100.0, 2) if subtotal_casco > 0 else 2.0
+
+    if resultado["utilidades_monto"] <= 0:
+        resultado["utilidades_monto"] = round(subtotal_casco * (resultado["utilidades_pct"] / 100.0), 2)
+    else:
+        resultado["utilidades_pct"] = round((resultado["utilidades_monto"] / subtotal_casco) * 100.0, 2) if subtotal_casco > 0 else 15.0
+
+    tot_soles = round(subtotal_casco + resultado["gg_monto"] + resultado["utilidades_monto"] + resultado["igv_monto"], 2)
+    resultado["presupuesto_total"] = tot_soles
+    resultado["presupuesto_dolares"] = round(tot_soles / tc_default, 2) if tc_default > 0 else 0.0
     return resultado
 
 
@@ -1776,9 +2134,10 @@ def aplicar_cotizacion_a_proyecto(
                 "Orden": idx_t,
                 "Codigo_Item": t_cod,
                 "Tarea": nombre_tarea,
-                "Especialidad": "Ninguna",
-                "Contratista": "",
+                "Especialidad": safe_str(t.get("especialidad", "Ninguna")).strip() or "Ninguna",
+                "Contratista": safe_str(t.get("contratista", "")).strip(),
                 "Estado": "🟡 Planificado",
+                "Supervisado": "No",
                 "Inicio": parsed_data.get("fecha") or datetime.date.today().strftime("%Y-%m-%d"),
                 "Fin": "",
                 "Causa_Cumplimiento": "",
@@ -1862,9 +2221,13 @@ def _normalizar_fila_pago(fila: dict, cols_pago: list[str], desc_default: str = 
 def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas: bool = False) -> dict:
     """
     Obtiene o inicializa la estructura del Cuadro de Pagos Semanales para el proyecto `proy_name`.
-    Si `sincronizar_partidas=True`, incorpora o actualiza las partidas y montos desde 03. PRESUPUESTO
+    Sincroniza automáticamente las partidas, contratistas y montos desde 03. PRESUPUESTO
     conservando todos los pagos semanales ya registrados.
     """
+    df_parts = st.session_state.get("partidas", pd.DataFrame())
+    if not df_parts.empty and "Proyecto" in df_parts.columns and not df_parts[df_parts["Proyecto"] == proy_name].empty:
+        recalcular_totales_presupuesto_proyecto(proy_name, sincronizar_pactado=False)
+
     df_p = st.session_state.get("proyectos", pd.DataFrame())
     proy_row = {}
     if not df_p.empty and "Nombre" in df_p.columns:
@@ -1886,8 +2249,7 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
         except Exception:
             data_guardada = None
 
-    # Extraer partidas y montos pactados actuales del proyecto
-    df_parts = st.session_state.get("partidas", pd.DataFrame())
+    # Extraer partidas, montos pactados y contratistas actuales del proyecto
     df_pinfo = st.session_state.get("p_info", pd.DataFrame())
     df_tasks = st.session_state.get("tasks", pd.DataFrame())
 
@@ -1898,15 +2260,23 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
             p_raw = safe_str(r_p.get("Nombre_Partida", f"Partida {idx_p}"))
             p_clean = limpiar_nombre_partida(p_raw, idx_p).upper()
             monto_p = 0.0
+            contra_p = ""
             if not df_pinfo.empty and "Proyecto" in df_pinfo.columns:
                 pi_m = df_pinfo[(df_pinfo["Proyecto"] == proy_name) & (df_pinfo["Nombre_Partida"] == p_raw)]
                 if not pi_m.empty:
                     monto_p = safe_float(pi_m["Monto_Pactado"].iloc[0], 0.0)
-            if monto_p <= 0 and not df_tasks.empty and "Proyecto" in df_tasks.columns:
+                    contra_p = safe_str(pi_m["Contratista"].iloc[0]).strip() if "Contratista" in pi_m.columns else ""
+            if not df_tasks.empty and "Proyecto" in df_tasks.columns:
                 t_m = df_tasks[(df_tasks["Proyecto"] == proy_name) & (df_tasks["Partida"] == p_raw)]
-                if not t_m.empty and "Presupuesto" in t_m.columns:
-                    monto_p = float(pd.to_numeric(t_m["Presupuesto"], errors="coerce").fillna(0.0).sum())
-            partidas_proy.append((p_clean, round(monto_p, 2)))
+                if not t_m.empty:
+                    if monto_p <= 0 and "Presupuesto" in t_m.columns:
+                        monto_p = float(pd.to_numeric(t_m["Presupuesto"], errors="coerce").fillna(0.0).sum())
+                    if not contra_p and "Contratista" in t_m.columns:
+                        cs = [safe_str(x).strip() for x in t_m["Contratista"].dropna().unique().tolist() if safe_str(x).strip()]
+                        contra_p = ", ".join(cs)
+            partidas_proy.append((p_clean, round(monto_p, 2), contra_p))
+
+    tiene_ppto_activo = any(m > 0 for _, m, _ in partidas_proy)
 
     if data_guardada and isinstance(data_guardada, dict):
         num_sem = max(1, min(30, int(data_guardada.get("num_semanas", 5) or 5)))
@@ -1931,27 +2301,42 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
             "Gastos Generales",
         )
 
-        if sincronizar_partidas and partidas_proy:
+        if (sincronizar_partidas or tiene_ppto_activo) and partidas_proy:
             mapa_exist = {f["Descripcion"].strip().upper(): f for f in filas_c}
             nuevas_filas_c = []
             usadas = set()
-            for p_nom_u, p_monto in partidas_proy:
+            for idx_pos, (p_nom_u, p_monto, p_contra) in enumerate(partidas_proy):
                 key_u = p_nom_u.strip().upper()
+                f_ex = None
                 if key_u in mapa_exist:
                     f_ex = dict(mapa_exist[key_u])
-                    if p_monto > 0:
-                        f_ex["TOTAL"] = p_monto
-                    nuevas_filas_c.append(_normalizar_fila_pago(f_ex, cols_pago, p_nom_u))
                     usadas.add(key_u)
+                elif idx_pos < len(filas_c) and filas_c[idx_pos]["Descripcion"].strip().upper().startswith("PARTIDA "):
+                    f_ex = dict(filas_c[idx_pos])
+                    usadas.add(filas_c[idx_pos]["Descripcion"].strip().upper())
+
+                if f_ex is not None:
+                    f_ex["Descripcion"] = p_nom_u
+                    if p_monto > 0 or sincronizar_partidas:
+                        f_ex["TOTAL"] = p_monto
+                    if p_contra and not safe_str(f_ex.get("Notas", "")).strip():
+                        f_ex["Notas"] = f"Contratista: {p_contra}"
+                    nuevas_filas_c.append(_normalizar_fila_pago(f_ex, cols_pago, p_nom_u))
                 else:
-                    nuevas_filas_c.append(_normalizar_fila_pago({"Descripcion": p_nom_u, "TOTAL": p_monto}, cols_pago, p_nom_u))
+                    nota_init = f"Contratista: {p_contra}" if p_contra else ""
+                    nuevas_filas_c.append(
+                        _normalizar_fila_pago({"Descripcion": p_nom_u, "TOTAL": p_monto, "Notas": nota_init}, cols_pago, p_nom_u)
+                    )
             for f_old in filas_c:
-                if f_old["Descripcion"].strip().upper() not in usadas:
-                    nuevas_filas_c.append(f_old)
+                k_old = f_old["Descripcion"].strip().upper()
+                if k_old not in usadas:
+                    pagos_old = sum(safe_float(f_old.get(c, 0.0), 0.0) for c in cols_pago)
+                    if f_old.get("TOTAL", 0.0) > 0 or pagos_old > 0:
+                        nuevas_filas_c.append(f_old)
             filas_c = nuevas_filas_c
-            if util_proy > 0:
+            if util_proy > 0 or sincronizar_partidas:
                 fila_ges["TOTAL"] = util_proy
-            if gg_proy > 0:
+            if gg_proy > 0 or sincronizar_partidas:
                 fila_gg["TOTAL"] = gg_proy
 
         res_data = {
@@ -1971,8 +2356,12 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
     cols_pago = obtener_columnas_pago_semanal(num_sem)
     if partidas_proy:
         filas_c = [
-            _normalizar_fila_pago({"Descripcion": p_n, "TOTAL": p_m}, cols_pago, p_n)
-            for p_n, p_m in partidas_proy
+            _normalizar_fila_pago(
+                {"Descripcion": p_n, "TOTAL": p_m, "Notas": f"Contratista: {p_c}" if p_c else ""},
+                cols_pago,
+                p_n,
+            )
+            for p_n, p_m, p_c in partidas_proy
         ]
     else:
         filas_c = [
