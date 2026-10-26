@@ -16,6 +16,7 @@ Permite:
 
 import datetime
 import io
+import json
 import re
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -1793,3 +1794,699 @@ def aplicar_cotizacion_a_proyecto(
         "utilidades_monto": float(parsed_data.get("utilidades_monto", 0.0)),
         "gg_monto": float(parsed_data.get("gg_monto", 0.0)),
     }
+
+
+# ==========================================
+# 4. CUADRO DE PAGOS SEMANALES POR PARTIDA / CONTRATISTA (06. COBROS & FINANZAS)
+# ==========================================
+
+PARTIDAS_PAGOS_DEFAULT = [
+    "OBRAS CIVILES",
+    "INSTALACIONES E&S",
+    "CARPINTERÍA Y MOBILIARIO",
+    "TABLERO DE PIEDRA",
+    "PINTURA",
+    "TRABAJOS PRELIMINARES",
+    "VIDRIOS",
+]
+
+
+def obtener_columnas_pago_semanal(num_semanas: int = 5) -> list[str]:
+    """Retorna la lista de columnas de desembolso: ['ADELANTO 1', 'SEMANA 1', ..., 'SEMANA N']."""
+    n = max(1, min(30, int(num_semanas or 5)))
+    return ["ADELANTO 1"] + [f"SEMANA {i}" for i in range(1, n + 1)]
+
+
+def _normalizar_fila_pago(fila: dict, cols_pago: list[str], desc_default: str = "") -> dict:
+    """Garantiza que una fila del cuadro de pagos tenga todas las columnas numéricas y de texto."""
+    res = {
+        "Descripcion": safe_str(fila.get("Descripcion", desc_default)).strip() or desc_default,
+        "Moneda": safe_str(fila.get("Moneda", "Soles")).strip() or "Soles",
+        "TOTAL": round(safe_float(fila.get("TOTAL", 0.0), 0.0), 2),
+    }
+    for c in cols_pago:
+        res[c] = round(safe_float(fila.get(c, 0.0), 0.0), 2)
+    res["Notas"] = safe_str(fila.get("Notas", "")).strip()
+    return res
+
+
+def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas: bool = False) -> dict:
+    """
+    Obtiene o inicializa la estructura del Cuadro de Pagos Semanales para el proyecto `proy_name`.
+    Si `sincronizar_partidas=True`, incorpora o actualiza las partidas y montos desde 03. PRESUPUESTO
+    conservando todos los pagos semanales ya registrados.
+    """
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    proy_row = {}
+    if not df_p.empty and "Nombre" in df_p.columns:
+        m = df_p[df_p["Nombre"] == proy_name]
+        if not m.empty:
+            proy_row = m.iloc[0].to_dict()
+
+    tc_proy = safe_float(proy_row.get("TC_Presupuesto", 3.60), 3.60)
+    if tc_proy <= 0:
+        tc_proy = 3.60
+    util_proy = round(safe_float(proy_row.get("Utilidades", 0.0), 0.0), 2)
+    gg_proy = round(safe_float(proy_row.get("GG_Presupuesto", 0.0), 0.0), 2)
+
+    raw_json = safe_str(proy_row.get("Pagos_Semanales_JSON", "")).strip()
+    data_guardada = None
+    if raw_json:
+        try:
+            data_guardada = json.loads(raw_json)
+        except Exception:
+            data_guardada = None
+
+    # Extraer partidas y montos pactados actuales del proyecto
+    df_parts = st.session_state.get("partidas", pd.DataFrame())
+    df_pinfo = st.session_state.get("p_info", pd.DataFrame())
+    df_tasks = st.session_state.get("tasks", pd.DataFrame())
+
+    partidas_proy = []
+    if not df_parts.empty and "Proyecto" in df_parts.columns:
+        p_sub = df_parts[df_parts["Proyecto"] == proy_name]
+        for idx_p, (_, r_p) in enumerate(p_sub.iterrows(), start=1):
+            p_raw = safe_str(r_p.get("Nombre_Partida", f"Partida {idx_p}"))
+            p_clean = limpiar_nombre_partida(p_raw, idx_p).upper()
+            monto_p = 0.0
+            if not df_pinfo.empty and "Proyecto" in df_pinfo.columns:
+                pi_m = df_pinfo[(df_pinfo["Proyecto"] == proy_name) & (df_pinfo["Nombre_Partida"] == p_raw)]
+                if not pi_m.empty:
+                    monto_p = safe_float(pi_m["Monto_Pactado"].iloc[0], 0.0)
+            if monto_p <= 0 and not df_tasks.empty and "Proyecto" in df_tasks.columns:
+                t_m = df_tasks[(df_tasks["Proyecto"] == proy_name) & (df_tasks["Partida"] == p_raw)]
+                if not t_m.empty and "Presupuesto" in t_m.columns:
+                    monto_p = float(pd.to_numeric(t_m["Presupuesto"], errors="coerce").fillna(0.0).sum())
+            partidas_proy.append((p_clean, round(monto_p, 2)))
+
+    if data_guardada and isinstance(data_guardada, dict):
+        num_sem = max(1, min(30, int(data_guardada.get("num_semanas", 5) or 5)))
+        tc_val = safe_float(data_guardada.get("tc", tc_proy), tc_proy)
+        if tc_val <= 0:
+            tc_val = tc_proy
+        cols_pago = obtener_columnas_pago_semanal(num_sem)
+        cols_por_pagar = [c for c in data_guardada.get("cols_por_pagar", []) if c in cols_pago]
+
+        filas_c = [
+            _normalizar_fila_pago(f, cols_pago, f"Partida {i+1}")
+            for i, f in enumerate(data_guardada.get("filas_contratistas", []))
+        ]
+        fila_ges = _normalizar_fila_pago(
+            data_guardada.get("fila_gestion", {"TOTAL": util_proy}),
+            cols_pago,
+            "Gestión y supervisión de obras",
+        )
+        fila_gg = _normalizar_fila_pago(
+            data_guardada.get("fila_gg", {"TOTAL": gg_proy}),
+            cols_pago,
+            "Gastos Generales",
+        )
+
+        if sincronizar_partidas and partidas_proy:
+            mapa_exist = {f["Descripcion"].strip().upper(): f for f in filas_c}
+            nuevas_filas_c = []
+            usadas = set()
+            for p_nom_u, p_monto in partidas_proy:
+                key_u = p_nom_u.strip().upper()
+                if key_u in mapa_exist:
+                    f_ex = dict(mapa_exist[key_u])
+                    if p_monto > 0:
+                        f_ex["TOTAL"] = p_monto
+                    nuevas_filas_c.append(_normalizar_fila_pago(f_ex, cols_pago, p_nom_u))
+                    usadas.add(key_u)
+                else:
+                    nuevas_filas_c.append(_normalizar_fila_pago({"Descripcion": p_nom_u, "TOTAL": p_monto}, cols_pago, p_nom_u))
+            for f_old in filas_c:
+                if f_old["Descripcion"].strip().upper() not in usadas:
+                    nuevas_filas_c.append(f_old)
+            filas_c = nuevas_filas_c
+            if util_proy > 0:
+                fila_ges["TOTAL"] = util_proy
+            if gg_proy > 0:
+                fila_gg["TOTAL"] = gg_proy
+
+        res_data = {
+            "num_semanas": num_sem,
+            "tc": tc_val,
+            "cols_por_pagar": cols_por_pagar,
+            "filas_contratistas": filas_c,
+            "fila_gestion": fila_ges,
+            "fila_gg": fila_gg,
+        }
+        if sincronizar_partidas:
+            guardar_cuadro_pagos_semanales_proyecto(proy_name, res_data)
+        return res_data
+
+    # Inicialización por primera vez para este proyecto
+    num_sem = 5
+    cols_pago = obtener_columnas_pago_semanal(num_sem)
+    if partidas_proy:
+        filas_c = [
+            _normalizar_fila_pago({"Descripcion": p_n, "TOTAL": p_m}, cols_pago, p_n)
+            for p_n, p_m in partidas_proy
+        ]
+    else:
+        filas_c = [
+            _normalizar_fila_pago({"Descripcion": p_def, "TOTAL": 0.0}, cols_pago, p_def)
+            for p_def in PARTIDAS_PAGOS_DEFAULT
+        ]
+
+    res_init = {
+        "num_semanas": num_sem,
+        "tc": tc_proy,
+        "cols_por_pagar": [],
+        "filas_contratistas": filas_c,
+        "fila_gestion": _normalizar_fila_pago({"TOTAL": util_proy}, cols_pago, "Gestión y supervisión de obras"),
+        "fila_gg": _normalizar_fila_pago({"TOTAL": gg_proy}, cols_pago, "Gastos Generales"),
+    }
+    return res_init
+
+
+def guardar_cuadro_pagos_semanales_proyecto(proy_name: str, data_cuadro: dict):
+    """Guarda el estado del Cuadro de Pagos Semanales en `st.session_state.proyectos`."""
+    if "proyectos" not in st.session_state or st.session_state.proyectos.empty:
+        return
+    if "Pagos_Semanales_JSON" not in st.session_state.proyectos.columns:
+        st.session_state.proyectos["Pagos_Semanales_JSON"] = ""
+
+    mask = st.session_state.proyectos["Nombre"] == proy_name
+    if mask.any():
+        idx_p = st.session_state.proyectos[mask].index[0]
+        st.session_state.proyectos.at[idx_p, "Pagos_Semanales_JSON"] = json.dumps(data_cuadro, ensure_ascii=False)
+
+
+def calcular_resumen_cuadro_pagos_semanales(data_cuadro: dict) -> dict:
+    """
+    Calcula PAGADO, POR_PAGAR y SALDO de cada fila, así como las filas de cierre:
+    SUB TOTAL (Contratistas), Gestión y supervisión de obras, Gastos Generales,
+    TOTAL (Soles) y TOTAL (Dólares).
+    """
+    num_sem = max(1, min(30, int(data_cuadro.get("num_semanas", 5) or 5)))
+    tc = safe_float(data_cuadro.get("tc", 3.60), 3.60)
+    if tc <= 0:
+        tc = 3.60
+    cols_pago = obtener_columnas_pago_semanal(num_sem)
+    cols_por_pagar = set(data_cuadro.get("cols_por_pagar", []))
+    cols_pagadas = [c for c in cols_pago if c not in cols_por_pagar]
+
+    def _enriquecer_fila(f_raw: dict, default_desc: str = "") -> dict:
+        f = _normalizar_fila_pago(f_raw, cols_pago, default_desc)
+        pagado = round(sum(safe_float(f.get(c, 0.0), 0.0) for c in cols_pagadas), 2)
+        por_pagar = round(sum(safe_float(f.get(c, 0.0), 0.0) for c in cols_pago if c in cols_por_pagar), 2)
+        saldo = round(f["TOTAL"] - pagado, 2)
+        f["PAGADO"] = pagado
+        f["POR_PAGAR"] = por_pagar
+        f["SALDO"] = saldo
+        return f
+
+    filas_c_calc = [
+        _enriquecer_fila(f, f"Partida {i+1}")
+        for i, f in enumerate(data_cuadro.get("filas_contratistas", []))
+    ]
+
+    sub_total = {
+        "Descripcion": "SUB TOTAL",
+        "Moneda": "Soles",
+        "TOTAL": round(sum(f["TOTAL"] for f in filas_c_calc), 2),
+    }
+    for c in cols_pago:
+        sub_total[c] = round(sum(f[c] for f in filas_c_calc), 2)
+    sub_total["PAGADO"] = round(sum(f["PAGADO"] for f in filas_c_calc), 2)
+    sub_total["POR_PAGAR"] = round(sum(f["POR_PAGAR"] for f in filas_c_calc), 2)
+    sub_total["SALDO"] = round(sum(f["SALDO"] for f in filas_c_calc), 2)
+    sub_total["Notas"] = ""
+
+    fila_ges_calc = _enriquecer_fila(data_cuadro.get("fila_gestion", {}), "Gestión y supervisión de obras")
+    fila_gg_calc = _enriquecer_fila(data_cuadro.get("fila_gg", {}), "Gastos Generales")
+
+    filas_principales = [sub_total, fila_ges_calc, fila_gg_calc]
+    total_soles = {
+        "Descripcion": "TOTAL",
+        "Moneda": "Soles",
+        "TOTAL": round(sum(r["TOTAL"] for r in filas_principales), 2),
+    }
+    for c in cols_pago:
+        total_soles[c] = round(sum(r[c] for r in filas_principales), 2)
+    total_soles["PAGADO"] = round(sum(r["PAGADO"] for r in filas_principales), 2)
+    total_soles["POR_PAGAR"] = round(sum(r["POR_PAGAR"] for r in filas_principales), 2)
+    total_soles["SALDO"] = round(sum(r["SALDO"] for r in filas_principales), 2)
+    total_soles["Notas"] = ""
+
+    total_dolares = {
+        "Descripcion": "",
+        "Moneda": "Dólares",
+        "TOTAL": round(total_soles["TOTAL"] / tc, 2),
+    }
+    for c in cols_pago:
+        total_dolares[c] = round(total_soles[c] / tc, 2)
+    total_dolares["PAGADO"] = round(total_soles["PAGADO"] / tc, 2)
+    total_dolares["POR_PAGAR"] = round(total_soles["POR_PAGAR"] / tc, 2)
+    total_dolares["SALDO"] = round(total_soles["SALDO"] / tc, 2)
+    total_dolares["Notas"] = f"TC: {tc:.2f}"
+
+    return {
+        "num_semanas": num_sem,
+        "tc": tc,
+        "cols_pago": cols_pago,
+        "cols_por_pagar": list(cols_por_pagar),
+        "filas_contratistas": filas_c_calc,
+        "sub_total": sub_total,
+        "fila_gestion": fila_ges_calc,
+        "fila_gg": fila_gg_calc,
+        "total_soles": total_soles,
+        "total_dolares": total_dolares,
+    }
+
+
+def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = None) -> bytes:
+    """
+    Exporta el Cuadro de Pagos Semanales por Partida/Contratista a un archivo Excel (.xlsx)
+    con el diseño y fórmulas exactas para entregar al cliente.
+    """
+    if data_cuadro is None:
+        data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+    res = calcular_resumen_cuadro_pagos_semanales(data_cuadro)
+
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    cliente = ""
+    if not df_p.empty and "Nombre" in df_p.columns:
+        m = df_p[df_p["Nombre"] == proy_name]
+        if not m.empty:
+            cliente = safe_str(m.iloc[0].get("Cliente", ""))
+
+    cols_pago = res["cols_pago"]
+    cols_por_pagar = set(res["cols_por_pagar"])
+    tc = res["tc"]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Control de Pagos"
+    ws.views.sheetView[0].showGridLines = True
+
+    font_family = "Calibri"
+    f_title = Font(name=font_family, size=11, bold=True, color="262320")
+    f_header = Font(name=font_family, size=10, bold=True, color="FFFFFF")
+    f_por_pagar = Font(name=font_family, size=9, bold=True, color="FFFFFF")
+    f_section = Font(name=font_family, size=10, bold=True, color="262320")
+    f_row = Font(name=font_family, size=10, bold=False, color="262320")
+    f_subtotal = Font(name=font_family, size=10, bold=True, color="262320")
+    f_total = Font(name=font_family, size=10, bold=True, color="FFFFFF")
+    f_usd = Font(name=font_family, size=10, bold=True, color="262320")
+
+    fill_header = PatternFill(start_color="262320", end_color="262320", fill_type="solid")
+    fill_por_pagar = PatternFill(start_color="D98A2B", end_color="D98A2B", fill_type="solid")
+    fill_pagado_tag = PatternFill(start_color="4A7C59", end_color="4A7C59", fill_type="solid")
+    fill_section = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
+    fill_subtotal = PatternFill(start_color="DFD9CE", end_color="DFD9CE", fill_type="solid")
+    fill_total = PatternFill(start_color="C85A32", end_color="C85A32", fill_type="solid")
+    fill_usd = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
+
+    thin_side = Side(border_style="thin", color="D0C9BD")
+    med_bottom = Side(border_style="medium", color="262320")
+    border_cell = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    border_closing = Border(left=thin_side, right=thin_side, top=thin_side, bottom=med_bottom)
+
+    align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    align_left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    align_right = Alignment(horizontal="right", vertical="center", wrap_text=True)
+
+    # Encabezado de Proyecto y Cliente
+    ws["B1"] = "Proyecto:"
+    ws["B1"].font = f_title
+    ws["C1"] = proy_name
+    ws["C1"].font = f_title
+
+    ws["B2"] = "Cliente:"
+    ws["B2"].font = f_title
+    ws["C2"] = cliente
+    ws["C2"].font = f_title
+
+    ws["E2"] = "TC:"
+    ws["E2"].font = f_title
+    ws["E2"].alignment = align_right
+    ws["F2"] = float(tc)
+    ws["F2"].font = f_title
+    ws["F2"].number_format = "0.00"
+    ws["F2"].alignment = align_center
+
+    # Columnas:
+    # B: Descripción (col 2)
+    # C: Moneda (col 3)
+    # D: TOTAL (col 4)
+    # E .. E+len(cols_pago)-1: ADELANTO 1, SEMANA 1..N (cols 5 .. 4+len(cols_pago))
+    # Col PAGADO: 5 + len(cols_pago)
+    # Col SALDO: 6 + len(cols_pago)
+    # Col Notas: 7 + len(cols_pago)
+    col_idx_pagado = 5 + len(cols_pago)
+    col_idx_saldo = 6 + len(cols_pago)
+    col_idx_notas = 7 + len(cols_pago)
+
+    let_pagado = get_column_letter(col_idx_pagado)
+    let_saldo = get_column_letter(col_idx_saldo)
+    let_notas = get_column_letter(col_idx_notas)
+
+    # Fila 4: Cabecera de la tabla
+    headers = [
+        (2, "Descripción"),
+        (3, "Moneda"),
+        (4, "TOTAL"),
+    ]
+    for i_c, c_name in enumerate(cols_pago):
+        headers.append((5 + i_c, c_name))
+    headers.append((col_idx_pagado, "PAGADO"))
+    headers.append((col_idx_saldo, "SALDO"))
+    headers.append((col_idx_notas, "Notas"))
+
+    ws.row_dimensions[4].height = 24
+    for c_i, h_text in headers:
+        c_let = get_column_letter(c_i)
+        cell = ws[f"{c_let}4"]
+        cell.value = h_text
+        cell.font = f_header
+        cell.fill = fill_header
+        cell.alignment = align_center
+        cell.border = border_cell
+
+    # Fila 5: Indicadores "Por Pagar" sobre las semanas pendientes
+    ws.row_dimensions[5].height = 18
+    for i_c, c_name in enumerate(cols_pago):
+        c_let = get_column_letter(5 + i_c)
+        cell = ws[f"{c_let}5"]
+        if c_name in cols_por_pagar:
+            cell.value = "Por Pagar"
+            cell.font = f_por_pagar
+            cell.fill = fill_por_pagar
+            cell.alignment = align_center
+            cell.border = border_cell
+
+    # Fila 6: TRABAJOS CONTRATISTAS
+    ws["B6"] = "TRABAJOS CONTRATISTAS"
+    ws["B6"].font = f_section
+    for c_i in range(2, col_idx_notas + 1):
+        c_let = get_column_letter(c_i)
+        ws[f"{c_let}6"].fill = fill_section
+        ws[f"{c_let}6"].border = border_cell
+
+    # Construir fórmula de PAGADO para una fila dada (sumando solo columnas que NO están en Por Pagar)
+    paid_col_letters = [
+        get_column_letter(5 + i_c)
+        for i_c, c_name in enumerate(cols_pago)
+        if c_name not in cols_por_pagar
+    ]
+
+    def _formula_pagado(row_num: int) -> str:
+        if not paid_col_letters:
+            return "=0"
+        if len(paid_col_letters) == len(cols_pago):
+            first_l = get_column_letter(5)
+            last_l = get_column_letter(4 + len(cols_pago))
+            return f"=SUM({first_l}{row_num}:{last_l}{row_num})"
+        terms = "+".join(f"{c_l}{row_num}" for c_l in paid_col_letters)
+        return f"={terms}"
+
+    curr_r = 7
+    first_c_row = curr_r
+    for f_c in res["filas_contratistas"]:
+        ws[f"B{curr_r}"] = f_c["Descripcion"]
+        ws[f"B{curr_r}"].alignment = align_left
+        ws[f"C{curr_r}"] = f_c["Moneda"]
+        ws[f"C{curr_r}"].alignment = align_center
+        ws[f"D{curr_r}"] = float(f_c["TOTAL"])
+        ws[f"D{curr_r}"].number_format = "#,##0.00"
+        ws[f"D{curr_r}"].alignment = align_right
+
+        for i_c, c_name in enumerate(cols_pago):
+            c_let = get_column_letter(5 + i_c)
+            val_c = float(f_c.get(c_name, 0.0))
+            ws[f"{c_let}{curr_r}"] = val_c if val_c != 0.0 else None
+            ws[f"{c_let}{curr_r}"].number_format = "#,##0.00"
+            ws[f"{c_let}{curr_r}"].alignment = align_right
+
+        ws[f"{let_pagado}{curr_r}"] = _formula_pagado(curr_r)
+        ws[f"{let_pagado}{curr_r}"].number_format = "#,##0.00"
+        ws[f"{let_pagado}{curr_r}"].alignment = align_right
+
+        ws[f"{let_saldo}{curr_r}"] = f"=D{curr_r}-{let_pagado}{curr_r}"
+        ws[f"{let_saldo}{curr_r}"].number_format = "#,##0.00"
+        ws[f"{let_saldo}{curr_r}"].alignment = align_right
+
+        ws[f"{let_notas}{curr_r}"] = f_c.get("Notas", "")
+        ws[f"{let_notas}{curr_r}"].alignment = align_left
+
+        for c_i in range(2, col_idx_notas + 1):
+            c_l = get_column_letter(c_i)
+            ws[f"{c_l}{curr_r}"].font = f_row
+            ws[f"{c_l}{curr_r}"].border = border_cell
+
+        curr_r += 1
+
+    last_c_row = max(first_c_row, curr_r - 1)
+
+    # Fila SUB TOTAL
+    row_sub = curr_r
+    ws[f"B{row_sub}"] = "SUB TOTAL"
+    ws[f"C{row_sub}"] = ""
+    for c_i in range(4, col_idx_saldo + 1):
+        c_l = get_column_letter(c_i)
+        ws[f"{c_l}{row_sub}"] = f"=SUM({c_l}{first_c_row}:{c_l}{last_c_row})"
+        ws[f"{c_l}{row_sub}"].number_format = "#,##0.00"
+        ws[f"{c_l}{row_sub}"].alignment = align_right
+    for c_i in range(2, col_idx_notas + 1):
+        c_l = get_column_letter(c_i)
+        ws[f"{c_l}{row_sub}"].font = f_subtotal
+        ws[f"{c_l}{row_sub}"].fill = fill_subtotal
+        ws[f"{c_l}{row_sub}"].border = border_cell
+
+    # Fila Gestión y supervisión de obras
+    row_ges = row_sub + 1
+    f_ges = res["fila_gestion"]
+    ws[f"B{row_ges}"] = "Gestión y supervisión de obras"
+    ws[f"C{row_ges}"] = f_ges["Moneda"]
+    ws[f"C{row_ges}"].alignment = align_center
+    ws[f"D{row_ges}"] = float(f_ges["TOTAL"])
+    ws[f"D{row_ges}"].number_format = "#,##0.00"
+    ws[f"D{row_ges}"].alignment = align_right
+    for i_c, c_name in enumerate(cols_pago):
+        c_let = get_column_letter(5 + i_c)
+        v_g = float(f_ges.get(c_name, 0.0))
+        ws[f"{c_let}{row_ges}"] = v_g if v_g != 0.0 else None
+        ws[f"{c_let}{row_ges}"].number_format = "#,##0.00"
+        ws[f"{c_let}{row_ges}"].alignment = align_right
+    ws[f"{let_pagado}{row_ges}"] = _formula_pagado(row_ges)
+    ws[f"{let_pagado}{row_ges}"].number_format = "#,##0.00"
+    ws[f"{let_pagado}{row_ges}"].alignment = align_right
+    ws[f"{let_saldo}{row_ges}"] = f"=D{row_ges}-{let_pagado}{row_ges}"
+    ws[f"{let_saldo}{row_ges}"].number_format = "#,##0.00"
+    ws[f"{let_saldo}{row_ges}"].alignment = align_right
+    ws[f"{let_notas}{row_ges}"] = f_ges.get("Notas", "")
+    for c_i in range(2, col_idx_notas + 1):
+        c_l = get_column_letter(c_i)
+        ws[f"{c_l}{row_ges}"].font = f_row
+        ws[f"{c_l}{row_ges}"].border = border_cell
+
+    # Fila Gastos Generales
+    row_gg = row_ges + 1
+    f_gg = res["fila_gg"]
+    ws[f"B{row_gg}"] = "Gastos Generales"
+    ws[f"C{row_gg}"] = f_gg["Moneda"]
+    ws[f"C{row_gg}"].alignment = align_center
+    ws[f"D{row_gg}"] = float(f_gg["TOTAL"])
+    ws[f"D{row_gg}"].number_format = "#,##0.00"
+    ws[f"D{row_gg}"].alignment = align_right
+    for i_c, c_name in enumerate(cols_pago):
+        c_let = get_column_letter(5 + i_c)
+        v_gg = float(f_gg.get(c_name, 0.0))
+        ws[f"{c_let}{row_gg}"] = v_gg if v_gg != 0.0 else None
+        ws[f"{c_let}{row_gg}"].number_format = "#,##0.00"
+        ws[f"{c_let}{row_gg}"].alignment = align_right
+    ws[f"{let_pagado}{row_gg}"] = _formula_pagado(row_gg)
+    ws[f"{let_pagado}{row_gg}"].number_format = "#,##0.00"
+    ws[f"{let_pagado}{row_gg}"].alignment = align_right
+    ws[f"{let_saldo}{row_gg}"] = f"=D{row_gg}-{let_pagado}{row_gg}"
+    ws[f"{let_saldo}{row_gg}"].number_format = "#,##0.00"
+    ws[f"{let_saldo}{row_gg}"].alignment = align_right
+    ws[f"{let_notas}{row_gg}"] = f_gg.get("Notas", "")
+    for c_i in range(2, col_idx_notas + 1):
+        c_l = get_column_letter(c_i)
+        ws[f"{c_l}{row_gg}"].font = f_row
+        ws[f"{c_l}{row_gg}"].border = border_cell
+
+    # Fila TOTAL Soles
+    row_tot = row_gg + 1
+    ws[f"B{row_tot}"] = "TOTAL"
+    ws[f"C{row_tot}"] = "Soles"
+    ws[f"C{row_tot}"].alignment = align_center
+    for c_i in range(4, col_idx_saldo + 1):
+        c_l = get_column_letter(c_i)
+        ws[f"{c_l}{row_tot}"] = f"={c_l}{row_sub}+{c_l}{row_ges}+{c_l}{row_gg}"
+        ws[f"{c_l}{row_tot}"].number_format = "#,##0.00"
+        ws[f"{c_l}{row_tot}"].alignment = align_right
+    for c_i in range(2, col_idx_notas + 1):
+        c_l = get_column_letter(c_i)
+        ws[f"{c_l}{row_tot}"].font = f_total
+        ws[f"{c_l}{row_tot}"].fill = fill_total
+        ws[f"{c_l}{row_tot}"].border = border_cell
+
+    # Fila Dólares
+    row_usd = row_tot + 1
+    ws[f"B{row_usd}"] = ""
+    ws[f"C{row_usd}"] = "Dólares"
+    ws[f"C{row_usd}"].alignment = align_center
+    for c_i in range(4, col_idx_saldo + 1):
+        c_l = get_column_letter(c_i)
+        ws[f"{c_l}{row_usd}"] = f"=IFERROR({c_l}{row_tot}/$F$2,0)"
+        ws[f"{c_l}{row_usd}"].number_format = "#,##0.00"
+        ws[f"{c_l}{row_usd}"].alignment = align_right
+    for c_i in range(2, col_idx_notas + 1):
+        c_l = get_column_letter(c_i)
+        ws[f"{c_l}{row_usd}"].font = f_usd
+        ws[f"{c_l}{row_usd}"].fill = fill_usd
+        ws[f"{c_l}{row_usd}"].border = border_closing
+
+    # Anchos de columna
+    ws.column_dimensions["A"].width = 3
+    ws.column_dimensions["B"].width = 32
+    ws.column_dimensions["C"].width = 12
+    ws.column_dimensions["D"].width = 15
+    for i_c in range(len(cols_pago)):
+        ws.column_dimensions[get_column_letter(5 + i_c)].width = 14
+    ws.column_dimensions[let_pagado].width = 15
+    ws.column_dimensions[let_saldo].width = 15
+    ws.column_dimensions[let_notas].width = 24
+
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def parsear_cuadro_pagos_semanales(file_or_df, tc_default: float = 3.60) -> dict:
+    """
+    Lee e interpreta un archivo CSV o Excel (.xlsx) con el formato del Cuadro de Pagos Semanales
+    (como el compartido por el usuario) y retorna la estructura lista para guardarse en el proyecto.
+    """
+    rows = _rows_from_input(file_or_df)
+    if not rows:
+        return {}
+
+    header_idx = None
+    col_desc = 1
+    col_moneda = 2
+    col_total = 3
+    col_pagado = None
+    col_saldo = None
+    cols_semanas_map = {}  # {col_idx: nombre_col}
+
+    for r_i, row in enumerate(rows[:15]):
+        row_strs = [_clean_cell_str(c) for c in row]
+        row_low = [s.lower() for s in row_strs]
+        if any("descrip" in s for s in row_low) and any("adelanto" in s or "semana" in s for s in row_low):
+            header_idx = r_i
+            for c_i, s_l in enumerate(row_low):
+                if "descrip" in s_l:
+                    col_desc = c_i
+                elif "moneda" in s_l:
+                    col_moneda = c_i
+                elif s_l == "total":
+                    col_total = c_i
+                elif "adelanto" in s_l or "semana" in s_l:
+                    cols_semanas_map[c_i] = row_strs[c_i].strip().upper()
+                elif "pagado" in s_l:
+                    col_pagado = c_i
+                elif "saldo" in s_l:
+                    col_saldo = c_i
+            break
+
+    if header_idx is None:
+        return {}
+
+    # Determinar número de semanas
+    num_sem = 5
+    for c_name in cols_semanas_map.values():
+        m_s = re.search(r"SEMANA\s*(\d+)", c_name, re.IGNORECASE)
+        if m_s:
+            num_sem = max(num_sem, int(m_s.group(1)))
+
+    cols_pago = obtener_columnas_pago_semanal(num_sem)
+    cols_por_pagar = []
+
+    # Revisar la fila inmediatamente posterior al header por si dice "Por Pagar"
+    start_data_row = header_idx + 1
+    if start_data_row < len(rows):
+        next_row = rows[start_data_row]
+        has_por_pagar = False
+        for c_i, cell_v in enumerate(next_row):
+            s_v = _clean_cell_str(cell_v).lower()
+            if "por pagar" in s_v and c_i in cols_semanas_map:
+                cols_por_pagar.append(cols_semanas_map[c_i])
+                has_por_pagar = True
+        if has_por_pagar:
+            start_data_row += 1
+
+    filas_contratistas = []
+    fila_gestion = {"Descripcion": "Gestión y supervisión de obras", "Moneda": "Soles", "TOTAL": 0.0}
+    fila_gg = {"Descripcion": "Gastos Generales", "Moneda": "Soles", "TOTAL": 0.0}
+    tc_detected = tc_default
+    total_soles_val = 0.0
+
+    for r_i in range(start_data_row, len(rows)):
+        row = rows[r_i]
+        desc = _clean_cell_str(row[col_desc]) if col_desc < len(row) else ""
+        mon = _clean_cell_str(row[col_moneda]) if col_moneda < len(row) else "Soles"
+        tot_v, _ = _parse_number_or_pct(row[col_total] if col_total < len(row) else 0.0, 0.0)
+
+        desc_low = desc.lower()
+        mon_low = mon.lower()
+
+        if "trabajos contratistas" in desc_low:
+            continue
+        if desc_low in ["sub total", "subtotal"]:
+            continue
+
+        # Detectar fila de Dólares al final para inferir TC si aplica
+        if any(d in mon_low for d in ["dolar", "dólar", "usd"]) and (not desc or "total" in desc_low):
+            if tot_v > 0 and total_soles_val > 0:
+                tc_detected = round(total_soles_val / tot_v, 2)
+            continue
+
+        if desc_low == "total":
+            total_soles_val = tot_v
+            continue
+
+        if not desc and tot_v == 0.0:
+            continue
+
+        # Extraer notas en columnas posteriores a SALDO
+        notas_parts = []
+        start_notas_col = (col_saldo + 1) if col_saldo is not None else (max(cols_semanas_map.keys(), default=col_total) + 3)
+        for c_n in range(start_notas_col, len(row)):
+            s_n = _clean_cell_str(row[c_n])
+            if s_n:
+                notas_parts.append(s_n)
+        notas_str = " | ".join(notas_parts)
+
+        fila_dict = {
+            "Descripcion": desc,
+            "Moneda": mon or "Soles",
+            "TOTAL": round(tot_v, 2),
+            "Notas": notas_str,
+        }
+        for c_i, c_name in cols_semanas_map.items():
+            v_sem, _ = _parse_number_or_pct(row[c_i] if c_i < len(row) else 0.0, 0.0)
+            fila_dict[c_name] = round(v_sem, 2)
+
+        if any(k in desc_low for k in ["gestión", "gestion", "supervisión", "supervision", "utilidad"]):
+            fila_gestion = _normalizar_fila_pago(fila_dict, cols_pago, "Gestión y supervisión de obras")
+        elif "gastos generales" in desc_low:
+            fila_gg = _normalizar_fila_pago(fila_dict, cols_pago, "Gastos Generales")
+        else:
+            filas_contratistas.append(_normalizar_fila_pago(fila_dict, cols_pago, desc))
+
+    return {
+        "num_semanas": num_sem,
+        "tc": tc_detected if tc_detected > 0 else tc_default,
+        "cols_por_pagar": cols_por_pagar,
+        "filas_contratistas": filas_contratistas,
+        "fila_gestion": _normalizar_fila_pago(fila_gestion, cols_pago, "Gestión y supervisión de obras"),
+        "fila_gg": _normalizar_fila_pago(fila_gg, cols_pago, "Gastos Generales"),
+    }
+

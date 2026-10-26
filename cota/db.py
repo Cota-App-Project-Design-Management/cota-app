@@ -23,7 +23,7 @@ COLS_PROY = [
     'Archivado', 'Metodologia', 'Division', 'Tipo_Proyecto', 'Num_Pisos', 'Num_Sotanos',
     'Presupuesto_FFE', 'Honorarios_Diseno',
     'TC_Presupuesto', 'GG_Pct', 'Utilidades_Pct', 'Incluir_IGV',
-    'Link_Drive'
+    'Link_Drive', 'Pagos_Semanales_JSON'
 ]
 
 COLS_TASKS = [
@@ -376,6 +376,8 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
     if pestaña == 'proyectos':
         if 'Link_Drive' not in df.columns:
             df['Link_Drive'] = ""
+        if 'Pagos_Semanales_JSON' not in df.columns:
+            df['Pagos_Semanales_JSON'] = ""
 
     if pestaña == 'fases':
         mask_obsoletas = df['Fase'].astype(str).str.contains(r'ff&e|ffe|expediente t[eé]cnico', case=False, na=False)

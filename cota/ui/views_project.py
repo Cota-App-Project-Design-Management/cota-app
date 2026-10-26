@@ -44,13 +44,19 @@ from cota.cotizacion import (
     aplicar_cotizacion_a_proyecto,
     aplicar_edicion_tabla_presupuesto_partida,
     asegurar_estructura_presupuesto_proyecto,
+    calcular_resumen_cuadro_pagos_semanales,
+    exportar_cuadro_pagos_semanales_excel,
     exportar_proyecto_a_formato_venti,
     extraer_descripcion_tarea,
     generar_plantilla_cotizacion_venti,
+    guardar_cuadro_pagos_semanales_proyecto,
     guardar_parametros_presupuesto_proyecto,
     limpiar_nombre_partida,
+    obtener_columnas_pago_semanal,
+    obtener_cuadro_pagos_semanales_proyecto,
     obtener_parametros_presupuesto_proyecto,
     parsear_cotizacion_venti,
+    parsear_cuadro_pagos_semanales,
     recalcular_totales_presupuesto_proyecto,
     renombrar_partida_presupuesto,
 )
@@ -1204,10 +1210,313 @@ def _render_tab_obra(proy_name, proy_data):
                         st.info(f"**{row_s.get('Tarea')}**: {sug}")
 
 
+def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
+    """Renderiza el Cuadro de Pagos Semanales por Partida / Contratista y su exportación a Excel para el cliente."""
+    cliente_str = safe_str(proy_data.get("Cliente", "")).strip() or "Sin cliente asignado"
+    data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+
+    num_sem_actual = int(data_cuadro.get("num_semanas", 5) or 5)
+    tc_actual = float(data_cuadro.get("tc", 3.60) or 3.60)
+    cols_pago = obtener_columnas_pago_semanal(num_sem_actual)
+    cols_por_pagar_actual = [c for c in data_cuadro.get("cols_por_pagar", []) if c in cols_pago]
+
+    st.markdown("#### 📊 CUADRO DE PAGOS SEMANALES POR PARTIDA / CONTRATISTA")
+    st.caption(
+        f"**Proyecto:** {proy_name}  ·  **Cliente:** {cliente_str}  ·  "
+        "Control semanal de adelantos y valorizaciones por contratista/partida, listo para exportar a Excel para el cliente."
+    )
+
+    # Barra de configuración y acciones
+    c_cfg1, c_cfg2, c_cfg3 = st.columns([1.4, 1.4, 4.2])
+    with c_cfg1:
+        nuevo_num_sem = int(
+            st.number_input(
+                "N° de Semanas",
+                min_value=1,
+                max_value=30,
+                value=num_sem_actual,
+                step=1,
+                key=f"num_sem_pagos_{proy_name}",
+            )
+        )
+    with c_cfg2:
+        nuevo_tc = float(
+            st.number_input(
+                "TC (S/ por USD)",
+                min_value=0.10,
+                max_value=20.00,
+                value=round(tc_actual, 2),
+                step=0.05,
+                format="%.2f",
+                key=f"tc_pagos_{proy_name}",
+            )
+        )
+    with c_cfg3:
+         cols_opciones = obtener_columnas_pago_semanal(nuevo_num_sem)
+         default_pp = [c for c in cols_por_pagar_actual if c in cols_opciones]
+         nuevas_por_pagar = st.multiselect(
+            "⏳ Semanas / Columnas en estado 'Por Pagar' (no suman a PAGADO hasta desmarcarse):",
+            options=cols_opciones,
+            default=default_pp,
+            key=f"por_pagar_cols_{proy_name}",
+        )
+
+    # Si cambió la configuración superior, actualizar y persistir
+    if (
+        nuevo_num_sem != num_sem_actual
+        or abs(nuevo_tc - tc_actual) > 1e-4
+        or set(nuevas_por_pagar) != set(cols_por_pagar_actual)
+    ):
+        data_cuadro["num_semanas"] = nuevo_num_sem
+        data_cuadro["tc"] = round(nuevo_tc, 2)
+        data_cuadro["cols_por_pagar"] = list(nuevas_por_pagar)
+        guardar_cuadro_pagos_semanales_proyecto(proy_name, data_cuadro)
+        st.session_state.pop(f"base_df_pagos_cont_{proy_name}", None)
+        st.session_state.pop(f"base_df_pagos_ges_{proy_name}", None)
+        data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+        cols_pago = obtener_columnas_pago_semanal(nuevo_num_sem)
+        cols_por_pagar_actual = list(nuevas_por_pagar)
+
+    # Botonera de sincronización, importación y exportación Excel
+    b_act1, b_act2, b_act3 = st.columns([2.6, 2.4, 3.0])
+    with b_act1:
+        if st.button(
+            "🔄 Sincronizar Partidas con 03. Presupuesto",
+            key=f"btn_sync_pagos_{proy_name}",
+            use_container_width=True,
+            help="Trae o actualiza las partidas y montos totales desde la pestaña 03. Presupuesto sin perder los pagos semanales registrados.",
+        ):
+            data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name, sincronizar_partidas=True)
+            st.session_state.pop(f"base_df_pagos_cont_{proy_name}", None)
+            st.session_state.pop(f"base_df_pagos_ges_{proy_name}", None)
+            st.rerun()
+
+    with b_act2:
+        with st.popover("📤 Importar Cuadro (Excel / CSV)", use_container_width=True):
+            st.caption("Sube un archivo `.xlsx` o `.csv` con el cuadro de pagos semanales.")
+            up_pagos = st.file_uploader(
+                "Archivo de Pagos Semanales",
+                type=["xlsx", "xls", "csv"],
+                key=f"up_pagos_sem_{proy_name}",
+            )
+            if up_pagos is not None:
+                if st.button("✅ Cargar al Proyecto", key=f"btn_apply_up_pagos_{proy_name}", type="primary", use_container_width=True):
+                    parsed_p = parsear_cuadro_pagos_semanales(up_pagos, tc_default=nuevo_tc)
+                    if parsed_p and parsed_p.get("filas_contratistas"):
+                        guardar_cuadro_pagos_semanales_proyecto(proy_name, parsed_p)
+                        st.session_state.pop(f"base_df_pagos_cont_{proy_name}", None)
+                        st.session_state.pop(f"base_df_pagos_ges_{proy_name}", None)
+                        st.session_state.pop(f"num_sem_pagos_{proy_name}", None)
+                        st.session_state.pop(f"tc_pagos_{proy_name}", None)
+                        st.session_state.pop(f"por_pagar_cols_{proy_name}", None)
+                        st.success("Cuadro de pagos semanales importado correctamente.")
+                        st.rerun()
+                    else:
+                        st.error("No se detectó la estructura del cuadro de pagos en el archivo.")
+
+    with b_act3:
+        xlsx_bytes = exportar_cuadro_pagos_semanales_excel(proy_name, data_cuadro)
+        safe_fn = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in proy_name).strip("_") or "Proyecto"
+        st.download_button(
+            label="📥 EXPORTAR EXCEL PARA CLIENTE (.XLSX)",
+            data=xlsx_bytes,
+            file_name=f"Control_Pagos_Semanales_{safe_fn}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"dl_xlsx_pagos_{proy_name}",
+            type="primary",
+            use_container_width=True,
+        )
+
+    res_calc = calcular_resumen_cuadro_pagos_semanales(data_cuadro)
+    tot_soles = res_calc["total_soles"]
+    tot_usd = res_calc["total_dolares"]
+    sub_cont = res_calc["sub_total"]
+
+    # Tarjetas KPI del Cuadro de Pagos Semanales
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        render_metric_card(
+            "Total General (Soles)",
+            format_currency(tot_soles["TOTAL"]),
+            f"USD $ {tot_usd['TOTAL']:,.2f} · Contratistas: {format_currency(sub_cont['TOTAL'])}",
+        )
+    with k2:
+        pct_pag = (tot_soles["PAGADO"] / tot_soles["TOTAL"] * 100.0) if tot_soles["TOTAL"] > 0 else 0.0
+        render_metric_card(
+            "Total Pagado",
+            format_currency(tot_soles["PAGADO"]),
+            f"USD $ {tot_usd['PAGADO']:,.2f} ({pct_pag:.1f}% desembolsado)",
+            border_color="#4A7C59",
+            text_color="#4A7C59",
+        )
+    with k3:
+        lbl_pp = ", ".join(cols_por_pagar_actual) if cols_por_pagar_actual else "Ninguna semana marcada"
+        render_metric_card(
+            "Programado 'Por Pagar'",
+            format_currency(tot_soles["POR_PAGAR"]),
+            f"USD $ {tot_usd['POR_PAGAR']:,.2f} · {lbl_pp}",
+            border_color="#D98A2B",
+            text_color="#D98A2B",
+        )
+    with k4:
+        render_metric_card(
+            "Saldo Pendiente Total",
+            format_currency(tot_soles["SALDO"]),
+            f"USD $ {tot_usd['SALDO']:,.2f} (Total - Pagado)",
+            border_color="#C85A32",
+            text_color="#C85A32",
+        )
+
+    # Construcción de columnas del editor
+    ordered_cols = ["Descripcion", "Moneda", "TOTAL"] + cols_pago + ["PAGADO", "SALDO", "Notas"]
+
+    col_cfg_common = {
+        "Descripcion": st.column_config.TextColumn("Descripción / Partida", width="medium", required=True),
+        "Moneda": st.column_config.SelectboxColumn("Moneda", options=["Soles", "Dólares"], default="Soles", width="small"),
+        "TOTAL": st.column_config.NumberColumn("TOTAL", format="%.2f", width="small"),
+    }
+    for c_sem in cols_pago:
+        is_pp = c_sem in cols_por_pagar_actual
+        header_lbl = f"⏳ {c_sem} (Por Pagar)" if is_pp else c_sem
+        col_cfg_common[c_sem] = st.column_config.NumberColumn(
+            header_lbl,
+            format="%.2f",
+            width="small",
+            help="Marcada como 'Por Pagar' (no suma a PAGADO)" if is_pp else "Columna pagada (suma a PAGADO)",
+        )
+    col_cfg_common["PAGADO"] = st.column_config.NumberColumn("PAGADO ✓", format="%.2f", width="small", disabled=True)
+    col_cfg_common["SALDO"] = st.column_config.NumberColumn("SALDO", format="%.2f", width="small", disabled=True)
+    col_cfg_common["Notas"] = st.column_config.TextColumn("Notas", width="medium")
+
+    # 1. Editor de TRABAJOS CONTRATISTAS
+    st.markdown("##### 👷 TRABAJOS CONTRATISTAS")
+    df_cont_view = pd.DataFrame(res_calc["filas_contratistas"])
+    if df_cont_view.empty:
+        df_cont_view = pd.DataFrame(columns=ordered_cols)
+    else:
+        for c_o in ordered_cols:
+            if c_o not in df_cont_view.columns:
+                df_cont_view[c_o] = "" if c_o in ("Descripcion", "Moneda", "Notas") else 0.0
+        df_cont_view = df_cont_view[ordered_cols].copy()
+
+    base_cont_key = f"base_df_pagos_cont_{proy_name}"
+    cnt_cont_key = f"c_{base_cont_key}"
+    c_cont_val = st.session_state.get(cnt_cont_key, 0)
+    w_cont_key = f"ed_pagos_cont_{proy_name}_{c_cont_val}"
+
+    st.session_state[base_cont_key] = df_cont_view.copy()
+
+    def _on_edit_pagos_cont(b_key, w_key, p_name):
+        if w_key not in st.session_state or b_key not in st.session_state:
+            return
+        state_ed = st.session_state[w_key]
+        df_b = st.session_state[b_key].copy()
+        for r_idx_str, changes in state_ed.get("edited_rows", {}).items():
+            r_idx = int(r_idx_str)
+            if r_idx < len(df_b):
+                for col_k, val_k in changes.items():
+                    df_b.at[r_idx, col_k] = val_k
+        for del_idx in sorted(state_ed.get("deleted_rows", []), reverse=True):
+            if del_idx < len(df_b):
+                df_b = df_b.drop(df_b.index[del_idx]).reset_index(drop=True)
+        for add_r in state_ed.get("added_rows", []):
+            new_r = {c: ("" if c in ("Descripcion", "Notas") else ("Soles" if c == "Moneda" else 0.0)) for c in df_b.columns}
+            new_r.update(add_r)
+            if not str(new_r.get("Descripcion", "")).strip():
+                new_r["Descripcion"] = f"NUEVA PARTIDA {len(df_b) + 1}"
+            df_b = pd.concat([df_b, pd.DataFrame([new_r])], ignore_index=True)
+
+        d_cur = obtener_cuadro_pagos_semanales_proyecto(p_name)
+        d_cur["filas_contratistas"] = df_b.to_dict(orient="records")
+        guardar_cuadro_pagos_semanales_proyecto(p_name, d_cur)
+        st.session_state[cnt_cont_key] = st.session_state.get(cnt_cont_key, 0) + 1
+
+    st.data_editor(
+        st.session_state[base_cont_key],
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        key=w_cont_key,
+        column_config=col_cfg_common,
+        on_change=_on_edit_pagos_cont,
+        args=(base_cont_key, w_cont_key, proy_name),
+    )
+
+    # 2. Editor de GESTIÓN Y GASTOS GENERALES
+    st.markdown("##### 📐 GESTIÓN, SUPERVISIÓN Y GASTOS GENERALES")
+    df_ges_view = pd.DataFrame([res_calc["fila_gestion"], res_calc["fila_gg"]])[ordered_cols].copy()
+
+    base_ges_key = f"base_df_pagos_ges_{proy_name}"
+    cnt_ges_key = f"c_{base_ges_key}"
+    c_ges_val = st.session_state.get(cnt_ges_key, 0)
+    w_ges_key = f"ed_pagos_ges_{proy_name}_{c_ges_val}"
+
+    st.session_state[base_ges_key] = df_ges_view.copy()
+
+    col_cfg_ges = dict(col_cfg_common)
+    col_cfg_ges["Descripcion"] = st.column_config.TextColumn("Concepto", width="medium", disabled=True)
+
+    def _on_edit_pagos_ges(b_key, w_key, p_name):
+        if w_key not in st.session_state or b_key not in st.session_state:
+            return
+        state_ed = st.session_state[w_key]
+        df_b = st.session_state[b_key].copy()
+        for r_idx_str, changes in state_ed.get("edited_rows", {}).items():
+            r_idx = int(r_idx_str)
+            if r_idx < len(df_b):
+                for col_k, val_k in changes.items():
+                    df_b.at[r_idx, col_k] = val_k
+
+        d_cur = obtener_cuadro_pagos_semanales_proyecto(p_name)
+        if len(df_b) >= 1:
+            d_cur["fila_gestion"] = df_b.iloc[0].to_dict()
+        if len(df_b) >= 2:
+            d_cur["fila_gg"] = df_b.iloc[1].to_dict()
+        guardar_cuadro_pagos_semanales_proyecto(p_name, d_cur)
+        st.session_state[cnt_ges_key] = st.session_state.get(cnt_ges_key, 0) + 1
+
+    st.data_editor(
+        st.session_state[base_ges_key],
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        key=w_ges_key,
+        column_config=col_cfg_ges,
+        on_change=_on_edit_pagos_ges,
+        args=(base_ges_key, w_ges_key, proy_name),
+    )
+
+    # 3. Tabla de Resumen de Cierre (SUB TOTAL, Gestión, Gastos Generales, TOTAL Soles, Dólares)
+    st.markdown("##### 📋 RESUMEN DE CIERRE (SUB TOTAL · TOTAL SOLES · DÓLARES)")
+    filas_cierre = [
+        res_calc["sub_total"],
+        res_calc["fila_gestion"],
+        res_calc["fila_gg"],
+        res_calc["total_soles"],
+        res_calc["total_dolares"],
+    ]
+    df_cierre = pd.DataFrame(filas_cierre)[ordered_cols].copy()
+    col_cfg_cierre = dict(col_cfg_common)
+    col_cfg_cierre["Descripcion"] = st.column_config.TextColumn("Resumen", width="medium")
+    col_cfg_cierre["Moneda"] = st.column_config.TextColumn("Moneda", width="small")
+    st.dataframe(
+        df_cierre,
+        use_container_width=True,
+        hide_index=True,
+        column_config=col_cfg_cierre,
+    )
+
+
 def _render_tab_finanzas(proy_name, proy_data):
-    """Pestaña 6: Hitos de Cobro al Cliente, Flujo de Caja y Caja Chica."""
-    st.markdown("### 💰 PLAN DE COBROS AL CLIENTE Y FINANZAS")
-    st.caption("Control de cuentas por cobrar, hitos contractuales y liquidación financiera del proyecto.")
+    """Pestaña 6: Cuadro de Pagos Semanales por Partida/Contratista, Hitos de Cobro al Cliente y Caja Chica."""
+    st.markdown("### 💰 COBROS, PAGOS SEMANALES Y FINANZAS")
+    st.caption("Control de pagos semanales por partida/contratista (exportable a Excel para el cliente), hitos de cobro y caja chica.")
+
+    # 1. Cuadro de Pagos Semanales por Partida / Contratista
+    _render_cuadro_pagos_semanales(proy_name, proy_data)
+
+    st.divider()
+    st.markdown("#### 🧾 HITOS DE COBRO CONTRACTUAL AL CLIENTE")
 
     # Inicializar cobros si no existe
     if 'cobros' not in st.session_state:

@@ -566,6 +566,58 @@ def test_on_table_edit_missing_key_no_crash():
     on_table_edit("missing_base_key", "dummy_widget_key", "tasks")
 
 
+def test_cuadro_pagos_semanales_parse_calculo_y_excel():
+    import io
+    import streamlit as st
+    from cota.cotizacion import (
+        parsear_cuadro_pagos_semanales,
+        calcular_resumen_cuadro_pagos_semanales,
+        exportar_cuadro_pagos_semanales_excel,
+    )
+
+    csv_user = """ ,Proyecto:, , , , , , , , , , , , , 
+ ,Cliente:, , , , , , , , , , , , , 
+ , , , , , , , , , , , , , , 
+ ,Descripción,Moneda,TOTAL,ADELANTO 1,SEMANA 1,SEMANA 2,SEMANA 3,SEMANA 4,SEMANA 5,PAGADO,SALDO, , , 
+ , , , , , , , , ,Por Pagar, , , , , 
+ ,TRABAJOS CONTRATISTAS, , , , , , , , , , , , , 
+ ,OBRAS CIVILES,Soles,"10,915.00", ,"3,537.00","1,600.00","2,000.00", ,"3,778.00","7,137.00","3,778.00", , , 
+ ,INSTALACIONES E&S,Soles,"3,870.00", ,"1,655.00", ,"1,335.00", ,880.00,"2,990.00",880.00, , , 
+ ,CARPINTERÍA Y MOBILIARIO,Soles,"18,763.50","8,000.00", ,"5,381.75", , , ,"13,381.75","5,381.75", , , 
+ ,TABLERO DE PIEDRA,Soles,"5,192.50","1,192.50", , ,"2,500.00", , ,"3,692.50","1,500.00", , , 
+ ,PINTURA,Soles,"5,920.00", , ,"1,800.00","1,000.00","1,600.00", ,"4,400.00","1,520.00", , , 
+ ,TRABAJOS PRELIMINARES,Soles,"4,220.00", ,"2,532.00", ,"1,688.00", , ,"4,220.00",0.00, , , 
+ ,VIDRIOS,Soles,"1,620.00", , , , , ,"1,134.00",0.00,"1,620.00", , ,70% de adelanto de mampara y espejo
+ ,SUB TOTAL, ,"50,501.00","9,192.50","7,724.00","8,781.75","8,523.00","1,600.00","5,792.00","35,821.25","14,679.75", , , 
+ ,Gestión y supervisión de obras,Soles,"9,000.00", , , ,"1,000.00", , ,"1,000.00","8,000.00", , , 
+ ,Gastos Generales,Soles,0.00, , , , , , ,0.00,0.00, , , 
+ ,TOTAL,Soles,"59,501.00","9,192.50","7,724.00","8,781.75","9,523.00","1,600.00","5,792.00","36,821.25","22,679.75", , , 
+ , ,Dólares,"16,528.06","2,553.47","2,145.56","2,439.38","2,645.28",444.44,"1,608.89","10,228.13","6,299.93", , , 
+"""
+    st.session_state["proyectos"] = pd.DataFrame([
+        {"Nombre": "Proy Pagos Test", "Cliente": "Cliente Demo", "TC_Presupuesto": 3.60}
+    ])
+
+    parsed = parsear_cuadro_pagos_semanales(io.StringIO(csv_user), tc_default=3.60)
+    assert parsed["num_semanas"] == 5
+    assert "SEMANA 5" in parsed["cols_por_pagar"]
+    assert len(parsed["filas_contratistas"]) == 7
+
+    res = calcular_resumen_cuadro_pagos_semanales(parsed)
+    assert res["sub_total"]["TOTAL"] == 50501.00
+    assert res["sub_total"]["PAGADO"] == 35821.25
+    assert res["sub_total"]["SALDO"] == 14679.75
+    assert res["total_soles"]["TOTAL"] == 59501.00
+    assert res["total_soles"]["PAGADO"] == 36821.25
+    assert res["total_soles"]["SALDO"] == 22679.75
+    assert res["total_dolares"]["TOTAL"] == 16528.06
+
+    xlsx_bytes = exportar_cuadro_pagos_semanales_excel("Proy Pagos Test", parsed)
+    assert isinstance(xlsx_bytes, bytes)
+    assert xlsx_bytes[:4] == b"PK\x03\x04"
+
+
+
 
 
 
