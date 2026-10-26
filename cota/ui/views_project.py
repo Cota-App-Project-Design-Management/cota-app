@@ -45,6 +45,16 @@ from cota.db import (
     sembrar_fases_default,
     sincronizar_fases_proyecto,
 )
+import importlib
+import cota.cotizacion
+import cota.pdf
+try:
+    if not hasattr(cota.cotizacion, "reordenar_tareas_partida_por_indices") or not hasattr(cota.cotizacion, "obtener_pagado_por_partida_proyecto"):
+        importlib.reload(cota.cotizacion)
+    if not hasattr(cota.pdf, "generar_pdf_minuta"):
+        importlib.reload(cota.pdf)
+except Exception:
+    pass
 from cota.cotizacion import (
     ajustar_cantidad_partidas_proyecto,
     ajustar_cantidad_tareas_partida,

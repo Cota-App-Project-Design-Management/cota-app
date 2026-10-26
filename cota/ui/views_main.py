@@ -39,6 +39,13 @@ from cota.db import (
     sembrar_fases_default,
     sincronizar_fases_proyecto,
 )
+import importlib
+import cota.cotizacion
+try:
+    if not hasattr(cota.cotizacion, "aplicar_cotizacion_a_proyecto"):
+        importlib.reload(cota.cotizacion)
+except Exception:
+    pass
 from cota.cotizacion import (
     aplicar_cotizacion_a_proyecto,
     generar_plantilla_cotizacion_venti,

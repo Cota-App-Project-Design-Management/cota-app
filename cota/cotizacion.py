@@ -14,6 +14,8 @@ Permite:
    automáticas para compartirlo con el cliente.
 """
 
+from __future__ import annotations
+
 import datetime
 import io
 import json

@@ -22,6 +22,8 @@ except Exception:
 import cota.config
 import cota.utils
 import cota.db
+import cota.cotizacion
+import cota.pdf
 import cota.ui.styles
 import cota.ui.components
 import cota.ui.views_main
@@ -31,12 +33,17 @@ for _mod in (
     cota.config,
     cota.utils,
     cota.db,
+    cota.cotizacion,
+    cota.pdf,
     cota.ui.styles,
     cota.ui.components,
     cota.ui.views_main,
     cota.ui.views_project,
 ):
-    importlib.reload(_mod)
+    try:
+        importlib.reload(_mod)
+    except Exception:
+        pass
 
 from cota.config import (
     DEFAULT_APP_TITLE,
