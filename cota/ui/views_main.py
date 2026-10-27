@@ -377,9 +377,9 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 p_cliente = st.text_input("Nombre del Cliente", placeholder="ej. Familia Gómez")
                 p_color = st.color_picker("Color Identificador", value="#C85A32")
 
-                st.markdown("##### Fases Activas del Proyecto (Banco de Fases)")
+                st.markdown("##### Etapas de Diseño del Proyecto (02. Diseño)")
                 fases_sel_nuevo = st.multiselect(
-                    "Selecciona las fases que aplican a este proyecto:",
+                    "Selecciona las etapas de diseño (Moodboard, Planos, 3D, Renders) que aplican:",
                     options=[f for f in nombres_banco_all if "ff&e" not in f.lower() and "ffe" not in f.lower()],
                     default=[f for f in nombres_banco_def if "ff&e" not in f.lower() and "ffe" not in f.lower()],
                 )
@@ -692,17 +692,17 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                     p_nom = proy['Nombre']
                     ukey = f"{d_key}_{idx_p}"
 
-                    # Calcular avance de fases activas
+                    # Calcular avance de etapas de diseño activas
                     pct_avance = 0
-                    fase_actual_str = "Sin fases activas"
+                    fase_actual_str = "Sin etapas de diseño"
                     fases_activas_proy = []
                     if 'fases' in st.session_state and not st.session_state.fases.empty:
                         f_p = st.session_state.fases[st.session_state.fases['Proyecto'] == p_nom].sort_values(by='Orden')
                         if not f_p.empty:
                             fases_activas_proy = f_p['Fase'].tolist()
-                            ok_cnt = len(f_p[f_p['Aprobado_Cliente'].apply(to_bool) | (f_p['Estado'].astype(str).str.contains('Aprobada', case=False))])
+                            ok_cnt = len(f_p[f_p['Aprobado_Cliente'].apply(to_bool) | (f_p['Estado'].astype(str).str.contains('Aprob', case=False))])
                             pct_avance = int(ok_cnt / len(f_p) * 100)
-                            en_curso = f_p[~(f_p['Aprobado_Cliente'].apply(to_bool) | (f_p['Estado'].astype(str).str.contains('Aprobada', case=False)))]
+                            en_curso = f_p[~(f_p['Aprobado_Cliente'].apply(to_bool) | (f_p['Estado'].astype(str).str.contains('Aprob', case=False)))]
                             fase_actual_str = en_curso.iloc[0]['Fase'] if not en_curso.empty else f_p.iloc[-1]['Fase']
 
                     # Analizar tareas en proceso y widget inteligente de alertas (Foto 2)
@@ -737,7 +737,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                             f"<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px; font-size: 12.5px;'>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Ubicación</span><br><b style='color:#262320;'>{ubi_p}</b></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Cronograma</span><br><b style='color:#262320;'>{ini_p} → {fin_p}</b></div>"
-                            f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Fase Actual</span><br><b style='color:#C85A32;'>{fase_actual_str}</b></div>"
+                            f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Etapa Diseño</span><br><b style='color:#C85A32;'>{fase_actual_str}</b></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Tareas en Proceso</span><br><b style='color:#262320; font-family:monospace;'>{info_t['en_proceso']} en proceso</b> <span style='color:#6E665E; font-size:11px;'>({info_t['completadas']}/{info_t['total']} listas)</span></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Ppto. Contrato</span><br><b style='color:#262320; font-family:monospace;'>{format_currency(ppto_p)}</b></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Honorarios Diseño</span><br><b style='color:#4A7C59; font-family:monospace;'>{format_currency(hon_p)}</b></div>"
@@ -807,25 +807,25 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                         st.rerun()
 
                         with c_btn_fases:
-                            with st.popover("🗂️ FASES DEL PROYECTO", use_container_width=True):
-                                st.markdown("##### Banco de Fases")
-                                st.caption("Activa o desactiva las fases que corresponden a las características de este proyecto.")
+                            with st.popover("🎨 GESTIÓN DE DISEÑO", use_container_width=True):
+                                st.markdown("##### Etapas de Diseño (02. Diseño)")
+                                st.caption("Activa o desactiva las etapas de diseño (Moodboard, Plano Preliminar, 3D, Renders, Planos) de este proyecto.")
                                 with st.form(f"f_banco_fases_card_{ukey}"):
                                     opciones_f_card = list(dict.fromkeys(nombres_banco_all + fases_activas_proy))
                                     sel_f_card = st.multiselect(
-                                        "Fases activas:",
+                                        "Etapas de diseño activas:",
                                         options=opciones_f_card,
                                         default=fases_activas_proy if fases_activas_proy else nombres_banco_def,
                                     )
-                                    nueva_f_card = st.text_input("➕ Crear nueva fase en el banco (opcional):", placeholder="ej. 09. Licencias Municipales")
-                                    if st.form_submit_button("GUARDAR FASES DEL PROYECTO", type="primary", use_container_width=True):
+                                    nueva_f_card = st.text_input("➕ Crear nueva etapa de diseño (opcional):", placeholder="ej. 08. Renders Terraza")
+                                    if st.form_submit_button("GUARDAR ETAPAS DE DISEÑO", type="primary", use_container_width=True):
                                         fases_finales = list(sel_f_card)
                                         if nueva_f_card.strip():
                                             nf_obj = agregar_fase_banco(nueva_f_card.strip())
                                             if nf_obj["Fase"] not in fases_finales:
                                                 fases_finales.append(nf_obj["Fase"])
                                         sincronizar_fases_proyecto(p_nom, fases_finales, proy.get('Inicio'))
-                                        st.success("Fases del proyecto actualizadas.")
+                                        st.success("Etapas de diseño actualizadas.")
                                         st.rerun()
 
                         with c_btn3:

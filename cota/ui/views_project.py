@@ -16,12 +16,14 @@ import streamlit.components.v1 as components
 from cota.config import (
     AMBIENTES_DEFAULT,
     ESPECIALIDADES_DEFAULT,
+    ETAPAS_DISENO,
     PRIORIDADES_PUNCH,
     STATUS_COBROS,
     STATUS_FASES,
     STATUS_PUNCH,
     STATUS_TASKS,
     TIPOS_COBRO,
+    TIPOS_ENTREGABLE_DISENO,
     TIPOS_REUNION,
     UNIDADES_MEDIDA,
 )
@@ -32,6 +34,7 @@ from cota.db import (
     COLS_PAGOS,
     COLS_PUNCH,
     COLS_TASKS,
+    _normalizar_estado_diseno,
     _normalizar_supervisado,
     agregar_fase_banco,
     agregar_nota_chat_proyecto,
@@ -41,6 +44,7 @@ from cota.db import (
     obtener_catalogo_estudio,
     obtener_notas_chat_proyecto,
     on_table_edit,
+    registrar_cambio_diseno,
     sanitizar_fases_estudio,
     sembrar_fases_default,
     sincronizar_fases_proyecto,
@@ -158,7 +162,7 @@ def render_proyecto_view(proy_name):
     # Tabs especializadas del proyecto
     t_resumen, t_diseno, t_presupuesto, t_obra, t_finanzas, t_actas, t_observaciones = st.tabs([
         "01. RESUMEN",
-        "02. FASES DEL PROYECTO",
+        "02. DISEÑO",
         "03. PRESUPUESTO",
         "05. PARTIDAS Y TAREAS",
         "06. COBROS & FINANZAS",
@@ -220,10 +224,10 @@ def _render_tab_resumen(proy_name, proy_data):
     df_cobros_p = st.session_state.cobros[st.session_state.cobros['Proyecto'] == proy_name] if 'cobros' in st.session_state else pd.DataFrame()
     total_cobrado_cliente = pd.to_numeric(df_cobros_p['Monto_Cobrado'], errors='coerce').sum() if not df_cobros_p.empty else 0.0
 
-    # Avance en fases
+    # Avance en etapas de diseño
     fases_p = st.session_state.fases[st.session_state.fases['Proyecto'] == proy_name].sort_values(by='Orden')
     n_fases = len(fases_p)
-    n_fases_ok = len(fases_p[fases_p['Aprobado_Cliente'].apply(to_bool) | (fases_p['Estado'].astype(str).str.contains('Aprobada', case=False))])
+    n_fases_ok = len(fases_p[fases_p['Aprobado_Cliente'].apply(to_bool) | (fases_p['Estado'].astype(str).str.contains('Aprob', case=False))])
     pct_fases = (n_fases_ok / n_fases * 100) if n_fases > 0 else 0.0
 
     # Analizar tareas operativas
@@ -339,42 +343,49 @@ def _render_tab_resumen(proy_name, proy_data):
     with col_d2:
         ch_f1, ch_f2 = st.columns([6.2, 3.8])
         with ch_f1:
-            st.markdown(f"#### ESTADO DE LAS FASES ({n_fases} ACTIVAS)")
+            st.markdown(f"#### 🎨 GESTIÓN DEL DISEÑO ({n_fases} ETAPAS)")
         with ch_f2:
-            with st.popover("🗂️ BANCO DE FASES", use_container_width=True):
-                st.markdown("##### Activar / Desactivar Fases")
-                st.caption("Selecciona del banco las fases que aplican a las características de este proyecto.")
+            with st.popover("🎨 ETAPAS DE DISEÑO", use_container_width=True):
+                st.markdown("##### Activar / Desactivar Etapas de Diseño")
+                st.caption("Selecciona del banco las etapas de diseño (Moodboard, Planos, 3D, Renders) que aplican a este proyecto.")
                 with st.form(f"form_res_banco_fases_{proy_name}"):
                     opciones_res_f = list(dict.fromkeys(nombres_banco_all + fases_activas_actuales))
                     sel_res_f = st.multiselect(
-                        "Fases activas en este proyecto:",
+                        "Etapas de diseño activas:",
                         options=opciones_res_f,
                         default=fases_activas_actuales,
                     )
-                    nueva_f_res = st.text_input("➕ Nueva fase al Banco (opcional):", placeholder="ej. 09. Licencias Municipales")
-                    if st.form_submit_button("APLICAR FASES", type="primary", use_container_width=True):
+                    nueva_f_res = st.text_input("➕ Nueva etapa de diseño (opcional):", placeholder="ej. 08. Renders Nocturnos Terraza")
+                    if st.form_submit_button("APLICAR ETAPAS DE DISEÑO", type="primary", use_container_width=True):
                         fases_aplicar = list(sel_res_f)
                         if nueva_f_res.strip():
                             nf = agregar_fase_banco(nueva_f_res.strip())
                             if nf["Fase"] not in fases_aplicar:
                                 fases_aplicar.append(nf["Fase"])
                         sincronizar_fases_proyecto(proy_name, fases_aplicar, proy_data.get('Inicio'))
-                        st.success("Fases del proyecto actualizadas.")
+                        st.success("Etapas de diseño actualizadas.")
                         st.rerun()
 
         if not fases_p.empty:
             fases_items = []
             for _, fr in fases_p.iterrows():
-                est_f = str(fr.get('Estado', '⚪ No iniciada'))
-                aprob = to_bool(fr.get('Aprobado_Cliente', False)) or ('Aprobada' in est_f)
+                est_f = _normalizar_estado_diseno(fr.get('Estado', '⚪ Pendiente'))
+                aprob = to_bool(fr.get('Aprobado_Cliente', False)) or ('aprob' in est_f.lower())
                 av_pct = int(safe_float(fr.get('Avance_Pct', 100 if aprob else 0)))
+                cambios_n = int(safe_float(fr.get('Cambios_Realizados', 0)))
+                ult_c_str = format_date(fr.get('Fecha_Ultimo_Cambio', ''))
                 col_bar = "#4A7C59" if aprob else ("#C85A32" if av_pct > 0 else "#DFD9CE")
-                badge_txt = "✓ Aprobada" if aprob else est_f
+                badge_txt = "🟢 Aprobado" if aprob else est_f
+                cambios_badge = (
+                    f" · <span style='color:#C85A32; font-weight:700;'>🔄 {cambios_n} cambio(s){f' ({ult_c_str})' if ult_c_str else ''}</span>"
+                    if cambios_n > 0
+                    else ""
+                )
                 fases_items.append(
                     f"<div style='padding:7px 12px; border-bottom:1px solid #EFECE6;'>"
                     f"<div style='display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:4px;'>"
                     f"<span style='color:#262320; font-weight:600;'>{fr.get('Fase', '')}</span>"
-                    f"<span style='color:#6E665E; font-family:monospace; font-size:11.5px;'>{badge_txt} ({av_pct}%)</span>"
+                    f"<span style='color:#6E665E; font-family:monospace; font-size:11.5px;'>{badge_txt} ({av_pct}%){cambios_badge}</span>"
                     f"</div>"
                     f"<div style='background:#EFECE6; border-radius:4px; height:5px; overflow:hidden;'>"
                     f"<div style='background:{col_bar}; width:{max(0, min(100, av_pct))}%; height:100%;'></div>"
@@ -385,15 +396,18 @@ def _render_tab_resumen(proy_name, proy_data):
                 unsafe_allow_html=True
             )
         else:
-            st.info("No hay fases activas para este proyecto. Usa el botón '🗂️ BANCO DE FASES' para activar las que correspondan.")
+            st.info("No hay etapas de diseño activas para este proyecto. Usa el botón '🎨 ETAPAS DE DISEÑO' para activar las que correspondan.")
 
 
 def _render_tab_fases(proy_name, proy_data):
-    """Pestaña 2: Fases del Proyecto, Banco de Fases configurable, cronograma y presentación en Drive."""
-    st.markdown("### 🗂️ 02. FASES DEL PROYECTO Y PRESENTACIÓN")
-    st.caption("Fases del proyecto, avance porcentual editable, cronograma Gantt y conexión directa con la presentación en Google Drive / Slides.")
+    """Pestaña 2: Gestión exclusiva del Diseño (02. Diseño) — Drive vinculado, Moodboard, Plano Preliminar, 3D, Renders y Conteo de Cambios por Fecha."""
+    st.markdown("### 🎨 02. DISEÑO — GESTIÓN DE PLANOS, RENDERS Y 3D")
+    st.caption(
+        "Gestión exclusiva del proceso de diseño: Moodboard, Plano Preliminar, Modelado 3D, Renders y Planos Técnicos, "
+        "conteo de cambios realizados por fecha y acceso directo al diseño vinculado en Google Drive."
+    )
 
-    # Conectar con la presentación de diseño en Google Drive / Slides / Figma
+    # 1. Conectar con la presentación / carpeta de diseño en Google Drive / Slides / Figma (manteniendo lo existente)
     drive_link = safe_str(proy_data.get('Link_Drive', '')).strip()
     c_drive1, c_drive2 = st.columns([6.8, 3.2])
     with c_drive1:
@@ -446,21 +460,114 @@ def _render_tab_fases(proy_name, proy_data):
                         clear_base_dfs()
                         st.rerun()
 
+    # Preparar datos de etapas de diseño y bitácora de entregables / cambios por fecha
     fases_df = st.session_state.fases[st.session_state.fases['Proyecto'] == proy_name].copy()
-    fases_df = fases_df.sort_values(by='Orden')
+    for c_req in COLS_FASES:
+        if c_req not in fases_df.columns:
+            fases_df[c_req] = 0 if c_req in ('Orden', 'Avance_Pct', 'Cambios_Realizados') else (False if c_req == 'Aprobado_Cliente' else "")
+    fases_df['Estado'] = fases_df['Estado'].apply(_normalizar_estado_diseno)
+    fases_df['Cambios_Realizados'] = pd.to_numeric(fases_df['Cambios_Realizados'], errors='coerce').fillna(0).astype(int)
+    fases_df = fases_df.sort_values(by='Orden').reset_index(drop=True)
     fases_activas_actuales = fases_df['Fase'].tolist() if not fases_df.empty else []
+
+    if 'entregables_planos' not in st.session_state or not isinstance(st.session_state.entregables_planos, pd.DataFrame):
+        st.session_state.entregables_planos = pd.DataFrame(columns=COLS_ENTREGABLES)
+    for c_ent in COLS_ENTREGABLES:
+        if c_ent not in st.session_state.entregables_planos.columns:
+            st.session_state.entregables_planos[c_ent] = 0 if c_ent == 'Nro_Cambios' else ""
+    df_ent_proy = st.session_state.entregables_planos[st.session_state.entregables_planos['Proyecto'] == proy_name].copy()
+    if not df_ent_proy.empty:
+        df_ent_proy['Estado'] = df_ent_proy['Estado'].apply(_normalizar_estado_diseno)
+        df_ent_proy['Nro_Cambios'] = pd.to_numeric(df_ent_proy['Nro_Cambios'], errors='coerce').fillna(0).astype(int)
+
+    # 2. Métricas ejecutivas de Gestión del Diseño (Moodboard, Plano Preliminar, 3D/Renders y Conteo de Cambios)
+    n_etapas_tot = len(fases_df)
+    n_etapas_aprob = int(
+        (fases_df['Aprobado_Cliente'].apply(to_bool) | fases_df['Estado'].astype(str).str.contains('Aprob', case=False, na=False)).sum()
+    ) if not fases_df.empty else 0
+    pct_diseno = (n_etapas_aprob / n_etapas_tot * 100.0) if n_etapas_tot > 0 else 0.0
+
+    def _buscar_estado_etapa(patron: str) -> str:
+        if fases_df.empty:
+            return "Sin activar"
+        m = fases_df[fases_df['Fase'].astype(str).str.contains(patron, case=False, na=False)]
+        if m.empty:
+            return "Sin activar"
+        r0 = m.iloc[0]
+        if to_bool(r0.get('Aprobado_Cliente', False)) or 'aprob' in str(r0.get('Estado', '')).lower():
+            return "🟢 Aprobado"
+        return str(r0.get('Estado', '⚪ Pendiente'))
+
+    est_moodboard = _buscar_estado_etapa(r"moodboard|concepto")
+    est_preliminar = _buscar_estado_etapa(r"preliminar|distribuci[oó]n|anteproyecto")
+    est_3d_render = _buscar_estado_etapa(r"3d|render")
+
+    cambios_en_fases = int(fases_df['Cambios_Realizados'].sum()) if not fases_df.empty else 0
+    cambios_en_bitacora = int(df_ent_proy['Nro_Cambios'].sum()) if not df_ent_proy.empty else 0
+    total_cambios_diseno = max(cambios_en_fases, cambios_en_bitacora)
+
+    fechas_cambio_disp = []
+    if not fases_df.empty:
+        for fc in fases_df['Fecha_Ultimo_Cambio'].tolist():
+            d_fc = parse_date(fc)
+            if d_fc:
+                fechas_cambio_disp.append(d_fc)
+    if not df_ent_proy.empty:
+        for fc in df_ent_proy['Fecha_Cambio'].tolist():
+            d_fc = parse_date(fc)
+            if d_fc:
+                fechas_cambio_disp.append(d_fc)
+    ult_fecha_cambio_str = max(fechas_cambio_disp).strftime("%d/%m/%Y") if fechas_cambio_disp else "Sin cambios"
+
+    kd1, kd2, kd3, kd4 = st.columns(4)
+    with kd1:
+        render_metric_card(
+            "Avance de Diseño",
+            f"{pct_diseno:.0f}%",
+            f"{n_etapas_aprob} de {n_etapas_tot} etapas aprobadas",
+            border_color="#4A7C59" if pct_diseno >= 100 else "#C85A32",
+            text_color="#4A7C59" if pct_diseno >= 100 else "#C85A32",
+        )
+    with kd2:
+        est_mb_clean = est_moodboard.split(" ", 1)[-1] if " " in est_moodboard else est_moodboard
+        render_metric_card(
+            "Moodboard & Preliminar",
+            est_mb_clean,
+            f"Plano Preliminar: {est_preliminar}",
+            border_color="#4A7C59" if "Aprobado" in est_moodboard and "Aprobado" in est_preliminar else "#D98A2B",
+            text_color="#262320",
+        )
+    with kd3:
+        tot_ent_p = len(df_ent_proy)
+        aprob_ent_p = int(df_ent_proy['Estado'].astype(str).str.contains('Aprob', case=False, na=False).sum()) if not df_ent_proy.empty else 0
+        est_3d_clean = est_3d_render.split(" ", 1)[-1] if " " in est_3d_render else est_3d_render
+        render_metric_card(
+            "Planos, Renders & 3D",
+            est_3d_clean,
+            f"{aprob_ent_p}/{tot_ent_p} entregables aprobados",
+            border_color="#262320",
+            text_color="#262320",
+        )
+    with kd4:
+        render_metric_card(
+            "Cambios Realizados",
+            f"{total_cambios_diseno} cambio(s)",
+            f"Último cambio: {ult_fecha_cambio_str}",
+            border_color="#C85A32" if total_cambios_diseno > 0 else "#4A7C59",
+            text_color="#C85A32" if total_cambios_diseno > 0 else "#4A7C59",
+        )
 
     banco_fases = obtener_banco_fases()
     nombres_banco = [f["Fase"] for f in banco_fases]
     todas_opciones_fases = list(dict.fromkeys(nombres_banco + fases_activas_actuales))
 
-    # Banco de Fases del Estudio: activar/desactivar por proyecto + agregar al banco
-    with st.expander("🗂️ BANCO DE FASES — Activar / Desactivar Fases para este Proyecto", expanded=False):
+    # 3. Banco de Etapas de Diseño: activar/desactivar por proyecto + agregar al banco
+    with st.expander("🎨 CONFIGURAR ETAPAS DE DISEÑO — Activar / Desactivar o Crear Etapas", expanded=False):
         cb_left, cb_right = st.columns([6.5, 3.5])
         with cb_left:
             with st.form(f"form_tab_fases_banco_{proy_name}"):
-                st.markdown("##### Selecciona las Fases Activas del Proyecto")
-                st.caption("Marca únicamente las fases que aplican a este proyecto. Los datos de avance de las fases que ya estaban activas se conservarán.")
+                st.markdown("##### Selecciona las Etapas de Diseño del Proyecto")
+                st.caption("Marca las etapas de diseño (Moodboard, Plano Preliminar, Modelado 3D, Renders, Planos) que aplican a este proyecto. Se conservarán los avances y cambios registrados.")
                 checks_seleccionados = []
                 cols_chk = st.columns(2)
                 for idx_f, nom_f in enumerate(todas_opciones_fases):
@@ -469,28 +576,28 @@ def _render_tab_fases(proy_name, proy_data):
                     if col_c.checkbox(nom_f, value=activo_actual, key=f"chk_bf_{proy_name}_{idx_f}"):
                         checks_seleccionados.append(nom_f)
 
-                if st.form_submit_button("💾 ACTUALIZAR FASES ACTIVAS DEL PROYECTO", type="primary", use_container_width=True):
+                if st.form_submit_button("💾 ACTUALIZAR ETAPAS DE DISEÑO", type="primary", use_container_width=True):
                     sincronizar_fases_proyecto(proy_name, checks_seleccionados, proy_data.get('Inicio'))
-                    st.success(f"Fases actualizadas ({len(checks_seleccionados)} fases activas en '{proy_name}').")
+                    st.success(f"Etapas de diseño actualizadas ({len(checks_seleccionados)} activas en '{proy_name}').")
                     st.rerun()
 
         with cb_right:
             with st.form(f"form_nueva_fase_banco_{proy_name}", clear_on_submit=True):
-                st.markdown("##### ➕ Agregar Fase al Banco")
-                st.caption("Crea una nueva fase en el catálogo del estudio.")
-                nf_nombre = st.text_input("Nombre de la Fase", placeholder="ej. 09. Licencias Municipales")
-                nf_etapa = st.selectbox("Etapa", ["Conceptual", "Diseño", "Documentación", "Adquisiciones", "Construcción", "Cierre"])
-                nf_dias = st.number_input("Duración estimada (días)", min_value=1, max_value=365, value=10)
+                st.markdown("##### ➕ Nueva Etapa de Diseño")
+                st.caption("Agrega una etapa personalizada al banco de diseño del estudio.")
+                nf_nombre = st.text_input("Nombre de la Etapa", placeholder="ej. 08. Renders Nocturnos Terraza")
+                nf_etapa = st.selectbox("Categoría de Diseño", ETAPAS_DISENO)
+                nf_dias = st.number_input("Duración estimada (días)", min_value=1, max_value=365, value=7)
                 nf_activar = st.checkbox("Activar inmediatamente en este proyecto", value=True)
-                if st.form_submit_button("AGREGAR AL BANCO", use_container_width=True) and nf_nombre.strip():
+                if st.form_submit_button("AGREGAR ETAPA DE DISEÑO", use_container_width=True) and nf_nombre.strip():
                     nueva_f = agregar_fase_banco(nf_nombre.strip(), etapa=nf_etapa, dias=int(nf_dias))
                     if nf_activar:
                         nuevas_act = list(dict.fromkeys(fases_activas_actuales + [nueva_f["Fase"]]))
                         sincronizar_fases_proyecto(proy_name, nuevas_act, proy_data.get('Inicio'))
-                    st.success(f"Fase '{nueva_f['Fase']}' añadida al Banco de Fases.")
+                    st.success(f"Etapa '{nueva_f['Fase']}' añadida al Banco de Diseño.")
                     st.rerun()
 
-    # Gantt interactivo de Fases
+    # 4. Cronograma Gantt de Etapas de Diseño
     df_chart = fases_df.copy()
     df_chart['Inicio_DT'] = df_chart['Inicio'].apply(lambda x: pd.to_datetime(parse_date(x)))
     df_chart['Fin_DT'] = df_chart['Fin'].apply(lambda x: pd.to_datetime(parse_date(x)))
@@ -502,31 +609,53 @@ def _render_tab_fases(proy_name, proy_data):
 
         color_scale = alt.Scale(
             domain=STATUS_FASES,
-            range=['#9A9187', '#D98A2B', '#C85A32', '#4A7C59']
+            range=['#9A9187', '#D98A2B', '#3B82F6', '#C85A32', '#4A7C59']
         )
 
         chart_fases = alt.Chart(df_chart).mark_bar(cornerRadius=4, height=18).encode(
-            x=alt.X('Inicio_DT:T', title='Cronograma de Diseño', axis=alt.Axis(gridColor='#DFD9CE', domainColor='#DFD9CE', labelColor='#6E665E', titleColor='#262320', format='%d %b')),
+            x=alt.X('Inicio_DT:T', title='Cronograma de Gestión del Diseño', axis=alt.Axis(gridColor='#DFD9CE', domainColor='#DFD9CE', labelColor='#6E665E', titleColor='#262320', format='%d %b')),
             x2='Fin_DT:T',
-            y=alt.Y('Fase:N', sort=alt.SortField(field='Orden', order='ascending'), title='', axis=alt.Axis(labelColor='#262320', labelFontWeight='bold', labelLimit=240)),
-            color=alt.Color('Estado:N', scale=color_scale, legend=alt.Legend(title="Estado de Fase", orient="top", labelColor='#262320', titleColor='#6E665E')),
-            tooltip=['Fase', 'Etapa', 'Estado', 'Responsable', alt.Tooltip('Avance_Pct:Q', title='Avance %')]
-        ).properties(height=290).configure_view(strokeOpacity=0).configure_axis(grid=True)
+            y=alt.Y('Fase:N', sort=alt.SortField(field='Orden', order='ascending'), title='', axis=alt.Axis(labelColor='#262320', labelFontWeight='bold', labelLimit=250)),
+            color=alt.Color('Estado:N', scale=color_scale, legend=alt.Legend(title="Estado de Diseño", orient="top", labelColor='#262320', titleColor='#6E665E')),
+            tooltip=[
+                alt.Tooltip('Fase:N', title='Etapa de Diseño'),
+                alt.Tooltip('Etapa:N', title='Categoría'),
+                alt.Tooltip('Estado:N', title='Estado'),
+                alt.Tooltip('Avance_Pct:Q', title='Avance %'),
+                alt.Tooltip('Cambios_Realizados:Q', title='N° Cambios'),
+                alt.Tooltip('Fecha_Ultimo_Cambio:N', title='Último Cambio'),
+                alt.Tooltip('Responsable:N', title='Responsable'),
+            ]
+        ).properties(height=max(210, min(320, len(df_chart) * 36 + 50))).configure_view(strokeOpacity=0).configure_axis(grid=True)
 
         st.altair_chart(chart_fases, use_container_width=True)
 
     st.divider()
-    st.markdown("#### EDITOR DE FASES ACTIVAS Y APROBACIÓN DEL CLIENTE")
+
+    # 5. Tabla Editable de Etapas de Diseño (Moodboard, Plano Preliminar, 3D, Renders, Planos) + Conteo de Cambios
+    st.markdown("#### 🎨 ETAPAS DE DISEÑO, APROBACIONES Y CONTEO DE CAMBIOS")
+    st.caption(
+        "Controla el estado de cada etapa (Moodboard, Plano Preliminar, Modelado 3D, Renders y Planos), "
+        "si está **Aprobado** o **En proceso**, el **conteo de cambios realizados** y la **fecha del último cambio**."
+    )
 
     base_fases_key = f"base_df_fases_{proy_name}"
     counter_key = f"c_{base_fases_key}"
     c_val = st.session_state.get(counter_key, 0)
     w_key = f"ed_fases_{proy_name}_{c_val}"
 
-    display_fases = fases_df[['ID', 'Orden', 'Fase', 'Etapa', 'Inicio', 'Fin', 'Estado', 'Avance_Pct', 'Responsable', 'Aprobado_Cliente', 'Notas']].copy()
+    opciones_etapa_col = list(dict.fromkeys(ETAPAS_DISENO + [str(e) for e in fases_df['Etapa'].dropna().unique().tolist() if str(e).strip()]))
+
+    display_fases = fases_df[[
+        'ID', 'Orden', 'Fase', 'Etapa', 'Estado', 'Avance_Pct',
+        'Cambios_Realizados', 'Fecha_Ultimo_Cambio', 'Inicio', 'Fin',
+        'Aprobado_Cliente', 'Responsable', 'Notas'
+    ]].copy()
     display_fases['Inicio'] = display_fases['Inicio'].apply(lambda x: parse_date(x))
     display_fases['Fin'] = display_fases['Fin'].apply(lambda x: parse_date(x))
+    display_fases['Fecha_Ultimo_Cambio'] = display_fases['Fecha_Ultimo_Cambio'].apply(lambda x: parse_date(x))
     display_fases['Avance_Pct'] = pd.to_numeric(display_fases['Avance_Pct'], errors='coerce').fillna(0).astype(int)
+    display_fases['Cambios_Realizados'] = pd.to_numeric(display_fases['Cambios_Realizados'], errors='coerce').fillna(0).astype(int)
     display_fases['Aprobado_Cliente'] = display_fases['Aprobado_Cliente'].apply(to_bool)
 
     st.session_state[base_fases_key] = display_fases.copy()
@@ -540,15 +669,17 @@ def _render_tab_fases(proy_name, proy_data):
         column_config={
             "ID": None,
             "Orden": st.column_config.NumberColumn("N°", width="small"),
-            "Fase": st.column_config.TextColumn("Fase del Proyecto", width="large", required=True),
-            "Etapa": st.column_config.SelectboxColumn("Etapa", options=["Conceptual", "Diseño", "Documentación", "Adquisiciones", "Construcción", "Cierre"]),
-            "Inicio": st.column_config.DateColumn("Inicio", format="DD/MM/YYYY"),
-            "Fin": st.column_config.DateColumn("Fin", format="DD/MM/YYYY"),
-            "Estado": st.column_config.SelectboxColumn("Estado", options=STATUS_FASES),
-            "Avance_Pct": st.column_config.NumberColumn("Avance %", min_value=0, max_value=100, step=5, format="%d%%", width="small", help="Edita directamente el porcentaje de avance de la fase (0 a 100%)."),
-            "Aprobado_Cliente": st.column_config.CheckboxColumn("Aprobado Cliente"),
-            "Responsable": st.column_config.TextColumn("Responsable"),
-            "Notas": st.column_config.TextColumn("Notas / Entregable Clave")
+            "Fase": st.column_config.TextColumn("Etapa de Diseño (Moodboard, Planos, 3D, Render)", width="large", required=True),
+            "Etapa": st.column_config.SelectboxColumn("Categoría", options=opciones_etapa_col, width="small"),
+            "Estado": st.column_config.SelectboxColumn("Estado", options=STATUS_FASES, width="medium"),
+            "Avance_Pct": st.column_config.NumberColumn("Avance %", min_value=0, max_value=100, step=5, format="%d%%", width="small"),
+            "Cambios_Realizados": st.column_config.NumberColumn("N° Cambios", min_value=0, max_value=100, step=1, format="%d", width="small", help="Cantidad de cambios realizados en esta etapa de diseño."),
+            "Fecha_Ultimo_Cambio": st.column_config.DateColumn("Último Cambio", format="DD/MM/YYYY", width="small", help="Fecha en que se realizó el último cambio de esta etapa."),
+            "Inicio": st.column_config.DateColumn("Inicio", format="DD/MM/YYYY", width="small"),
+            "Fin": st.column_config.DateColumn("Entrega", format="DD/MM/YYYY", width="small"),
+            "Aprobado_Cliente": st.column_config.CheckboxColumn("Aprobado", width="small"),
+            "Responsable": st.column_config.TextColumn("Responsable", width="small"),
+            "Notas": st.column_config.TextColumn("Notas / Observaciones de Diseño", width="medium"),
         },
         on_change=on_table_edit,
         args=(
@@ -557,10 +688,166 @@ def _render_tab_fases(proy_name, proy_data):
             'fases',
             ['Proyecto'],
             [proy_name],
-            ['Inicio', 'Fin'],
+            ['Inicio', 'Fin', 'Fecha_Ultimo_Cambio'],
             ['Fase', 'Etapa', 'Estado', 'Responsable', 'Notas'],
             ['Aprobado_Cliente'],
-            ['Orden', 'Avance_Pct'],
+            ['Orden', 'Avance_Pct', 'Cambios_Realizados'],
+            'ID'
+        )
+    )
+
+    st.divider()
+
+    # 6. Bitácora y Control Detallado de Cambios por Fecha: Planos, Renders, 3D y Moodboard
+    c_bit_tit, c_bit_btn, c_bit_fil = st.columns([4.6, 3.0, 2.4])
+    with c_bit_tit:
+        st.markdown("#### 📐 CONTROL DE CAMBIOS POR FECHA — PLANOS, RENDERS Y 3D")
+        st.caption("Registra cada cambio o versión de planos preliminares, detalles, modelado 3D y renders indicando la fecha exacta y el conteo de cambios.")
+
+    opciones_fases_select = fases_activas_actuales if fases_activas_actuales else [f["Fase"] for f in banco_fases]
+    socios_disp_dis = obtener_catalogo_estudio("socios") or ["Alvaro", "Socio 1", "Socio 2"]
+
+    with c_bit_btn:
+        st.markdown("<div style='padding-top: 6px;'></div>", unsafe_allow_html=True)
+        with st.popover("➕ REGISTRAR CAMBIO / ENTREGABLE", use_container_width=True):
+            with st.form(f"f_new_cambio_diseno_{proy_name}", clear_on_submit=True):
+                st.markdown("##### Registrar Cambio o Entregable de Diseño")
+                cd_fase = st.selectbox("Etapa de Diseño vinculada", opciones_fases_select)
+                cd_tipo = st.selectbox("Tipo (Plano / Render / 3D / Moodboard)", TIPOS_ENTREGABLE_DISENO)
+                cd_nom = st.text_input("Plano / Vista 3D / Ambiente", placeholder="ej. Plano Preliminar Cocina / Render Sala Vista 1")
+                col_c1, col_c2 = st.columns(2)
+                cd_fecha = col_c1.date_input("Fecha del Cambio / Revisión", value=datetime.date.today())
+                cd_ncambios = col_c2.number_input("N° de Cambios realizados", min_value=0, max_value=50, value=1, step=1)
+                col_c3, col_c4 = st.columns(2)
+                cd_est = col_c3.selectbox("Estado", STATUS_FASES, index=1)
+                cd_resp = col_c4.selectbox("Responsable", socios_disp_dis)
+                cd_det = st.text_area("Detalle del cambio realizado / solicitado", height=72, placeholder="ej. Cambio de ubicación de isla y ajuste de materiales en 3D...")
+                cd_link = st.text_input("Enlace a Plano / Render en Drive (opcional)", placeholder="https://drive.google.com/...")
+
+                if st.form_submit_button("GUARDAR CAMBIO DE DISEÑO", type="primary", use_container_width=True):
+                    if not cd_nom.strip():
+                        st.error("Indica el nombre del plano, render, vista 3D o ambiente.")
+                    else:
+                        registrar_cambio_diseno(
+                            proy_name=proy_name,
+                            fase_diseno=cd_fase,
+                            tipo_entregable=cd_tipo,
+                            nombre_entregable=cd_nom.strip(),
+                            fecha_cambio=cd_fecha,
+                            detalle_cambio=cd_det.strip(),
+                            estado=cd_est,
+                            responsable=cd_resp,
+                            nro_cambios=int(cd_ncambios),
+                            link=cd_link.strip(),
+                        )
+                        st.success("Cambio registrado y conteo actualizado en la etapa de diseño.")
+                        st.rerun()
+
+    with c_bit_fil:
+        filtro_cat_ent = st.selectbox(
+            "Filtrar por tipo:",
+            options=["🌐 Todos (Planos, 3D, Renders, Moodboard)"] + TIPOS_ENTREGABLE_DISENO,
+            index=0,
+            key=f"fil_tipo_diseno_{proy_name}",
+        )
+
+    # Resumen visual de conteo de cambios agrupados por fecha y por etapa
+    fechas_resumen = {}
+    if not df_ent_proy.empty:
+        for _, r_e in df_ent_proy.iterrows():
+            f_str = format_date(r_e.get('Fecha_Cambio') or r_e.get('Fecha_Limite'), default="Sin fecha")
+            n_c = max(1, int(safe_float(r_e.get('Nro_Cambios', 1), 1)))
+            nom_e = safe_str(r_e.get('Nombre_Entregable', 'Diseño'))
+            entry = fechas_resumen.setdefault(f_str, {"cambios": 0, "items": []})
+            entry["cambios"] += n_c
+            if nom_e and nom_e not in entry["items"]:
+                entry["items"].append(nom_e)
+    elif not fases_df.empty:
+        for _, r_f in fases_df[fases_df['Cambios_Realizados'] > 0].iterrows():
+            f_str = format_date(r_f.get('Fecha_Ultimo_Cambio'), default="Fecha reciente")
+            n_c = int(r_f.get('Cambios_Realizados', 0))
+            nom_f = safe_str(r_f.get('Fase', ''))
+            entry = fechas_resumen.setdefault(f_str, {"cambios": 0, "items": []})
+            entry["cambios"] += n_c
+            if nom_f and nom_f not in entry["items"]:
+                entry["items"].append(nom_f)
+
+    if fechas_resumen:
+        pills_fechas_html = "".join(
+            f"<div style='background:#FAF8F5; border:1px solid #DFD9CE; border-left:3px solid #C85A32; border-radius:6px; padding:6px 10px; font-size:12px;'>"
+            f"<b style='color:#C85A32; font-family:monospace;'>📅 {f_k}: {info_f['cambios']} cambio(s)</b><br>"
+            f"<span style='color:#6E665E; font-size:11.5px;'>{', '.join(info_f['items'][:3])}{'...' if len(info_f['items']) > 3 else ''}</span>"
+            f"</div>"
+            for f_k, info_f in list(fechas_resumen.items())[:8]
+        )
+        st.markdown(
+            f"<div style='display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;'>{pills_fechas_html}</div>",
+            unsafe_allow_html=True,
+        )
+
+    df_ent_view = df_ent_proy.copy()
+    if not df_ent_view.empty and not str(filtro_cat_ent).startswith("🌐"):
+        df_ent_view = df_ent_view[df_ent_view['Especialidad'].astype(str) == filtro_cat_ent].copy()
+
+    opciones_esp_ent = list(dict.fromkeys(
+        TIPOS_ENTREGABLE_DISENO
+        + ESPECIALIDADES_DEFAULT
+        + ([str(x) for x in df_ent_proy['Especialidad'].dropna().unique().tolist() if str(x).strip()] if not df_ent_proy.empty else [])
+    ))
+    opciones_fase_ent = list(dict.fromkeys(
+        opciones_fases_select
+        + ([str(x) for x in df_ent_proy['Fase'].dropna().unique().tolist() if str(x).strip()] if not df_ent_proy.empty else [])
+    ))
+
+    cols_ent_editor = [
+        'ID', 'Fecha_Cambio', 'Fase', 'Especialidad', 'Nombre_Entregable',
+        'Nro_Cambios', 'Revision', 'Estado', 'Detalle_Cambio', 'Responsable', 'Link'
+    ]
+    display_ent = (
+        df_ent_view[cols_ent_editor].copy()
+        if not df_ent_view.empty
+        else pd.DataFrame(columns=cols_ent_editor)
+    )
+    display_ent['Fecha_Cambio'] = display_ent['Fecha_Cambio'].apply(lambda x: parse_date(x))
+    display_ent['Nro_Cambios'] = pd.to_numeric(display_ent['Nro_Cambios'], errors='coerce').fillna(0).astype(int)
+
+    base_ent_key = f"base_df_ent_{proy_name}"
+    c_ent_key = f"c_{base_ent_key}"
+    c_ent_val = st.session_state.get(c_ent_key, 0)
+    w_ent_key = f"ed_ent_{proy_name}_{c_ent_val}"
+
+    st.session_state[base_ent_key] = display_ent.copy()
+
+    st.data_editor(
+        st.session_state[base_ent_key],
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        key=w_ent_key,
+        column_config={
+            "ID": None,
+            "Fecha_Cambio": st.column_config.DateColumn("Fecha Cambio", format="DD/MM/YYYY", width="small"),
+            "Fase": st.column_config.SelectboxColumn("Etapa de Diseño", options=opciones_fase_ent, width="medium"),
+            "Especialidad": st.column_config.SelectboxColumn("Tipo (Plano / Render / 3D)", options=opciones_esp_ent, width="medium"),
+            "Nombre_Entregable": st.column_config.TextColumn("Plano / Vista / Ambiente", width="medium", required=True),
+            "Nro_Cambios": st.column_config.NumberColumn("N° Cambios", min_value=0, max_value=100, step=1, format="%d", width="small"),
+            "Revision": st.column_config.TextColumn("Versión / Rev.", width="small"),
+            "Estado": st.column_config.SelectboxColumn("Estado", options=STATUS_FASES, width="medium"),
+            "Detalle_Cambio": st.column_config.TextColumn("Detalle del Cambio Realizado", width="large"),
+            "Responsable": st.column_config.TextColumn("Responsable", width="small"),
+            "Link": st.column_config.LinkColumn("Link Drive / Archivo", width="small"),
+        },
+        on_change=on_table_edit,
+        args=(
+            base_ent_key,
+            w_ent_key,
+            'entregables_planos',
+            ['Proyecto'],
+            [proy_name],
+            ['Fecha_Cambio'],
+            ['Fase', 'Especialidad', 'Nombre_Entregable', 'Revision', 'Estado', 'Detalle_Cambio', 'Responsable', 'Link'],
+            None,
+            ['Nro_Cambios'],
             'ID'
         )
     )

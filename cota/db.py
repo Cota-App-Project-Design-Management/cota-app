@@ -62,10 +62,11 @@ COLS_MAT = [
     'Proveedor', 'Estado', 'Link_Ref', 'Notas'
 ]
 
-# Fases del ciclo de vida del diseño
+# Etapas exclusivas de Gestión del Diseño (02. Diseño)
 COLS_FASES = [
     'ID', 'Proyecto', 'Orden', 'Fase', 'Etapa', 'Inicio', 'Fin',
-    'Estado', 'Avance_Pct', 'Responsable', 'Aprobado_Cliente', 'Notas'
+    'Estado', 'Avance_Pct', 'Cambios_Realizados', 'Fecha_Ultimo_Cambio',
+    'Responsable', 'Aprobado_Cliente', 'Notas'
 ]
 
 # Cobros e Hitos Financieros hacia el Cliente
@@ -88,9 +89,10 @@ COLS_ICE_SESIONES = [
 COLS_ICE_INVITADOS = ['ID_Sesion', 'Nombre', 'Empresa', 'Cargo', 'Asistencia']
 COLS_ICE_ACUERDOS = ['ID_Sesion', 'Descripcion', 'Responsable', 'Acuerdo']
 
-# Entregables y Planos
+# Entregables de Diseño (Planos, Renders, 3D) y Registro de Cambios por Fecha
 COLS_ENTREGABLES = [
     'ID', 'Proyecto', 'Especialidad', 'Nombre_Entregable', 'Revision',
+    'Nro_Cambios', 'Fecha_Cambio', 'Detalle_Cambio',
     'Estado', 'Fecha_Limite', 'Responsable', 'Fase', 'Link'
 ]
 
@@ -141,6 +143,49 @@ def _normalizar_supervisado(val):
     if s in ["sí", "si", "true", "1", "s", "yes"]:
         return "Sí"
     return "No"
+
+
+def _normalizar_estado_diseno(val) -> str:
+    """Normaliza cualquier estado de etapa o entregable de diseño al catálogo oficial STATUS_FASES."""
+    s = str(val or "").strip()
+    s_low = s.lower()
+    if "aprob" in s_low or "completad" in s_low:
+        return "🟢 Aprobado"
+    if "revisi" in s_low:
+        return "🔵 En revisión cliente"
+    if "cambio" in s_low or "observ" in s_low or "correcci" in s_low:
+        return "🟠 Con cambios / Observado"
+    if "proceso" in s_low or "desarrollo" in s_low or "fabricaci" in s_low:
+        return "🟡 En proceso"
+    return "⚪ Pendiente"
+
+
+def _es_fase_no_diseno(nom) -> bool:
+    """Detecta fases de obra, cierre, FF&E o trámites que no pertenecen a 02. Gestión del Diseño."""
+    s = str(nom or "").strip()
+    if not s:
+        return True
+    return bool(
+        re.search(
+            r"ff&e|ffe|presupuesto\s*&\s*compras|ejecuci[oó]n|\bobra\b|montaje|partidas\s+y\s+tareas|cierre|entrega\s+final|observaciones|punch\s+list|licencias|supervisi[oó]n",
+            s,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _migrar_nombre_fase_diseno(nom) -> str:
+    """Migra nombres antiguos de fases a la nomenclatura enfocada en Gestión del Diseño."""
+    s = str(nom or "").strip()
+    if re.search(r"concepto\s*&\s*moodboard", s, re.IGNORECASE):
+        return "02. Moodboard & Concepto"
+    if re.search(r"anteproyecto\s*/\s*distribuci[oó]n", s, re.IGNORECASE):
+        return "03. Plano Preliminar / Distribución"
+    if re.search(r"desarrollo\s+de\s+dise[ñn]o\s*&\s*3d", s, re.IGNORECASE):
+        return "04. Modelado 3D Volumétrico"
+    if re.search(r"expediente\s+t[eé]cnico\s*&\s*planos", s, re.IGNORECASE):
+        return "06. Planos de Detalle & Mobiliario"
+    return s
 
 
 
@@ -342,7 +387,7 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
         'Costo_Estimado', 'Costo_Real', 'Precio_Unit_Estimado', 'Monto_Pactado', 'Monto_Cobrado', 'Monto',
         'Metrado', 'Valor_Unitario', 'TC_Presupuesto', 'GG_Pct', 'Utilidades_Pct'
     }
-    int_cols_set = {'Orden', 'Num_Pisos', 'Num_Sotanos', 'Avance_Pct'}
+    int_cols_set = {'Orden', 'Num_Pisos', 'Num_Sotanos', 'Avance_Pct', 'Cambios_Realizados', 'Nro_Cambios'}
 
     for col in columnas:
         if col not in df.columns:
@@ -372,7 +417,9 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
             elif col == 'Estado' and pestaña == 'materiales':
                 df[col] = "⚪ Propuesto"
             elif col == 'Estado' and pestaña == 'fases':
-                df[col] = "⚪ No iniciada"
+                df[col] = "⚪ Pendiente"
+            elif col == 'Estado' and pestaña == 'entregables_planos':
+                df[col] = "🟡 En proceso"
             elif col == 'Estado' and pestaña == 'cobros':
                 df[col] = "🟡 Pendiente"
             elif col == 'Estado' and pestaña == 'pendientes_entrega':
@@ -409,17 +456,21 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
             df[c_extra] = df[c_extra].fillna("").astype(str).replace({"nan": "", "None": "", "<NA>": ""}).astype(object)
 
     if pestaña == 'fases':
-        mask_obsoletas = df['Fase'].astype(str).str.contains(r'ff&e|ffe|expediente t[eé]cnico', case=False, na=False)
-        if mask_obsoletas.any():
-            df = df[~mask_obsoletas].copy()
-        def _migrar_fase_item(nom):
-            s = str(nom).strip()
-            if re.search(r'ejecuci[oó]n|obra|montaje', s, re.IGNORECASE):
-                return "05. Partidas y Tareas (Obra)"
-            if re.search(r'cierre|entrega final|punch list', s, re.IGNORECASE):
-                return "08. Observaciones & Entrega Final"
-            return s
-        df['Fase'] = df['Fase'].apply(_migrar_fase_item)
+        mask_no_diseno = df['Fase'].apply(_es_fase_no_diseno)
+        if mask_no_diseno.any():
+            df = df[~mask_no_diseno].copy()
+        df['Fase'] = df['Fase'].apply(_migrar_nombre_fase_diseno)
+        df['Estado'] = df['Estado'].apply(_normalizar_estado_diseno)
+
+    if pestaña == 'entregables_planos' and not df.empty:
+        df['Estado'] = df['Estado'].apply(_normalizar_estado_diseno)
+        for i_e, r_e in df.iterrows():
+            if int(r_e.get('Nro_Cambios', 0) or 0) == 0:
+                m_rev = re.search(r'(\d+)', str(r_e.get('Revision', '')))
+                if m_rev:
+                    df.at[i_e, 'Nro_Cambios'] = int(m_rev.group(1))
+            if not str(r_e.get('Fecha_Cambio', '')).strip() and str(r_e.get('Fecha_Limite', '')).strip():
+                df.at[i_e, 'Fecha_Cambio'] = str(r_e.get('Fecha_Limite', '')).strip()
 
     st.session_state.original_tables[pestaña] = df.copy()
     return df
@@ -498,38 +549,45 @@ def guardar_tabla(conn, sheet_url, nube_ok, df, pestaña):
 
 def obtener_banco_fases() -> list[dict]:
     """
-    Retorna el catálogo del Banco de Fases del estudio, combinando las fases predeterminadas
-    con cualquier fase personalizada creada o existente en los proyectos.
+    Retorna el catálogo del Banco de Etapas de Diseño del estudio, combinando las etapas predeterminadas
+    con cualquier etapa de diseño personalizada creada o existente en los proyectos.
     """
     if "banco_fases" not in st.session_state or not st.session_state.banco_fases:
         st.session_state.banco_fases = [dict(f) for f in BANCO_FASES_DEFAULT]
 
-    # Eliminar cualquier fase residual de FF&E o Expediente Técnico
-    st.session_state.banco_fases = [
-        f for f in st.session_state.banco_fases
-        if "ff&e" not in str(f.get("Fase", "")).lower()
-        and "ffe" not in str(f.get("Fase", "")).lower()
-        and "expediente" not in str(f.get("Fase", "")).lower()
-    ]
+    # Eliminar cualquier fase residual que no sea de diseño (obra, FF&E, cierre, observaciones, etc.)
+    cleaned_banco = []
+    seen_names = set()
+    for f in st.session_state.banco_fases:
+        nom_raw = str(f.get("Fase", "")).strip()
+        if not nom_raw or _es_fase_no_diseno(nom_raw):
+            continue
+        nom_mig = _migrar_nombre_fase_diseno(nom_raw)
+        if nom_mig not in seen_names:
+            f_copy = dict(f)
+            f_copy["Fase"] = nom_mig
+            cleaned_banco.append(f_copy)
+            seen_names.add(nom_mig)
 
+    # Asegurar que las etapas por defecto de BANCO_FASES_DEFAULT estén presentes
+    for bf in BANCO_FASES_DEFAULT:
+        if bf["Fase"] not in seen_names:
+            cleaned_banco.append(dict(bf))
+            seen_names.add(bf["Fase"])
+
+    st.session_state.banco_fases = cleaned_banco
     nombres_en_banco = {f["Fase"] for f in st.session_state.banco_fases}
 
-    # Incorporar fases personalizadas que ya existan en la tabla fases de la BD
+    # Incorporar etapas personalizadas de diseño que ya existan en la tabla fases de la BD
     if "fases" in st.session_state and isinstance(st.session_state.fases, pd.DataFrame) and not st.session_state.fases.empty:
         for _, r in st.session_state.fases.iterrows():
-            f_nom = str(r.get("Fase", "")).strip()
-            if (
-                f_nom
-                and "ff&e" not in f_nom.lower()
-                and "ffe" not in f_nom.lower()
-                and "expediente" not in f_nom.lower()
-                and f_nom not in nombres_en_banco
-            ):
+            f_nom = _migrar_nombre_fase_diseno(str(r.get("Fase", "")).strip())
+            if f_nom and not _es_fase_no_diseno(f_nom) and f_nom not in nombres_en_banco:
                 orden_max = max((item.get("Orden", 0) for item in st.session_state.banco_fases), default=0) + 1
                 st.session_state.banco_fases.append({
                     "Orden": int(r.get("Orden", orden_max) or orden_max),
                     "Fase": f_nom,
-                    "Etapa": str(r.get("Etapa", "Diseño") or "Diseño"),
+                    "Etapa": str(r.get("Etapa", "Planos") or "Planos"),
                     "Dias": 10,
                     "Por_Defecto": False,
                 })
@@ -538,8 +596,8 @@ def obtener_banco_fases() -> list[dict]:
     return sorted(st.session_state.banco_fases, key=lambda x: x.get("Orden", 99))
 
 
-def agregar_fase_banco(nombre_fase: str, etapa: str = "Diseño", dias: int = 10, por_defecto: bool = False) -> dict:
-    """Agrega una nueva fase al Banco de Fases del estudio si no existe."""
+def agregar_fase_banco(nombre_fase: str, etapa: str = "Planos", dias: int = 10, por_defecto: bool = False) -> dict:
+    """Agrega una nueva etapa de diseño al Banco de Etapas de Diseño del estudio si no existe."""
     banco = obtener_banco_fases()
     limpio = str(nombre_fase).strip()
     for f in banco:
@@ -559,9 +617,9 @@ def agregar_fase_banco(nombre_fase: str, etapa: str = "Diseño", dias: int = 10,
 
 def sembrar_fases_default(nombre_proyecto, fecha_inicio=None, fases_seleccionadas=None):
     """
-    Crea las fases de diseño para un proyecto.
-    Si `fases_seleccionadas` es None, siembra las 8 fases canónicas por defecto.
-    Si se pasa una lista de nombres de fases (del Banco de Fases), siembra únicamente las activadas.
+    Crea las etapas de Gestión del Diseño para un proyecto.
+    Si `fases_seleccionadas` es None, siembra las etapas canónicas de diseño por defecto.
+    Si se pasa una lista de nombres de etapas, siembra únicamente las activadas.
     """
     f_ini = parse_date(fecha_inicio) or datetime.date.today()
     cursor = f_ini
@@ -579,7 +637,7 @@ def sembrar_fases_default(nombre_proyecto, fecha_inicio=None, fases_seleccionada
             elif str(item) in mapa_banco:
                 plantilla.append(mapa_banco[str(item)])
             else:
-                plantilla.append({"Orden": idx_f, "Fase": str(item), "Etapa": "Diseño", "Dias": 10})
+                plantilla.append({"Orden": idx_f, "Fase": str(item), "Etapa": "Planos", "Dias": 10})
 
     for idx_ord, f in enumerate(plantilla, start=1):
         dias = f.get('Dias', 7)
@@ -589,11 +647,13 @@ def sembrar_fases_default(nombre_proyecto, fecha_inicio=None, fases_seleccionada
             'Proyecto': nombre_proyecto,
             'Orden': f.get('Orden', idx_ord) if fases_seleccionadas is None else idx_ord,
             'Fase': f['Fase'],
-            'Etapa': f.get('Etapa', 'Diseño'),
+            'Etapa': f.get('Etapa', 'Planos'),
             'Inicio': cursor.strftime('%Y-%m-%d'),
             'Fin': cursor_fin.strftime('%Y-%m-%d'),
-            'Estado': '⚪ No iniciada',
+            'Estado': '⚪ Pendiente',
             'Avance_Pct': 0,
+            'Cambios_Realizados': 0,
+            'Fecha_Ultimo_Cambio': '',
             'Responsable': '',
             'Aprobado_Cliente': False,
             'Notas': ''
@@ -605,8 +665,8 @@ def sembrar_fases_default(nombre_proyecto, fecha_inicio=None, fases_seleccionada
 
 def sincronizar_fases_proyecto(nombre_proyecto: str, fases_activas_nombres: list[str], fecha_inicio=None):
     """
-    Activa o desactiva fases para un proyecto específico según la selección del Banco de Fases.
-    Conserva intactos los datos (avance, fechas, aprobaciones, notas) de las fases que ya estaban activas.
+    Activa o desactiva etapas de diseño para un proyecto específico según la selección del Banco de Diseño.
+    Conserva intactos los datos (avance, cambios, fechas, aprobaciones, notas) de las etapas que ya estaban activas.
     """
     if 'fases' not in st.session_state or not isinstance(st.session_state.fases, pd.DataFrame):
         st.session_state.fases = pd.DataFrame(columns=COLS_FASES)
@@ -627,7 +687,7 @@ def sincronizar_fases_proyecto(nombre_proyecto: str, fases_activas_nombres: list
         cursor = f_ini_base
 
     nuevas_filas_proy = []
-    # Ordenar las fases seleccionadas según su orden en el banco
+    # Ordenar las etapas seleccionadas según su orden en el banco
     fases_ordenadas = sorted(
         list(dict.fromkeys(fases_activas_nombres)),
         key=lambda nom: orden_banco.get(nom, 999)
@@ -638,9 +698,13 @@ def sincronizar_fases_proyecto(nombre_proyecto: str, fases_activas_nombres: list
         if not match_exist.empty:
             fila = match_exist.iloc[0].to_dict()
             fila['Orden'] = nuevo_ord
+            if 'Cambios_Realizados' not in fila or pd.isna(fila.get('Cambios_Realizados')):
+                fila['Cambios_Realizados'] = 0
+            if 'Fecha_Ultimo_Cambio' not in fila or pd.isna(fila.get('Fecha_Ultimo_Cambio')):
+                fila['Fecha_Ultimo_Cambio'] = ''
             nuevas_filas_proy.append(fila)
         else:
-            info_b = mapa_banco.get(f_nom, {"Fase": f_nom, "Etapa": "Diseño", "Dias": 10})
+            info_b = mapa_banco.get(f_nom, {"Fase": f_nom, "Etapa": "Planos", "Dias": 10})
             dias = int(info_b.get("Dias", 10))
             c_fin = cursor + datetime.timedelta(days=dias)
             nuevas_filas_proy.append({
@@ -648,11 +712,13 @@ def sincronizar_fases_proyecto(nombre_proyecto: str, fases_activas_nombres: list
                 'Proyecto': nombre_proyecto,
                 'Orden': nuevo_ord,
                 'Fase': f_nom,
-                'Etapa': info_b.get('Etapa', 'Diseño'),
+                'Etapa': info_b.get('Etapa', 'Planos'),
                 'Inicio': cursor.strftime('%Y-%m-%d'),
                 'Fin': c_fin.strftime('%Y-%m-%d'),
-                'Estado': '⚪ No iniciada',
+                'Estado': '⚪ Pendiente',
                 'Avance_Pct': 0,
+                'Cambios_Realizados': 0,
+                'Fecha_Ultimo_Cambio': '',
                 'Responsable': '',
                 'Aprobado_Cliente': False,
                 'Notas': ''
@@ -733,9 +799,11 @@ def purgar_proyecto_cascada(nombre_proyecto):
 
 def sanitizar_fases_estudio():
     """
-    Limpia y actualiza el DataFrame de fases en st.session_state:
-    - Elimina fases obsoletas de FF&E y Expediente Técnico
-    - Renombra fases antiguas con los nuevos nombres de ventana
+    Limpia y actualiza el DataFrame de fases en st.session_state para que sea exclusivamente
+    de Gestión del Diseño (02. Diseño):
+    - Elimina fases de obra, construcción, FF&E, cierre u observaciones
+    - Migra nombres antiguos de etapas de diseño (Moodboard, Plano Preliminar, Modelado 3D, etc.)
+    - Asegura columnas de conteo y fecha de cambios (Cambios_Realizados, Fecha_Ultimo_Cambio)
     - Normaliza el orden de 1 a N por proyecto
     """
     if "fases" not in st.session_state or not isinstance(st.session_state.fases, pd.DataFrame) or st.session_state.fases.empty:
@@ -743,21 +811,26 @@ def sanitizar_fases_estudio():
 
     df_f = st.session_state.fases.copy()
 
-    # 1. Eliminar FF&E y Expediente Técnico
-    mask_obsoletas = df_f['Fase'].astype(str).str.contains(r'ff&e|ffe|expediente t[eé]cnico', case=False, na=False)
-    if mask_obsoletas.any():
-        df_f = df_f[~mask_obsoletas].copy()
+    # 1. Eliminar fases que no pertenecen a Gestión del Diseño (obra, FF&E, cierre, observaciones, etc.)
+    mask_no_diseno = df_f['Fase'].apply(_es_fase_no_diseno)
+    if mask_no_diseno.any():
+        df_f = df_f[~mask_no_diseno].copy()
 
-    # 2. Renombrar fases antiguas
-    def _migrar_nombre_fase(nom):
-        s = str(nom).strip()
-        if re.search(r'ejecuci[oó]n|obra|montaje', s, re.IGNORECASE):
-            return "05. Partidas y Tareas (Obra)"
-        if re.search(r'cierre|entrega final|punch list', s, re.IGNORECASE):
-            return "08. Observaciones & Entrega Final"
-        return s
+    # 2. Migrar nombres antiguos de etapas de diseño y estados
+    df_f['Fase'] = df_f['Fase'].apply(_migrar_nombre_fase_diseno)
+    if 'Estado' in df_f.columns:
+        df_f['Estado'] = df_f['Estado'].apply(_normalizar_estado_diseno)
+    else:
+        df_f['Estado'] = "⚪ Pendiente"
 
-    df_f['Fase'] = df_f['Fase'].apply(_migrar_nombre_fase)
+    # Asegurar columnas de control de cambios de diseño
+    if 'Cambios_Realizados' not in df_f.columns:
+        df_f['Cambios_Realizados'] = 0
+    df_f['Cambios_Realizados'] = pd.to_numeric(df_f['Cambios_Realizados'], errors='coerce').fillna(0).clip(lower=0).astype(int)
+
+    if 'Fecha_Ultimo_Cambio' not in df_f.columns:
+        df_f['Fecha_Ultimo_Cambio'] = ""
+    df_f['Fecha_Ultimo_Cambio'] = df_f['Fecha_Ultimo_Cambio'].fillna("").astype(str).replace({"nan": "", "None": "", "<NA>": ""}).astype(object)
 
     # 3. Re-indexar orden por proyecto
     dfs_proy = []
@@ -770,6 +843,76 @@ def sanitizar_fases_estudio():
         st.session_state.fases = pd.concat(dfs_proy, ignore_index=True)
     else:
         st.session_state.fases = df_f
+
+
+def registrar_cambio_diseno(
+    proy_name: str,
+    fase_diseno: str,
+    tipo_entregable: str,
+    nombre_entregable: str,
+    fecha_cambio=None,
+    detalle_cambio: str = "",
+    estado: str = "🟡 En proceso",
+    responsable: str = "",
+    nro_cambios: int = 1,
+    link: str = "",
+) -> dict:
+    """
+    Registra un cambio / entregable de diseño (Plano, Render, 3D, Moodboard) con su fecha y conteo de cambios,
+    y sincroniza automáticamente el conteo de cambios y fecha de último cambio en la etapa correspondiente de `fases`.
+    """
+    d_cambio = parse_date(fecha_cambio) or datetime.date.today()
+    fecha_str = d_cambio.strftime("%Y-%m-%d")
+    est_norm = _normalizar_estado_diseno(estado)
+    cant_cambios = max(0, int(nro_cambios or 0))
+
+    if "entregables_planos" not in st.session_state or not isinstance(st.session_state.entregables_planos, pd.DataFrame):
+        st.session_state.entregables_planos = pd.DataFrame(columns=COLS_ENTREGABLES)
+
+    for col in COLS_ENTREGABLES:
+        if col not in st.session_state.entregables_planos.columns:
+            st.session_state.entregables_planos[col] = 0 if col == "Nro_Cambios" else ""
+
+    rev_lbl = f"Cambio #{cant_cambios}" if cant_cambios > 0 else "Versión Inicial"
+    nuevo_item = {
+        "ID": f"ENT_{int(time.time())}_{uuid.uuid4().hex[:6]}",
+        "Proyecto": proy_name,
+        "Especialidad": str(tipo_entregable or "Planos").strip(),
+        "Nombre_Entregable": str(nombre_entregable or "").strip(),
+        "Revision": rev_lbl,
+        "Nro_Cambios": cant_cambios,
+        "Fecha_Cambio": fecha_str,
+        "Detalle_Cambio": str(detalle_cambio or "").strip(),
+        "Estado": est_norm,
+        "Fecha_Limite": fecha_str,
+        "Responsable": str(responsable or "").strip(),
+        "Fase": str(fase_diseno or "").strip(),
+        "Link": str(link or "").strip(),
+    }
+    n_row = pd.DataFrame([nuevo_item])
+    st.session_state.entregables_planos = pd.concat(
+        [st.session_state.entregables_planos, n_row[COLS_ENTREGABLES]], ignore_index=True
+    )
+
+    # Sincronizar conteo de cambios y última fecha en la etapa de diseño correspondiente
+    if "fases" in st.session_state and isinstance(st.session_state.fases, pd.DataFrame) and not st.session_state.fases.empty:
+        if "Cambios_Realizados" not in st.session_state.fases.columns:
+            st.session_state.fases["Cambios_Realizados"] = 0
+        if "Fecha_Ultimo_Cambio" not in st.session_state.fases.columns:
+            st.session_state.fases["Fecha_Ultimo_Cambio"] = ""
+        st.session_state.fases["Fecha_Ultimo_Cambio"] = st.session_state.fases["Fecha_Ultimo_Cambio"].astype(object)
+
+        mask_f = (st.session_state.fases["Proyecto"] == proy_name) & (
+            st.session_state.fases["Fase"] == str(fase_diseno or "").strip()
+        )
+        if mask_f.any():
+            for idx_f in st.session_state.fases[mask_f].index:
+                curr_c = int(pd.to_numeric(st.session_state.fases.at[idx_f, "Cambios_Realizados"], errors="coerce") or 0)
+                st.session_state.fases.at[idx_f, "Cambios_Realizados"] = curr_c + max(1, cant_cambios)
+                st.session_state.fases.at[idx_f, "Fecha_Ultimo_Cambio"] = fecha_str
+
+    clear_base_dfs()
+    return nuevo_item
 
 
 def clear_base_dfs():
@@ -1026,14 +1169,37 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
                 if c in df_new.columns:
                     df_new[c] = pd.to_numeric(df_new[c], errors='coerce').fillna(0.0)
 
-        # Normalizar Avance_Pct en fases (0..100 editable)
-        if master_state_key == 'fases' and 'Avance_Pct' in df_new.columns:
-            df_new['Avance_Pct'] = pd.to_numeric(df_new['Avance_Pct'], errors='coerce').fillna(0).clip(0, 100).astype(int)
+        # Normalizar Avance_Pct, Estado y Cambios_Realizados en fases de diseño (0..100 editable)
+        if master_state_key == 'fases':
+            if 'Avance_Pct' in df_new.columns:
+                df_new['Avance_Pct'] = pd.to_numeric(df_new['Avance_Pct'], errors='coerce').fillna(0).clip(0, 100).astype(int)
+            if 'Cambios_Realizados' in df_new.columns:
+                df_new['Cambios_Realizados'] = pd.to_numeric(df_new['Cambios_Realizados'], errors='coerce').fillna(0).clip(lower=0).astype(int)
             for idx, cols in edits.get("edited_rows", {}).items():
                 r_idx = int(idx)
-                if r_idx in df_new.index and 'Avance_Pct' not in cols:
-                    if cols.get('Aprobado_Cliente') is True or 'Aprobada' in str(cols.get('Estado', '')):
-                        df_new.at[r_idx, 'Avance_Pct'] = 100
+                if r_idx in df_new.index:
+                    est_str = str(cols.get('Estado', df_new.at[r_idx, 'Estado'] if 'Estado' in df_new.columns else ''))
+                    if cols.get('Aprobado_Cliente') is True or 'aprob' in est_str.lower():
+                        if 'Avance_Pct' not in cols and 'Avance_Pct' in df_new.columns:
+                            df_new.at[r_idx, 'Avance_Pct'] = 100
+                        if 'Estado' in df_new.columns and 'Estado' not in cols:
+                            df_new['Estado'] = df_new['Estado'].astype(object)
+                            df_new.at[r_idx, 'Estado'] = "🟢 Aprobado"
+                        if 'Aprobado_Cliente' in df_new.columns and 'Aprobado_Cliente' not in cols:
+                            df_new.at[r_idx, 'Aprobado_Cliente'] = True
+                    elif cols.get('Aprobado_Cliente') is False and 'aprob' in est_str.lower() and 'Estado' not in cols:
+                        df_new['Estado'] = df_new['Estado'].astype(object)
+                        df_new.at[r_idx, 'Estado'] = "🟡 En proceso"
+                    if 'Cambios_Realizados' in cols and int(df_new.at[r_idx, 'Cambios_Realizados'] or 0) > 0:
+                        if 'Fecha_Ultimo_Cambio' in df_new.columns and 'Fecha_Ultimo_Cambio' not in cols:
+                            curr_f = parse_date(df_new.at[r_idx, 'Fecha_Ultimo_Cambio'])
+                            if curr_f is None:
+                                df_new['Fecha_Ultimo_Cambio'] = df_new['Fecha_Ultimo_Cambio'].astype(object)
+                                df_new.at[r_idx, 'Fecha_Ultimo_Cambio'] = datetime.date.today()
+
+        if master_state_key == 'entregables_planos':
+            if 'Nro_Cambios' in df_new.columns:
+                df_new['Nro_Cambios'] = pd.to_numeric(df_new['Nro_Cambios'], errors='coerce').fillna(0).clip(lower=0).astype(int)
 
         # Recalcular Costo_Estimado automáticamente en FF&E si cambian Cantidad o Precio Unitario
         if master_state_key == 'materiales' and 'Cantidad' in df_new.columns and 'Precio_Unit_Estimado' in df_new.columns:

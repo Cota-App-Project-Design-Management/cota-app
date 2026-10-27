@@ -33,35 +33,56 @@ TIPOS_PROYECTO = [
     "Consultoría / Otro"
 ]
 
-# Fases canónicas del ciclo de vida de un proyecto de diseño/arquitectura
+# Etapas canónicas exclusivas de Gestión del Diseño (02. Diseño)
 FASES_CANONICAS = [
-    {"Orden": 1, "Fase": "01. Levantamiento & Brief", "Etapa": "Conceptual", "Dias": 7},
-    {"Orden": 2, "Fase": "02. Concepto & Moodboard", "Etapa": "Conceptual", "Dias": 10},
-    {"Orden": 3, "Fase": "03. Anteproyecto / Distribución", "Etapa": "Diseño", "Dias": 14},
-    {"Orden": 4, "Fase": "04. Desarrollo de Diseño & 3D", "Etapa": "Diseño", "Dias": 18},
-    {"Orden": 5, "Fase": "05. Partidas y Tareas (Obra)", "Etapa": "Construcción", "Dias": 30},
-    {"Orden": 6, "Fase": "08. Observaciones & Entrega Final", "Etapa": "Cierre", "Dias": 7},
+    {"Orden": 1, "Fase": "01. Levantamiento & Brief", "Etapa": "Conceptual", "Dias": 5},
+    {"Orden": 2, "Fase": "02. Moodboard & Concepto", "Etapa": "Moodboard", "Dias": 7},
+    {"Orden": 3, "Fase": "03. Plano Preliminar / Distribución", "Etapa": "Planos", "Dias": 10},
+    {"Orden": 4, "Fase": "04. Modelado 3D Volumétrico", "Etapa": "Modelado 3D", "Dias": 12},
+    {"Orden": 5, "Fase": "05. Renders & Visualización 3D", "Etapa": "Renders", "Dias": 10},
+    {"Orden": 6, "Fase": "06. Planos de Detalle & Mobiliario", "Etapa": "Planos", "Dias": 12},
+    {"Orden": 7, "Fase": "07. Planos Técnicos & Especialidades", "Etapa": "Planos", "Dias": 10},
 ]
 
-# Banco completo de fases disponibles para activar/desactivar según las características del proyecto
+# Banco de etapas de diseño disponibles para activar/desactivar según las características del proyecto
 BANCO_FASES_DEFAULT = [
-    {"Orden": 1, "Fase": "01. Levantamiento & Brief", "Etapa": "Conceptual", "Dias": 7, "Por_Defecto": True},
-    {"Orden": 2, "Fase": "02. Concepto & Moodboard", "Etapa": "Conceptual", "Dias": 10, "Por_Defecto": True},
-    {"Orden": 3, "Fase": "03. Anteproyecto / Distribución", "Etapa": "Diseño", "Dias": 14, "Por_Defecto": True},
-    {"Orden": 4, "Fase": "04. Desarrollo de Diseño & 3D", "Etapa": "Diseño", "Dias": 18, "Por_Defecto": True},
-    {"Orden": 5, "Fase": "05. Partidas y Tareas (Obra)", "Etapa": "Construcción", "Dias": 30, "Por_Defecto": True},
-    {"Orden": 6, "Fase": "08. Observaciones & Entrega Final", "Etapa": "Cierre", "Dias": 7, "Por_Defecto": True},
-    {"Orden": 7, "Fase": "07. Licencias & Trámites Municipales", "Etapa": "Documentación", "Dias": 20, "Por_Defecto": False},
-    {"Orden": 8, "Fase": "09. Coordinación de Especialidades (MEP)", "Etapa": "Documentación", "Dias": 12, "Por_Defecto": False},
-    {"Orden": 9, "Fase": "10. Supervisión de Obra / Visitas", "Etapa": "Construcción", "Dias": 25, "Por_Defecto": False},
-    {"Orden": 10, "Fase": "11. Styling & Decoración Final", "Etapa": "Cierre", "Dias": 5, "Por_Defecto": False},
+    {"Orden": 1, "Fase": "01. Levantamiento & Brief", "Etapa": "Conceptual", "Dias": 5, "Por_Defecto": True},
+    {"Orden": 2, "Fase": "02. Moodboard & Concepto", "Etapa": "Moodboard", "Dias": 7, "Por_Defecto": True},
+    {"Orden": 3, "Fase": "03. Plano Preliminar / Distribución", "Etapa": "Planos", "Dias": 10, "Por_Defecto": True},
+    {"Orden": 4, "Fase": "04. Modelado 3D Volumétrico", "Etapa": "Modelado 3D", "Dias": 12, "Por_Defecto": True},
+    {"Orden": 5, "Fase": "05. Renders & Visualización 3D", "Etapa": "Renders", "Dias": 10, "Por_Defecto": True},
+    {"Orden": 6, "Fase": "06. Planos de Detalle & Mobiliario", "Etapa": "Planos", "Dias": 12, "Por_Defecto": True},
+    {"Orden": 7, "Fase": "07. Planos Técnicos & Especialidades", "Etapa": "Planos", "Dias": 10, "Por_Defecto": True},
+    {"Orden": 8, "Fase": "08. Selección de Materiales & Acabados", "Etapa": "Moodboard", "Dias": 7, "Por_Defecto": False},
+    {"Orden": 9, "Fase": "09. Recorrido Virtual / Vistas 360°", "Etapa": "Modelado 3D", "Dias": 8, "Por_Defecto": False},
+    {"Orden": 10, "Fase": "10. Expediente Planos Finales (As-Built)", "Etapa": "Planos", "Dias": 6, "Por_Defecto": False},
+]
+
+ETAPAS_DISENO = [
+    "Conceptual",
+    "Moodboard",
+    "Planos",
+    "Modelado 3D",
+    "Renders",
+    "Detalles & Mobiliario",
+]
+
+TIPOS_ENTREGABLE_DISENO = [
+    "Moodboard",
+    "Plano Preliminar / Layout",
+    "Modelado 3D",
+    "Render / Vista 3D",
+    "Plano de Detalle / Mobiliario",
+    "Plano Técnico (Iluminación / E&S)",
+    "Otro Entregable de Diseño",
 ]
 
 STATUS_FASES = [
-    "⚪ No iniciada",
-    "🟡 En desarrollo",
+    "⚪ Pendiente",
+    "🟡 En proceso",
     "🔵 En revisión cliente",
-    "🟢 Aprobada cliente"
+    "🟠 Con cambios / Observado",
+    "🟢 Aprobado"
 ]
 
 # Tareas de Obra / Ejecución

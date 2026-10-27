@@ -63,9 +63,13 @@ def test_to_bool():
 
 def test_sembrar_fases_default():
     df_fases = sembrar_fases_default("Casa Prueba", datetime.date(2026, 1, 1))
-    assert len(df_fases) == 6
+    assert len(df_fases) == 7
     assert "01. Levantamiento & Brief" in df_fases['Fase'].tolist()
-    assert "08. Observaciones & Entrega Final" in df_fases['Fase'].tolist()
+    assert "02. Moodboard & Concepto" in df_fases['Fase'].tolist()
+    assert "03. Plano Preliminar / Distribución" in df_fases['Fase'].tolist()
+    assert "05. Renders & Visualización 3D" in df_fases['Fase'].tolist()
+    assert "Cambios_Realizados" in df_fases.columns
+    assert "Fecha_Ultimo_Cambio" in df_fases.columns
     assert all(df_fases['Proyecto'] == "Casa Prueba")
 
 
@@ -242,13 +246,13 @@ def test_banco_y_sincronizar_fases():
     banco = obtener_banco_fases()
     assert len(banco) >= 8
 
-    nueva = agregar_fase_banco("99. Styling Fotográfico", etapa="Cierre", dias=3)
+    nueva = agregar_fase_banco("99. Styling Fotográfico", etapa="Renders", dias=3)
     assert nueva["Fase"] == "99. Styling Fotográfico"
 
-    # Activar solo 3 fases (sin Expediente Técnico)
+    # Activar solo 3 etapas de diseño
     fases_elegidas = [
         "01. Levantamiento & Brief",
-        "02. Concepto & Moodboard",
+        "02. Moodboard & Concepto",
         "99. Styling Fotográfico",
     ]
     sincronizar_fases_proyecto('Depa Express', fases_elegidas, datetime.date(2026, 10, 1))
@@ -538,21 +542,43 @@ def test_tab_partidas_y_tareas_cols():
 
 def test_sanitizar_fases_estudio():
     import streamlit as st
-    from cota.db import sanitizar_fases_estudio
+    from cota.db import sanitizar_fases_estudio, registrar_cambio_diseno, sembrar_fases_default
     st.session_state["fases"] = pd.DataFrame([
-        {"Proyecto": "P1", "Orden": 1, "Fase": "01. Levantamiento & Brief"},
-        {"Proyecto": "P1", "Orden": 5, "Fase": "05. Expediente Técnico & Planos"},
-        {"Proyecto": "P1", "Orden": 6, "Fase": "06. Presupuesto & Compras (FF&E)"},
-        {"Proyecto": "P1", "Orden": 7, "Fase": "07. Ejecución / Obra / Montaje"},
-        {"Proyecto": "P1", "Orden": 8, "Fase": "08. Cierre & Entrega Final"},
+        {"Proyecto": "P1", "Orden": 1, "Fase": "01. Levantamiento & Brief", "Estado": "🟢 Aprobada cliente"},
+        {"Proyecto": "P1", "Orden": 2, "Fase": "02. Concepto & Moodboard", "Estado": "🟡 En desarrollo"},
+        {"Proyecto": "P1", "Orden": 3, "Fase": "03. Anteproyecto / Distribución", "Estado": "⚪ No iniciada"},
+        {"Proyecto": "P1", "Orden": 6, "Fase": "06. Presupuesto & Compras (FF&E)", "Estado": "⚪ No iniciada"},
+        {"Proyecto": "P1", "Orden": 7, "Fase": "07. Ejecución / Obra / Montaje", "Estado": "⚪ No iniciada"},
+        {"Proyecto": "P1", "Orden": 8, "Fase": "08. Cierre & Entrega Final", "Estado": "⚪ No iniciada"},
     ])
     sanitizar_fases_estudio()
     fases_res = st.session_state["fases"]["Fase"].tolist()
     assert not any("ff&e" in f.lower() or "ffe" in f.lower() for f in fases_res)
-    assert not any("expediente" in f.lower() for f in fases_res)
-    assert "05. Partidas y Tareas (Obra)" in fases_res
-    assert "08. Observaciones & Entrega Final" in fases_res
+    assert not any("obra" in f.lower() or "cierre" in f.lower() for f in fases_res)
+    assert "02. Moodboard & Concepto" in fases_res
+    assert "03. Plano Preliminar / Distribución" in fases_res
     assert len(st.session_state["fases"]) == 3
+    assert "Cambios_Realizados" in st.session_state["fases"].columns
+    assert "Fecha_Ultimo_Cambio" in st.session_state["fases"].columns
+
+    # Probar registro de cambio de diseño por fecha y conteo automático
+    registrar_cambio_diseno(
+        proy_name="P1",
+        fase_diseno="03. Plano Preliminar / Distribución",
+        tipo_entregable="Plano Preliminar / Layout",
+        nombre_entregable="Plano Preliminar Cocina",
+        fecha_cambio="2026-10-27",
+        detalle_cambio="Reubicación de isla central",
+        estado="🟡 En proceso",
+        responsable="Alvaro",
+        nro_cambios=2,
+    )
+    f_prelim = st.session_state["fases"][
+        (st.session_state["fases"]["Proyecto"] == "P1")
+        & (st.session_state["fases"]["Fase"] == "03. Plano Preliminar / Distribución")
+    ].iloc[0]
+    assert int(f_prelim["Cambios_Realizados"]) == 2
+    assert f_prelim["Fecha_Ultimo_Cambio"] == "2026-10-27"
 
 
 def test_on_table_edit_missing_key_no_crash():
