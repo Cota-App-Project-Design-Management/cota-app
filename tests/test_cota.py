@@ -895,6 +895,72 @@ def test_reordenar_dnd_y_pagos_multiples_por_partida():
     assert len(pdf_bytes) > 500
 
 
+def test_undo_redo_presupuesto():
+    import streamlit as st
+    from cota.cotizacion import (
+        asegurar_estructura_presupuesto_proyecto,
+        deshacer_presupuesto,
+        guardar_parametros_presupuesto_proyecto,
+        mover_partida_presupuesto,
+        puede_deshacer_presupuesto,
+        puede_rehacer_presupuesto,
+        rehacer_presupuesto,
+        reordenar_tareas_partida_por_indices,
+    )
+    proy_name = "Proy Undo Test"
+    st.session_state["proyectos"] = pd.DataFrame([{"Nombre": proy_name, "Presupuesto": 0.0, "Utilidades": 0.0, "GG_Presupuesto": 0.0, "TC_Presupuesto": 3.42, "GG_Pct": 2.0, "Utilidades_Pct": 15.0, "Incluir_IGV": False, "Honorarios_Diseno": 0.0}])
+    asegurar_estructura_presupuesto_proyecto(proy_name, n_partidas_default=2, n_tareas_default=3)
+
+    p1_name = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == proy_name].iloc[0]["Nombre_Partida"]
+    mask_p1 = (st.session_state["tasks"]["Proyecto"] == proy_name) & (st.session_state["tasks"]["Partida"] == p1_name)
+    idxs = st.session_state["tasks"][mask_p1].index.tolist()
+    st.session_state["tasks"].loc[idxs[0], "Tarea"] = "1.01 Tarea Alpha"
+    st.session_state["tasks"].loc[idxs[1], "Tarea"] = "1.02 Tarea Beta"
+    st.session_state["tasks"].loc[idxs[2], "Tarea"] = "1.03 Tarea Gamma"
+
+    # Reordenar las tareas [2, 0, 1] -> Gamma, Alpha, Beta
+    reordenar_tareas_partida_por_indices(proy_name, 1, p1_name, [2, 0, 1])
+    tasks_mod = st.session_state["tasks"][
+        (st.session_state["tasks"]["Proyecto"] == proy_name) & (st.session_state["tasks"]["Partida"] == p1_name)
+    ].reset_index(drop=True)
+    assert tasks_mod.iloc[0]["Tarea"] == "1.01 Tarea Gamma"
+    assert puede_deshacer_presupuesto(proy_name) is True
+
+    # Deshacer cambio
+    assert deshacer_presupuesto(proy_name) is True
+    tasks_undone = st.session_state["tasks"][
+        (st.session_state["tasks"]["Proyecto"] == proy_name) & (st.session_state["tasks"]["Partida"] == p1_name)
+    ].reset_index(drop=True)
+    assert tasks_undone.iloc[0]["Tarea"] == "1.01 Tarea Alpha"
+    assert puede_rehacer_presupuesto(proy_name) is True
+
+    # Rehacer cambio
+    assert rehacer_presupuesto(proy_name) is True
+    tasks_redone = st.session_state["tasks"][
+        (st.session_state["tasks"]["Proyecto"] == proy_name) & (st.session_state["tasks"]["Partida"] == p1_name)
+    ].reset_index(drop=True)
+    assert tasks_redone.iloc[0]["Tarea"] == "1.01 Tarea Gamma"
+
+    # Probar mover partida completa hacia arriba/abajo con deshacer
+    p2_name = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == proy_name].iloc[1]["Nombre_Partida"]
+    assert mover_partida_presupuesto(proy_name, 2, "subir") is True
+    partidas_swapped = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == proy_name]["Nombre_Partida"].tolist()
+    assert "1. " in partidas_swapped[0]
+    assert "2. " in partidas_swapped[1]
+
+    # Deshacer swap de partidas
+    assert deshacer_presupuesto(proy_name) is True
+    partidas_revert = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == proy_name]["Nombre_Partida"].tolist()
+    assert partidas_revert[0] == p1_name
+
+
+def test_gantt_hidden_by_default_code():
+    with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f:
+        code = f.read()
+    assert 'with st.expander("📊 CRONOGRAMA GANTT POR PARTIDA Y TAREAS (INICIO → FIN Y ESTADOS)", expanded=False):' in code
+    assert 'with st.expander("📊 CRONOGRAMA GANTT POR PARTIDA Y TAREAS (INICIO → FIN Y ESTADOS)", expanded=True):' not in code
+
+
 
 
 

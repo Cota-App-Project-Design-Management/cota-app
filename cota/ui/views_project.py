@@ -53,7 +53,7 @@ import importlib
 import cota.cotizacion
 import cota.pdf
 try:
-    if not hasattr(cota.cotizacion, "reordenar_tareas_partida_por_indices") or not hasattr(cota.cotizacion, "obtener_pagado_por_partida_proyecto"):
+    if not hasattr(cota.cotizacion, "deshacer_presupuesto") or not hasattr(cota.cotizacion, "mover_partida_presupuesto"):
         importlib.reload(cota.cotizacion)
     if not hasattr(cota.pdf, "generar_pdf_minuta"):
         importlib.reload(cota.pdf)
@@ -66,13 +66,16 @@ from cota.cotizacion import (
     aplicar_edicion_tabla_presupuesto_partida,
     asegurar_estructura_presupuesto_proyecto,
     calcular_resumen_cuadro_pagos_semanales,
+    deshacer_presupuesto,
     exportar_cuadro_pagos_semanales_excel,
     exportar_proyecto_a_formato_venti,
     extraer_descripcion_tarea,
     generar_plantilla_cotizacion_venti,
     guardar_cuadro_pagos_semanales_proyecto,
     guardar_parametros_presupuesto_proyecto,
+    guardar_snapshot_presupuesto,
     limpiar_nombre_partida,
+    mover_partida_presupuesto,
     mover_tarea_presupuesto,
     obtener_columnas_pago_semanal,
     obtener_cuadro_pagos_semanales_proyecto,
@@ -81,7 +84,10 @@ from cota.cotizacion import (
     parsear_cotizacion_venti,
     parsear_cuadro_pagos_semanales,
     parsear_presupuesto_flexible,
+    puede_deshacer_presupuesto,
+    puede_rehacer_presupuesto,
     recalcular_totales_presupuesto_proyecto,
+    rehacer_presupuesto,
     renombrar_partida_presupuesto,
     reordenar_tareas_partida_por_indices,
 )
@@ -853,10 +859,18 @@ def _render_tab_fases(proy_name, proy_data):
     )
 
 
-def _render_dnd_tareas_presupuesto(proy_name: str, idx_p: int, p_nom_completo: str, rows_ed: list, c_ppto_key: str, c_ppto_val: int):
+def _render_table_dnd_controller(
+    proy_name: str,
+    idx_p: int,
+    p_nom_completo: str,
+    rows_ed: list,
+    c_ppto_key: str,
+    c_ppto_val: int,
+):
     """
-    Renderiza una lista interactiva Drag-and-Drop (click holdeando en una tarea y arrastrándola hacia arriba o abajo)
-    para reordenar las tareas de una partida sin usar botones de subir/bajar.
+    Controlador invisible de Drag-and-Drop que conecta directamente con la tabla del presupuesto (03. PRESUPUESTO).
+    Permite reordenar las tareas haciendo click sostenido directamente sobre el símbolo ⠿ (o la columna Ítem)
+    de la tabla, mostrando la fila flotante y la guía de inserción en tiempo real.
     """
     bridge_label = f"dnd_bridge_{proy_name}_{idx_p}"
     bridge_key = f"dnd_in_{proy_name}_{idx_p}"
@@ -898,211 +912,182 @@ def _render_dnd_tareas_presupuesto(proy_name: str, idx_p: int, p_nom_completo: s
         on_change=_on_dnd_change,
     )
 
-    items_html_list = []
-    for i_r, r_item in enumerate(rows_ed):
-        cod_str = html_lib.escape(safe_str(r_item.get("Item", f"{idx_p}.{i_r+1:02d}")))
-        desc_str = html_lib.escape(safe_str(r_item.get("Descripcion", "")).strip() or "(Sin descripción)")
-        vp_str = html_lib.escape(format_currency(safe_float(r_item.get("Valor_Parcial", 0.0), 0.0)))
-        items_html_list.append(
-            f'<div class="dnd-row" data-orig-idx="{i_r}">'
-            f'  <span class="dnd-grip" title="Mantén click y arrastra arriba o abajo">⠿</span>'
-            f'  <span class="dnd-code">{cod_str}</span>'
-            f'  <span class="dnd-desc">{desc_str}</span>'
-            f'  <span class="dnd-val">{vp_str}</span>'
-            f'</div>'
-        )
-    items_html = "\n".join(items_html_list)
-    alto_iframe = max(92, min(280, len(rows_ed) * 34 + 44))
+    rows_meta_json = json.dumps([
+        {
+            "item": safe_str(r.get("Item", f"{idx_p}.{i_r+1:02d}")),
+            "desc": safe_str(r.get("Descripcion", "")).strip(),
+        }
+        for i_r, r in enumerate(rows_ed)
+    ])
     bridge_label_js = json.dumps(bridge_label)
+    proy_name_js = json.dumps(proy_name)
+    n_rows = len(rows_ed)
 
-    html_dnd = f"""
+    html_code = f"""
     <!DOCTYPE html>
     <html>
-    <head>
-    <meta charset="utf-8">
-    <style>
-        * {{ box-sizing: border-box; user-select: none; -webkit-user-select: none; }}
-        body {{
-            margin: 0;
-            padding: 2px 0 0 0;
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: transparent;
-            color: #262320;
-        }}
-        .dnd-wrap {{
-            background: #FAF8F5;
-            border: 1px dashed #D3C9B8;
-            border-radius: 8px;
-            padding: 6px 10px;
-        }}
-        .dnd-header {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 11px;
-            color: #6E665E;
-            margin-bottom: 5px;
-            font-weight: 600;
-        }}
-        .dnd-list {{
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }}
-        .dnd-row {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: #FFFFFF;
-            border: 1px solid #DFD9CE;
-            border-radius: 6px;
-            padding: 4px 10px;
-            font-size: 12px;
-            cursor: grab;
-            transition: transform 0.10s ease, box-shadow 0.10s ease, border-color 0.10s ease, background 0.10s ease;
-            touch-action: none;
-        }}
-        .dnd-row:hover {{
-            border-color: #C85A32;
-            background: #FFFDFB;
-        }}
-        .dnd-row.dragging {{
-            cursor: grabbing;
-            background: #FFF5EE;
-            border-color: #C85A32;
-            box-shadow: 0 4px 12px rgba(200, 90, 50, 0.22);
-            z-index: 20;
-            transform: scale(1.008);
-        }}
-        .dnd-grip {{
-            color: #C85A32;
-            font-size: 14px;
-            font-weight: 700;
-            line-height: 1;
-        }}
-        .dnd-code {{
-            font-family: monospace;
-            font-weight: 700;
-            font-size: 11.5px;
-            color: #C85A32;
-            background: #F4EFE8;
-            padding: 1px 6px;
-            border-radius: 4px;
-            min-width: 38px;
-            text-align: center;
-        }}
-        .dnd-desc {{
-            flex: 1;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            color: #262320;
-            font-weight: 500;
-        }}
-        .dnd-val {{
-            font-family: monospace;
-            font-size: 11.5px;
-            font-weight: 600;
-            color: #6E665E;
-        }}
-    </style>
-    </head>
-    <body>
-        <div class="dnd-wrap">
-            <div class="dnd-header">
-                <span>✋ Mantén click en una tarea y arrástrala arriba o abajo para cambiar su orden:</span>
-                <span style="font-weight:500; color:#8A8178;">🔒 Especialidad y Contratista son internos</span>
-            </div>
-            <div class="dnd-list" id="dndList">
-                {items_html}
-            </div>
-        </div>
-        <script>
-        (function() {{
-            const listEl = document.getElementById('dndList');
-            const partIdx = {int(idx_p)};
-            const bridgeLabel = {bridge_label_js};
-            let activeRow = null;
-            let initialOrder = Array.from(listEl.children).map(el => el.getAttribute('data-orig-idx')).join(',');
+    <head><meta charset="utf-8"></head>
+    <body style="margin:0; padding:0; overflow:hidden; background:transparent;">
+    <script>
+    (function() {{
+        const parentDoc = window.parent.document;
+        const partIdx = {int(idx_p)};
+        const proyName = {proy_name_js};
+        const nRows = {int(n_rows)};
+        const rowsMeta = {rows_meta_json};
+        const bridgeLabel = {bridge_label_js};
 
-            function updateItemCodes() {{
-                const rows = Array.from(listEl.children);
-                rows.forEach((r, i) => {{
-                    const codeEl = r.querySelector('.dnd-code');
-                    if (codeEl) {{
-                        const numStr = String(i + 1).padStart(2, '0');
-                        codeEl.textContent = partIdx + '.' + numStr;
-                    }}
-                }});
+        function initDnd() {{
+            const anchor = parentDoc.getElementById('anchor_ppto_' + proyName + '_' + partIdx);
+            if (!anchor) return false;
+            const container = anchor.closest('div[data-testid="stVerticalBlockBorderWrapper"]') || anchor.parentElement;
+            if (!container) return false;
+            const editorWrap = container.querySelector('div[data-testid="stDataEditor"]') || container.querySelector('div[data-testid="stDataFrame"]');
+            if (!editorWrap) return false;
+
+            const instanceKey = partIdx + '_' + nRows;
+            if (editorWrap.dataset.cotaDndInitialized === instanceKey) {{
+                return true;
+            }}
+            editorWrap.dataset.cotaDndInitialized = instanceKey;
+
+            let isDragging = false;
+            let dragSrcIdx = -1;
+            let ghostPill = null;
+            let dropLine = null;
+
+            function getTargetDropIdx(clientY, rect) {{
+                const relY = clientY - rect.top - 36;
+                let target = Math.round(relY / 35);
+                return Math.max(0, Math.min(nRows, target));
             }}
 
-            function commitOrderIfChanged() {{
-                const newOrder = Array.from(listEl.children).map(el => el.getAttribute('data-orig-idx')).join(',');
-                if (newOrder === initialOrder) return;
-                initialOrder = newOrder;
-                try {{
-                    const parentDoc = window.parent.document;
-                    const inputEl = parentDoc.querySelector('input[aria-label=' + JSON.stringify(bridgeLabel) + ']');
-                    if (inputEl) {{
-                        const payload = newOrder + '|' + Date.now();
-                        const nativeSetter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
-                        nativeSetter.call(inputEl, payload);
-                        inputEl.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        inputEl.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        inputEl.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }}));
-                        inputEl.blur();
-                    }}
-                }} catch (e) {{
-                    console.error('Error enviando orden DND:', e);
-                }}
-            }}
-
-            listEl.addEventListener('pointerdown', function(e) {{
-                const row = e.target.closest('.dnd-row');
-                if (!row) return;
-                activeRow = row;
-                activeRow.classList.add('dragging');
-                if (activeRow.setPointerCapture) {{
-                    try {{ activeRow.setPointerCapture(e.pointerId); }} catch (_) {{}}
-                }}
-                e.preventDefault();
-            }});
-
-            listEl.addEventListener('pointermove', function(e) {{
-                if (!activeRow) return;
-                const y = e.clientY;
-                const siblings = Array.from(listEl.querySelectorAll('.dnd-row:not(.dragging)'));
-                for (const sib of siblings) {{
-                    const box = sib.getBoundingClientRect();
-                    const mid = box.top + box.height / 2;
-                    if (y < mid && sib.compareDocumentPosition(activeRow) & Node.DOCUMENT_POSITION_FOLLOWING) {{
-                        listEl.insertBefore(activeRow, sib);
-                        updateItemCodes();
-                        break;
-                    }} else if (y > mid && sib.compareDocumentPosition(activeRow) & Node.DOCUMENT_POSITION_PRECEDING) {{
-                        listEl.insertBefore(activeRow, sib.nextSibling);
-                        updateItemCodes();
-                        break;
-                    }}
+            editorWrap.addEventListener('pointermove', function(e) {{
+                if (isDragging) return;
+                const rect = editorWrap.getBoundingClientRect();
+                const relX = e.clientX - rect.left;
+                const relY = e.clientY - rect.top;
+                if (relX >= 0 && relX <= 88 && relY >= 36 && relY <= 36 + nRows * 35) {{
+                    editorWrap.style.cursor = 'grab';
+                }} else {{
+                    editorWrap.style.cursor = '';
                 }}
             }});
 
-            function endDrag(e) {{
-                if (!activeRow) return;
-                activeRow.classList.remove('dragging');
-                activeRow = null;
-                commitOrderIfChanged();
-            }}
+            editorWrap.addEventListener('pointerdown', function(e) {{
+                if (e.button !== 0) return;
+                const rect = editorWrap.getBoundingClientRect();
+                const relX = e.clientX - rect.left;
+                const relY = e.clientY - rect.top;
 
-            listEl.addEventListener('pointerup', endDrag);
-            listEl.addEventListener('pointercancel', endDrag);
-            window.addEventListener('mouseup', endDrag);
-        }})();
-        </script>
+                if (relX >= 0 && relX <= 88 && relY >= 36 && relY <= 36 + nRows * 35) {{
+                    const srcIdx = Math.floor((relY - 36) / 35);
+                    if (srcIdx < 0 || srcIdx >= nRows) return;
+
+                    isDragging = true;
+                    dragSrcIdx = srcIdx;
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    ghostPill = parentDoc.createElement('div');
+                    ghostPill.style.cssText = 'position:fixed; z-index:9999999; pointer-events:none; background:#C85A32; color:#FFFFFF; font-family:-apple-system,BlinkMacSystemFont,sans-serif; font-size:12px; font-weight:700; padding:6px 14px; border-radius:6px; box-shadow:0 6px 20px rgba(200,90,50,0.40); transform:translate(-50%, -50%); display:flex; align-items:center; gap:8px; white-space:nowrap;';
+                    const meta = rowsMeta[srcIdx] || {{ item: partIdx + '.' + String(srcIdx + 1).padStart(2, '0'), desc: '' }};
+                    ghostPill.innerHTML = '<span style="font-size:14px;">⠿</span> <span style="background:rgba(255,255,255,0.25); padding:1px 5px; border-radius:3px;">' + meta.item + '</span> <span>' + (meta.desc || 'Tarea') + '</span>';
+                    ghostPill.style.left = e.clientX + 'px';
+                    ghostPill.style.top = e.clientY + 'px';
+                    parentDoc.body.appendChild(ghostPill);
+
+                    dropLine = parentDoc.createElement('div');
+                    dropLine.style.cssText = 'position:fixed; z-index:9999998; pointer-events:none; height:3px; background:#C85A32; border-radius:2px; box-shadow:0 0 8px rgba(200,90,50,0.6); transition:top 0.05s ease;';
+                    dropLine.style.left = rect.left + 'px';
+                    dropLine.style.width = rect.width + 'px';
+                    dropLine.style.top = (rect.top + 36 + srcIdx * 35) + 'px';
+                    parentDoc.body.appendChild(dropLine);
+
+                    parentDoc.body.style.userSelect = 'none';
+                    editorWrap.style.cursor = 'grabbing';
+
+                    function onMove(mEv) {{
+                        if (!isDragging) return;
+                        if (ghostPill) {{
+                            ghostPill.style.left = mEv.clientX + 'px';
+                            ghostPill.style.top = mEv.clientY + 'px';
+                        }}
+                        if (dropLine) {{
+                            const curR = editorWrap.getBoundingClientRect();
+                            const tgt = getTargetDropIdx(mEv.clientY, curR);
+                            dropLine.style.left = curR.left + 'px';
+                            dropLine.style.width = curR.width + 'px';
+                            dropLine.style.top = (curR.top + 36 + tgt * 35) + 'px';
+                        }}
+                    }}
+
+                    function onUp(uEv) {{
+                        if (!isDragging) return;
+                        isDragging = false;
+                        editorWrap.style.cursor = '';
+                        parentDoc.body.style.userSelect = '';
+
+                        const curR = editorWrap.getBoundingClientRect();
+                        const targetIdx = getTargetDropIdx(uEv.clientY, curR);
+
+                        if (ghostPill && ghostPill.parentNode) ghostPill.parentNode.removeChild(ghostPill);
+                        if (dropLine && dropLine.parentNode) dropLine.parentNode.removeChild(dropLine);
+                        ghostPill = null;
+                        dropLine = null;
+
+                        parentDoc.removeEventListener('pointermove', onMove);
+                        parentDoc.removeEventListener('pointerup', onUp);
+                        parentDoc.removeEventListener('pointercancel', onUp);
+
+                        if (targetIdx !== dragSrcIdx && targetIdx !== dragSrcIdx + 1) {{
+                            let newIndices = Array.from({{length: nRows}}, (_, i) => i);
+                            newIndices.splice(dragSrcIdx, 1);
+                            let insertAt = (targetIdx > dragSrcIdx) ? (targetIdx - 1) : targetIdx;
+                            insertAt = Math.max(0, Math.min(newIndices.length, insertAt));
+                            newIndices.splice(insertAt, 0, dragSrcIdx);
+
+                            const payload = newIndices.join(',') + '|' + Date.now();
+                            try {{
+                                const inputEl = parentDoc.querySelector('input[aria-label=' + JSON.stringify(bridgeLabel) + ']');
+                                if (inputEl) {{
+                                    const nativeSetter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
+                                    nativeSetter.call(inputEl, payload);
+                                    inputEl.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                    inputEl.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    inputEl.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }}));
+                                    inputEl.blur();
+                                }}
+                            }} catch (err) {{
+                                console.error('Error enviando orden DND:', err);
+                            }}
+                        }}
+                    }}
+
+                    parentDoc.addEventListener('pointermove', onMove);
+                    parentDoc.addEventListener('pointerup', onUp);
+                    parentDoc.addEventListener('pointercancel', onUp);
+                }}
+            }}, true);
+
+            return true;
+        }}
+
+        if (!initDnd()) {{
+            let attempts = 0;
+            const timer = setInterval(() => {{
+                attempts++;
+                if (initDnd() || attempts > 15) {{
+                    clearInterval(timer);
+                }}
+            }}, 150);
+        }}
+    }})();
+    </script>
     </body>
     </html>
     """
-    components.html(html_dnd, height=alto_iframe, scrolling=False)
+    components.html(html_code, height=0, scrolling=False)
 
 
 def _render_tab_presupuesto(proy_name, proy_data):
@@ -1119,13 +1104,28 @@ def _render_tab_presupuesto(proy_name, proy_data):
     parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
     n_partidas_actual = max(1, len(parts_proy))
 
-    col_tit_p, col_imp_top, col_exp_p = st.columns([5.2, 2.4, 2.4])
+    col_tit_p, col_undo, col_imp_top, col_exp_p = st.columns([4.2, 1.8, 2.0, 2.0])
     with col_tit_p:
         st.markdown("### 📐 PRESUPUESTO Y COTIZACIÓN DEL PROYECTO")
         st.caption(
             "Define partidas, tareas, metrados y precios unitarios en tiempo real. "
             "Se sincroniza automáticamente con **05. PARTIDAS Y TAREAS** y **06. COBROS & FINANZAS**."
         )
+    with col_undo:
+        st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
+        cu1, cu2 = st.columns(2)
+        with cu1:
+            can_undo = puede_deshacer_presupuesto(proy_name)
+            if st.button("↩️ Deshacer", key=f"btn_undo_ppto_{proy_name}", disabled=not can_undo, help="Deshacer último cambio en el presupuesto (como en Excel)", use_container_width=True):
+                if deshacer_presupuesto(proy_name):
+                    st.toast("↩️ Cambio deshecho", icon="↩️")
+                    st.rerun()
+        with cu2:
+            can_redo = puede_rehacer_presupuesto(proy_name)
+            if st.button("↪️ Rehacer", key=f"btn_redo_ppto_{proy_name}", disabled=not can_redo, help="Rehacer cambio deshecho", use_container_width=True):
+                if rehacer_presupuesto(proy_name):
+                    st.toast("↪️ Cambio rehecho", icon="↪️")
+                    st.rerun()
     with col_imp_top:
         st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
         if st.button("📥 IMPORTAR PRESUPUESTO", key=f"btn_toggle_imp_ppto_{proy_name}", use_container_width=True):
@@ -1399,8 +1399,8 @@ def _render_tab_presupuesto(proy_name, proy_data):
         })
 
         with st.container(border=True):
-            # Cabecera de la Partida: Nombre editable + N° de Tareas editable + Sub Total y Mix
-            cp_nom, cp_cnt, cp_sub, cp_mix = st.columns([4.4, 2.0, 2.1, 1.5])
+            # Cabecera de la Partida: Nombre editable + N° de Tareas editable + Sub Total, Mix y Mover Partida
+            cp_nom, cp_cnt, cp_sub, cp_mix, cp_mv = st.columns([4.0, 1.8, 1.9, 1.3, 1.0])
 
             key_pnom = f"ppto_pnom_{proy_name}_{idx_p}"
             key_ntasks = f"ppto_ntasks_{proy_name}_{idx_p}"
@@ -1453,6 +1453,17 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     f"</div>",
                     unsafe_allow_html=True,
                 )
+            with cp_mv:
+                st.markdown("<div style='padding-top: 26px;'></div>", unsafe_allow_html=True)
+                c_u, c_d = st.columns(2)
+                with c_u:
+                    if st.button("⬆", key=f"btn_mv_up_p_{proy_name}_{idx_p}", disabled=(idx_p == 1), help="Subir Partida completa", use_container_width=True):
+                        mover_partida_presupuesto(proy_name, idx_p, "subir")
+                        st.rerun()
+                with c_d:
+                    if st.button("⬇", key=f"btn_mv_dn_p_{proy_name}_{idx_p}", disabled=(idx_p == len(parts_proy)), help="Bajar Partida completa", use_container_width=True):
+                        mover_partida_presupuesto(proy_name, idx_p, "bajar")
+                        st.rerun()
 
             # Construir DataFrame editable para las tareas de esta partida (incluye Especialidad y Contratista para uso interno)
             rows_ed = []
@@ -1480,6 +1491,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
 
                 opciones_orden_t.append((pos_t - 1, f"{cod_item} — {desc_t or '(Sin descripción)'}"))
                 rows_ed.append({
+                    "⠿": "⠿",
                     "Item": str(cod_item),
                     "Descripcion": str(desc_t),
                     "Especialidad": str(esp_t),
@@ -1503,15 +1515,36 @@ def _render_tab_presupuesto(proy_name, proy_data):
 
             st.session_state[base_ppto_key] = df_ed_p.copy()
 
+            # Ancla invisible para que el controlador de Drag & Drop ubique la tabla en el DOM
+            st.markdown(f'<div id="anchor_ppto_{proy_name}_{idx_p}" style="display:none;" data-partida="{idx_p}" data-n-rows="{len(rows_ed)}"></div>', unsafe_allow_html=True)
+
             st.data_editor(
                 st.session_state[base_ppto_key],
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
-                disabled=["Item", "Valor_Parcial"],
+                disabled=["⠿", "Item", "Valor_Parcial"],
+                column_order=[
+                    "⠿",
+                    "Item",
+                    "Descripcion",
+                    "Especialidad",
+                    "Contratista",
+                    "Moneda",
+                    "Unidad",
+                    "Metrado",
+                    "Valor_Unitario",
+                    "Valor_Parcial",
+                ],
                 key=w_ppto_key,
                 column_config={
-                    "Item": st.column_config.TextColumn("Ítem", width="small"),
+                    "⠿": st.column_config.TextColumn(
+                        "⠿",
+                        width="small",
+                        disabled=True,
+                        help="Mantén presionado el click en ⠿ para mover la tarea arriba o abajo",
+                    ),
+                    "Item": st.column_config.TextColumn("Ítem", width="small", disabled=True),
                     "Descripcion": st.column_config.TextColumn("Descripción de la Tarea / Sub-partida", width="large"),
                     "Especialidad": st.column_config.SelectboxColumn(
                         "Especialidad 🔒",
@@ -1541,9 +1574,9 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 ),
             )
 
-            # Reordenamiento Drag & Drop (Click holdeando en una tarea y arrastrándola hacia arriba o abajo)
+            # Reordenamiento Drag & Drop integrado en la misma tabla (click sostenido en ⠿ o Ítem)
             if len(rows_ed) > 1:
-                _render_dnd_tareas_presupuesto(
+                _render_table_dnd_controller(
                     proy_name=proy_name,
                     idx_p=idx_p,
                     p_nom_completo=p_nom_completo,
@@ -1840,7 +1873,7 @@ def _render_tab_obra(proy_name, proy_data):
                     clear_base_dfs()
                     st.rerun()
 
-    with st.expander("📊 CRONOGRAMA GANTT POR PARTIDA Y TAREAS (INICIO → FIN Y ESTADOS)", expanded=True):
+    with st.expander("📊 CRONOGRAMA GANTT POR PARTIDA Y TAREAS (INICIO → FIN Y ESTADOS)", expanded=False):
         if not df_all_t_proy.empty:
             df_gantt_raw = df_all_t_proy.copy()
             df_gantt_raw["Inicio_DT"] = df_gantt_raw["Inicio"].apply(lambda x: pd.to_datetime(parse_date(x)))

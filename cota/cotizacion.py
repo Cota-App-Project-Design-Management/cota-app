@@ -127,6 +127,148 @@ def _sanitizar_dtypes_tasks_y_proyectos():
                 st.session_state.proyectos[c_txt_p] = st.session_state.proyectos[c_txt_p].fillna("").astype(str).replace({"nan": "", "None": ""}).astype(object)
 
 
+# ==========================================
+# GESTIÓN DE HISTORIAL / DESHACER (UNDO / REDO) DEL PRESUPUESTO
+# ==========================================
+
+def _crear_snapshot_presupuesto(proy_name: str) -> dict:
+    """Crea una copia profunda del estado actual de tareas, partidas, p_info y parámetros del presupuesto."""
+    _sanitizar_dtypes_tasks_y_proyectos()
+    t_sub = st.session_state.tasks[st.session_state.tasks["Proyecto"] == proy_name].copy(deep=True) if "tasks" in st.session_state else pd.DataFrame()
+    p_sub = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].copy(deep=True) if "partidas" in st.session_state else pd.DataFrame()
+    pi_sub = st.session_state.p_info[st.session_state.p_info["Proyecto"] == proy_name].copy(deep=True) if "p_info" in st.session_state else pd.DataFrame()
+
+    proy_fields = {}
+    if "proyectos" in st.session_state and not st.session_state.proyectos.empty:
+        m = st.session_state.proyectos["Nombre"] == proy_name
+        if m.any():
+            r = st.session_state.proyectos[m].iloc[0]
+            for f in ["Presupuesto", "Utilidades", "GG_Presupuesto", "TC_Presupuesto", "GG_Pct", "Utilidades_Pct", "Incluir_IGV", "Honorarios_Diseno"]:
+                if f in r:
+                    proy_fields[f] = r[f]
+
+    return {
+        "tasks": t_sub,
+        "partidas": p_sub,
+        "p_info": pi_sub,
+        "proy_fields": proy_fields,
+        "timestamp": datetime.datetime.now().isoformat(),
+    }
+
+
+def guardar_snapshot_presupuesto(proy_name: str):
+    """Guarda el estado actual en la pila de deshacer (Undo history) antes de realizar una modificación."""
+    try:
+        snap = _crear_snapshot_presupuesto(proy_name)
+        k_undo = f"ppto_undo_{proy_name}"
+        k_redo = f"ppto_redo_{proy_name}"
+        if k_undo not in st.session_state or not isinstance(st.session_state[k_undo], list):
+            st.session_state[k_undo] = []
+        # Evitar guardar snapshots idénticos consecutivos
+        if st.session_state[k_undo]:
+            ult = st.session_state[k_undo][-1]
+            if ult["tasks"].equals(snap["tasks"]) and ult["partidas"].equals(snap["partidas"]) and ult["p_info"].equals(snap["p_info"]):
+                return
+        st.session_state[k_undo].append(snap)
+        if len(st.session_state[k_undo]) > 25:
+            st.session_state[k_undo].pop(0)
+        # Cada nueva acción del usuario vacía la pila de rehacer (redo)
+        st.session_state[k_redo] = []
+    except Exception:
+        pass
+
+
+def puede_deshacer_presupuesto(proy_name: str) -> bool:
+    """Indica si hay estados previos en el historial para deshacer."""
+    k_undo = f"ppto_undo_{proy_name}"
+    return bool(st.session_state.get(k_undo))
+
+
+def puede_rehacer_presupuesto(proy_name: str) -> bool:
+    """Indica si hay estados posteriores en la pila de rehacer."""
+    k_redo = f"ppto_redo_{proy_name}"
+    return bool(st.session_state.get(k_redo))
+
+
+def _restaurar_snapshot_presupuesto(proy_name: str, snap: dict):
+    """Restaura en session_state los datos guardados en un snapshot."""
+    # 1. Restaurar tareas
+    if "tasks" in st.session_state and not snap["tasks"].empty:
+        st.session_state.tasks = st.session_state.tasks[st.session_state.tasks["Proyecto"] != proy_name].reset_index(drop=True)
+        st.session_state.tasks = pd.concat([st.session_state.tasks, snap["tasks"]], ignore_index=True)
+    elif "tasks" in st.session_state:
+        st.session_state.tasks = st.session_state.tasks[st.session_state.tasks["Proyecto"] != proy_name].reset_index(drop=True)
+
+    # 2. Restaurar partidas
+    if "partidas" in st.session_state and not snap["partidas"].empty:
+        st.session_state.partidas = st.session_state.partidas[st.session_state.partidas["Proyecto"] != proy_name].reset_index(drop=True)
+        st.session_state.partidas = pd.concat([st.session_state.partidas, snap["partidas"]], ignore_index=True)
+
+    # 3. Restaurar p_info
+    if "p_info" in st.session_state and not snap["p_info"].empty:
+        st.session_state.p_info = st.session_state.p_info[st.session_state.p_info["Proyecto"] != proy_name].reset_index(drop=True)
+        st.session_state.p_info = pd.concat([st.session_state.p_info, snap["p_info"]], ignore_index=True)
+
+    # 4. Restaurar campos del proyecto
+    if "proyectos" in st.session_state and not st.session_state.proyectos.empty:
+        m = st.session_state.proyectos["Nombre"] == proy_name
+        if m.any():
+            idx_p = st.session_state.proyectos[m].index[0]
+            for f, val in snap.get("proy_fields", {}).items():
+                if f in st.session_state.proyectos.columns:
+                    st.session_state.proyectos.at[idx_p, f] = val
+
+    # 5. Invalidar estados de data_editor para forzar recarga limpia en la UI
+    clear_base_dfs()
+    for k in list(st.session_state.keys()):
+        if str(k).startswith(f"base_df_ppto_{proy_name}") or str(k).startswith(f"c_base_df_ppto_{proy_name}") or str(k).startswith(f"ed_ppto_{proy_name}"):
+            del st.session_state[k]
+        elif str(k).startswith(f"cfg_n_partidas_{proy_name}") or str(k).startswith(f"ppto_ntasks_{proy_name}") or str(k).startswith(f"ppto_pnom_{proy_name}"):
+            del st.session_state[k]
+
+    recalcular_totales_presupuesto_proyecto(proy_name)
+
+
+def deshacer_presupuesto(proy_name: str) -> bool:
+    """Deshace el último cambio en el presupuesto volviendo al estado inmediatamente anterior."""
+    k_undo = f"ppto_undo_{proy_name}"
+    k_redo = f"ppto_redo_{proy_name}"
+    if not puede_deshacer_presupuesto(proy_name):
+        return False
+    try:
+        # Guardar estado actual en la pila de rehacer
+        actual = _crear_snapshot_presupuesto(proy_name)
+        if k_redo not in st.session_state or not isinstance(st.session_state[k_redo], list):
+            st.session_state[k_redo] = []
+        st.session_state[k_redo].append(actual)
+
+        # Recuperar estado anterior
+        prev_snap = st.session_state[k_undo].pop()
+        _restaurar_snapshot_presupuesto(proy_name, prev_snap)
+        return True
+    except Exception:
+        return False
+
+
+def rehacer_presupuesto(proy_name: str) -> bool:
+    """Rehace el cambio que fue deshecho previamente."""
+    k_undo = f"ppto_undo_{proy_name}"
+    k_redo = f"ppto_redo_{proy_name}"
+    if not puede_rehacer_presupuesto(proy_name):
+        return False
+    try:
+        # Guardar estado actual en la pila de deshacer
+        actual = _crear_snapshot_presupuesto(proy_name)
+        st.session_state[k_undo].append(actual)
+
+        # Recuperar estado posterior
+        next_snap = st.session_state[k_redo].pop()
+        _restaurar_snapshot_presupuesto(proy_name, next_snap)
+        return True
+    except Exception:
+        return False
+
+
 def guardar_parametros_presupuesto_proyecto(
     proy_name: str,
     tc: float = 3.42,
@@ -137,6 +279,7 @@ def guardar_parametros_presupuesto_proyecto(
     """Guarda los parámetros globales del presupuesto en la fila del proyecto y recalcula montos."""
     if "proyectos" not in st.session_state or st.session_state.proyectos.empty:
         return
+    guardar_snapshot_presupuesto(proy_name)
     for col in COLS_PROY:
         if col not in st.session_state.proyectos.columns:
             st.session_state.proyectos[col] = ""
@@ -355,6 +498,7 @@ def ajustar_cantidad_partidas_proyecto(proy_name: str, nueva_cantidad: int, n_ta
     Ajusta dinámicamente el número de Partidas del proyecto (ej. de 3 a 4 partidas -> crea Partida 4
     con sus tareas iniciales; si disminuye, conserva las primeras `nueva_cantidad` partidas).
     """
+    guardar_snapshot_presupuesto(proy_name)
     nueva_cantidad = max(1, int(nueva_cantidad))
     parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
     actual_cant = len(parts_proy)
@@ -447,6 +591,8 @@ def renombrar_partida_presupuesto(
     if nuevo_completo == nombre_actual_completo:
         return nuevo_completo
 
+    guardar_snapshot_presupuesto(proy_name)
+
     st.session_state.partidas.loc[
         (st.session_state.partidas["Proyecto"] == proy_name) & (st.session_state.partidas["Nombre_Partida"] == nombre_actual_completo),
         "Nombre_Partida",
@@ -500,6 +646,7 @@ def ajustar_cantidad_tareas_partida(
     Ajusta dinámicamente la cantidad de tareas (1.01, 1.02, 1.03...) dentro de una Partida,
     preservando las tareas existentes y su posición sin alterar el orden de las partidas.
     """
+    guardar_snapshot_presupuesto(proy_name)
     _sanitizar_dtypes_tasks_y_proyectos()
     nueva_cant_tareas = max(1, int(nueva_cant_tareas))
     mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
@@ -560,6 +707,7 @@ def mover_tarea_presupuesto(
     Mueve verticalmente una tarea ('subir' o 'bajar') dentro de su Partida,
     renumerando automáticamente Codigo_Item (1.01, 1.02...) y Orden sin perder datos.
     """
+    guardar_snapshot_presupuesto(proy_name)
     _sanitizar_dtypes_tasks_y_proyectos()
     mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
     df_t_p = st.session_state.tasks[mask_t].copy().reset_index(drop=True)
@@ -607,6 +755,7 @@ def reordenar_tareas_partida_por_indices(
     (proveniente de arrastrar y soltar / drag-and-drop), renumerando automáticamente
     Orden (1, 2, 3...) y Codigo_Item (1.01, 1.02, 1.03...).
     """
+    guardar_snapshot_presupuesto(proy_name)
     _sanitizar_dtypes_tasks_y_proyectos()
     mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
     df_t_p = st.session_state.tasks[mask_t].copy().reset_index(drop=True)
@@ -642,6 +791,78 @@ def reordenar_tareas_partida_por_indices(
     return True
 
 
+def mover_partida_presupuesto(
+    proy_name: str,
+    idx_partida_1based: int,
+    direccion: str,
+) -> bool:
+    """
+    Intercambia la posición de una Partida completa con la anterior ('subir') o posterior ('bajar'),
+    renumerando automáticamente los nombres (1. ..., 2. ...) y los códigos de tarea (1.01, 2.01...).
+    """
+    guardar_snapshot_presupuesto(proy_name)
+    _sanitizar_dtypes_tasks_y_proyectos()
+
+    if "partidas" not in st.session_state or st.session_state.partidas.empty:
+        return False
+
+    parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
+    n = len(parts_proy)
+    curr_pos = int(idx_partida_1based) - 1
+    target_pos = curr_pos - 1 if direccion == "subir" else curr_pos + 1
+
+    if not (0 <= curr_pos < n and 0 <= target_pos < n):
+        return False
+
+    p_actuales = parts_proy["Nombre_Partida"].tolist()
+    p_actuales[curr_pos], p_actuales[target_pos] = p_actuales[target_pos], p_actuales[curr_pos]
+
+    map_renombre = {}
+    for i_new, old_p_name in enumerate(p_actuales, start=1):
+        limp = limpiar_nombre_partida(old_p_name, i_new)
+        nuevo_nom = formatear_nombre_partida(i_new, limp)
+        map_renombre[old_p_name] = (i_new, nuevo_nom)
+
+    nuevas_partidas_proy = []
+    for old_p_name in p_actuales:
+        _, nuevo_nom = map_renombre[old_p_name]
+        nuevas_partidas_proy.append({"Proyecto": proy_name, "Nombre_Partida": nuevo_nom})
+
+    st.session_state.partidas = st.session_state.partidas[st.session_state.partidas["Proyecto"] != proy_name].reset_index(drop=True)
+    st.session_state.partidas = pd.concat([st.session_state.partidas, pd.DataFrame(nuevas_partidas_proy)], ignore_index=True)
+
+    if "p_info" in st.session_state and not st.session_state.p_info.empty:
+        mask_pi = st.session_state.p_info["Proyecto"] == proy_name
+        for old_p, (i_new, nuevo_nom) in map_renombre.items():
+            st.session_state.p_info.loc[mask_pi & (st.session_state.p_info["Nombre_Partida"] == old_p), "Nombre_Partida"] = nuevo_nom
+
+    if "tasks" in st.session_state and not st.session_state.tasks.empty:
+        mask_t = st.session_state.tasks["Proyecto"] == proy_name
+        df_proy_t = st.session_state.tasks[mask_t].copy()
+        for old_p, (i_new, nuevo_nom) in map_renombre.items():
+            m_tp = df_proy_t["Partida"] == old_p
+            df_proy_t.loc[m_tp, "Partida"] = nuevo_nom
+            indices_sub = df_proy_t[m_tp].index.tolist()
+            for pos_sub, idx_sub in enumerate(indices_sub, start=1):
+                cod_sub = f"{i_new}.{pos_sub:02d}"
+                desc_sub = extraer_descripcion_tarea(df_proy_t.at[idx_sub, "Tarea"], cod_sub)
+                df_proy_t.at[idx_sub, "Orden"] = pos_sub
+                df_proy_t.at[idx_sub, "Codigo_Item"] = cod_sub
+                df_proy_t.at[idx_sub, "Tarea"] = f"{cod_sub} {desc_sub}".strip() if desc_sub else cod_sub
+
+        st.session_state.tasks = st.session_state.tasks[~mask_t].reset_index(drop=True)
+        st.session_state.tasks = pd.concat([st.session_state.tasks, df_proy_t], ignore_index=True)
+
+    if "pagos" in st.session_state and not st.session_state.pagos.empty:
+        mask_pag = st.session_state.pagos["Proyecto"] == proy_name
+        for old_p, (i_new, nuevo_nom) in map_renombre.items():
+            st.session_state.pagos.loc[mask_pag & (st.session_state.pagos["Partida"] == old_p), "Partida"] = nuevo_nom
+
+    clear_base_dfs()
+    recalcular_totales_presupuesto_proyecto(proy_name)
+    return True
+
+
 def aplicar_edicion_tabla_presupuesto_partida(
     base_key: str,
     widget_key: str,
@@ -662,11 +883,13 @@ def aplicar_edicion_tabla_presupuesto_partida(
     if not edited_rows:
         return
 
+    guardar_snapshot_presupuesto(proy_name)
+
     df_base = st.session_state[base_key].copy()
     for c_num_b in ["Metrado", "Valor_Unitario", "Valor_Parcial"]:
         if c_num_b in df_base.columns:
             df_base[c_num_b] = pd.to_numeric(df_base[c_num_b], errors="coerce").fillna(0.0).astype(float)
-    for c_txt_b in ["Item", "Descripcion", "Especialidad", "Contratista", "Moneda", "Unidad"]:
+    for c_txt_b in ["⠿", "Item", "Descripcion", "Especialidad", "Contratista", "Moneda", "Unidad"]:
         if c_txt_b in df_base.columns and df_base[c_txt_b].dtype != object:
             df_base[c_txt_b] = df_base[c_txt_b].fillna("").astype(str).astype(object)
 
@@ -2068,6 +2291,7 @@ def aplicar_cotizacion_a_proyecto(
     """
     Importa los datos leídos por `parsear_cotizacion_venti` en `st.session_state` para el proyecto `proy_name`.
     """
+    guardar_snapshot_presupuesto(proy_name)
     if "proyectos" not in st.session_state:
         st.session_state.proyectos = pd.DataFrame(columns=COLS_PROY)
     if "p_info" not in st.session_state:
