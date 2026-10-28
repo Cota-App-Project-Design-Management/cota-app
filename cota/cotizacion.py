@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime
 import io
 import json
+import math
 import re
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -66,12 +67,32 @@ def extraer_descripcion_tarea(tarea_raw: str, codigo_item: str = "") -> str:
     return s
 
 
+def redondear_arriba_10(valor: float) -> float:
+    """Redondea un monto hacia arriba al múltiplo de 10 más cercano (ej. 23.4 -> 30, 20.0 -> 20)."""
+    v = safe_float(valor, 0.0)
+    if v <= 0:
+        return 0.0
+    return float(math.ceil(round(v, 4) / 10.0) * 10)
+
+
+def redondear_arriba_100(valor: float) -> float:
+    """Redondea un monto hacia arriba al múltiplo de 100 más cercano (ej. 1435.5 -> 1500, 1400.0 -> 1400)."""
+    v = safe_float(valor, 0.0)
+    if v <= 0:
+        return 0.0
+    return float(math.ceil(round(v, 4) / 100.0) * 100)
+
+
 def obtener_parametros_presupuesto_proyecto(proy_name: str) -> dict:
-    """Obtiene TC, % Gastos Generales, % Gestión/Supervisión e IGV del proyecto."""
+    """Obtiene TC, %/monto Gastos Generales, %/monto Gestión/Supervisión e IGV del proyecto."""
     params = {
         "tc": 3.42,
         "gg_pct": 2.0,
+        "modo_gg": "pct",
+        "monto_fijo_gg": 0.0,
         "utilidades_pct": 15.0,
+        "modo_util": "pct",
+        "monto_fijo_util": 0.0,
         "incluir_igv": False,
     }
     df_p = st.session_state.get("proyectos", pd.DataFrame())
@@ -88,9 +109,23 @@ def obtener_parametros_presupuesto_proyecto(proy_name: str) -> dict:
     if gg_raw is not None and str(gg_raw).strip() not in ["", "nan", "None"]:
         params["gg_pct"] = safe_float(gg_raw, 2.0)
 
+    modo_gg_raw = safe_str(row.get("Modo_GG", "pct")).strip().lower()
+    if modo_gg_raw in ["monto", "fijo", "exacto"]:
+        params["modo_gg"] = "monto"
+    else:
+        params["modo_gg"] = "pct"
+    params["monto_fijo_gg"] = safe_float(row.get("Monto_Fijo_GG", 0.0), 0.0)
+
     util_raw = row.get("Utilidades_Pct")
     if util_raw is not None and str(util_raw).strip() not in ["", "nan", "None"]:
         params["utilidades_pct"] = safe_float(util_raw, 15.0)
+
+    modo_util_raw = safe_str(row.get("Modo_Utilidades", "pct")).strip().lower()
+    if modo_util_raw in ["monto", "fijo", "exacto"]:
+        params["modo_util"] = "monto"
+    else:
+        params["modo_util"] = "pct"
+    params["monto_fijo_util"] = safe_float(row.get("Monto_Fijo_Utilidades", 0.0), 0.0)
 
     igv_raw = row.get("Incluir_IGV")
     if igv_raw is not None and str(igv_raw).strip() not in ["", "nan", "None"]:
@@ -119,10 +154,10 @@ def _sanitizar_dtypes_tasks_y_proyectos():
                 st.session_state.p_info[c_pi] = st.session_state.p_info[c_pi].fillna("").astype(str).replace({"nan": "", "None": ""}).astype(object)
 
     if "proyectos" in st.session_state and isinstance(st.session_state.proyectos, pd.DataFrame):
-        for c_num_p in ["Presupuesto", "Utilidades", "GG_Presupuesto", "Honorarios_Diseno", "Presupuesto_FFE", "TC_Presupuesto", "GG_Pct", "Utilidades_Pct"]:
+        for c_num_p in ["Presupuesto", "Utilidades", "GG_Presupuesto", "Honorarios_Diseno", "Presupuesto_FFE", "TC_Presupuesto", "GG_Pct", "Utilidades_Pct", "Monto_Fijo_GG", "Monto_Fijo_Utilidades"]:
             if c_num_p in st.session_state.proyectos.columns:
                 st.session_state.proyectos[c_num_p] = pd.to_numeric(st.session_state.proyectos[c_num_p], errors="coerce").fillna(0.0).astype(float)
-        for c_txt_p in ["Link_Drive", "Pagos_Semanales_JSON", "Notas"]:
+        for c_txt_p in ["Link_Drive", "Pagos_Semanales_JSON", "Notas", "Modo_GG", "Modo_Utilidades"]:
             if c_txt_p in st.session_state.proyectos.columns and st.session_state.proyectos[c_txt_p].dtype != object:
                 st.session_state.proyectos[c_txt_p] = st.session_state.proyectos[c_txt_p].fillna("").astype(str).replace({"nan": "", "None": ""}).astype(object)
 
@@ -275,6 +310,10 @@ def guardar_parametros_presupuesto_proyecto(
     gg_pct: float = 2.0,
     utilidades_pct: float = 15.0,
     incluir_igv: bool = False,
+    modo_gg: str = "pct",
+    monto_fijo_gg: float = 0.0,
+    modo_util: str = "pct",
+    monto_fijo_util: float = 0.0,
 ):
     """Guarda los parámetros globales del presupuesto en la fila del proyecto y recalcula montos."""
     if "proyectos" not in st.session_state or st.session_state.proyectos.empty:
@@ -291,6 +330,10 @@ def guardar_parametros_presupuesto_proyecto(
         st.session_state.proyectos.at[idx, "TC_Presupuesto"] = float(tc)
         st.session_state.proyectos.at[idx, "GG_Pct"] = float(gg_pct)
         st.session_state.proyectos.at[idx, "Utilidades_Pct"] = float(utilidades_pct)
+        st.session_state.proyectos.at[idx, "Modo_GG"] = str(modo_gg)
+        st.session_state.proyectos.at[idx, "Monto_Fijo_GG"] = float(monto_fijo_gg)
+        st.session_state.proyectos.at[idx, "Modo_Utilidades"] = str(modo_util)
+        st.session_state.proyectos.at[idx, "Monto_Fijo_Utilidades"] = float(monto_fijo_util)
         if st.session_state.proyectos["Incluir_IGV"].dtype != bool:
             st.session_state.proyectos["Incluir_IGV"] = st.session_state.proyectos["Incluir_IGV"].apply(to_bool).astype(bool)
         st.session_state.proyectos.at[idx, "Incluir_IGV"] = bool(incluir_igv)
@@ -461,8 +504,27 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str, sincronizar_pactado:
             st.session_state.p_info = pd.concat([st.session_state.p_info, nueva_pi[COLS_P_INFO]], ignore_index=True)
 
     subtotal_casco = round(subtotal_casco, 2)
-    gg_monto = round(subtotal_casco * (gg_pct / 100.0), 2)
-    util_monto = round(subtotal_casco * (util_pct / 100.0), 2)
+
+    modo_gg = params.get("modo_gg", "pct")
+    if modo_gg == "monto":
+        gg_monto = redondear_arriba_10(params.get("monto_fijo_gg", 0.0))
+        gg_pct = round((gg_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else 0.0, 2)
+    else:
+        calc_gg = subtotal_casco * (gg_pct / 100.0)
+        gg_monto = redondear_arriba_10(calc_gg)
+        # Recalcular % efectivo tras redondeo hacia arriba al 10
+        gg_pct = round((gg_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else gg_pct, 2)
+
+    modo_util = params.get("modo_util", "pct")
+    if modo_util == "monto":
+        util_monto = redondear_arriba_100(params.get("monto_fijo_util", 0.0))
+        util_pct = round((util_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else 0.0, 2)
+    else:
+        calc_util = subtotal_casco * (util_pct / 100.0)
+        util_monto = redondear_arriba_100(calc_util)
+        # Recalcular % efectivo tras redondeo hacia arriba al 100
+        util_pct = round((util_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else util_pct, 2)
+
     base_imp = subtotal_casco + gg_monto + util_monto
     igv_monto = round(base_imp * 0.18, 2) if incluir_igv else 0.0
     total_soles = round(base_imp + igv_monto, 2)
@@ -476,14 +538,20 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str, sincronizar_pactado:
             st.session_state.proyectos.at[idx_p, "Presupuesto"] = float(total_soles)
             st.session_state.proyectos.at[idx_p, "GG_Presupuesto"] = float(gg_monto)
             st.session_state.proyectos.at[idx_p, "Utilidades"] = float(util_monto)
+            st.session_state.proyectos.at[idx_p, "GG_Pct"] = float(gg_pct)
+            st.session_state.proyectos.at[idx_p, "Utilidades_Pct"] = float(util_pct)
 
     return {
         "tc": tc,
         "subtotal_casco": subtotal_casco,
         "gg_pct": gg_pct,
         "gg_monto": gg_monto,
+        "modo_gg": modo_gg,
+        "monto_fijo_gg": params.get("monto_fijo_gg", 0.0),
         "utilidades_pct": util_pct,
         "utilidades_monto": util_monto,
+        "modo_util": modo_util,
+        "monto_fijo_util": params.get("monto_fijo_util", 0.0),
         "incluir_igv": incluir_igv,
         "igv_pct": 18.0 if incluir_igv else 0.0,
         "igv_monto": igv_monto,
@@ -1989,14 +2057,14 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
     resultado["partidas"] = partidas_final
 
     if raw_gg_amount > 0:
-        gg_monto = round(raw_gg_amount, 2)
+        gg_monto = redondear_arriba_10(raw_gg_amount)
         gg_pct = round((raw_gg_factor_or_val * 100.0) if (raw_gg_factor_or_val and raw_gg_is_pct) else ((gg_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else 0.0), 2)
     elif raw_gg_factor_or_val is not None and raw_gg_factor_or_val > 0:
         if raw_gg_is_pct:
             gg_pct = round(raw_gg_factor_or_val * 100.0, 2)
-            gg_monto = round(subtotal_casco * raw_gg_factor_or_val, 2)
+            gg_monto = redondear_arriba_10(subtotal_casco * raw_gg_factor_or_val)
         else:
-            gg_monto = round(raw_gg_factor_or_val, 2)
+            gg_monto = redondear_arriba_10(raw_gg_factor_or_val)
             gg_pct = round((gg_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else 0.0, 2)
     else:
         gg_pct = 0.0
@@ -2006,14 +2074,14 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
     resultado["gg_monto"] = gg_monto
 
     if raw_util_amount > 0:
-        util_monto = round(raw_util_amount, 2)
+        util_monto = redondear_arriba_100(raw_util_amount)
         util_pct = round((raw_util_factor_or_val * 100.0) if (raw_util_factor_or_val and raw_util_is_pct) else ((util_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else 0.0), 2)
     elif raw_util_factor_or_val is not None and raw_util_factor_or_val > 0:
         if raw_util_is_pct:
             util_pct = round(raw_util_factor_or_val * 100.0, 2)
-            util_monto = round(subtotal_casco * raw_util_factor_or_val, 2)
+            util_monto = redondear_arriba_100(subtotal_casco * raw_util_factor_or_val)
         else:
-            util_monto = round(raw_util_factor_or_val, 2)
+            util_monto = redondear_arriba_100(raw_util_factor_or_val)
             util_pct = round((util_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else 0.0, 2)
     else:
         util_pct = 0.0
@@ -2265,14 +2333,20 @@ def parsear_presupuesto_flexible(rows_or_input, tc_default: float = 3.42) -> dic
     resultado["partidas"] = partidas_final
     resultado["subtotal_casco"] = subtotal_casco
     if resultado["gg_monto"] <= 0:
-        resultado["gg_monto"] = round(subtotal_casco * (resultado["gg_pct"] / 100.0), 2)
+        calc_gg_flex = subtotal_casco * (resultado["gg_pct"] / 100.0)
+        resultado["gg_monto"] = redondear_arriba_10(calc_gg_flex)
+        resultado["gg_pct"] = round((resultado["gg_monto"] / subtotal_casco * 100.0) if subtotal_casco > 0 else resultado["gg_pct"], 2)
     else:
-        resultado["gg_pct"] = round((resultado["gg_monto"] / subtotal_casco) * 100.0, 2) if subtotal_casco > 0 else 2.0
+        resultado["gg_monto"] = redondear_arriba_10(resultado["gg_monto"])
+        resultado["gg_pct"] = round((resultado["gg_monto"] / subtotal_casco * 100.0) if subtotal_casco > 0 else 2.0, 2)
 
     if resultado["utilidades_monto"] <= 0:
-        resultado["utilidades_monto"] = round(subtotal_casco * (resultado["utilidades_pct"] / 100.0), 2)
+        calc_util_flex = subtotal_casco * (resultado["utilidades_pct"] / 100.0)
+        resultado["utilidades_monto"] = redondear_arriba_100(calc_util_flex)
+        resultado["utilidades_pct"] = round((resultado["utilidades_monto"] / subtotal_casco * 100.0) if subtotal_casco > 0 else resultado["utilidades_pct"], 2)
     else:
-        resultado["utilidades_pct"] = round((resultado["utilidades_monto"] / subtotal_casco) * 100.0, 2) if subtotal_casco > 0 else 15.0
+        resultado["utilidades_monto"] = redondear_arriba_100(resultado["utilidades_monto"])
+        resultado["utilidades_pct"] = round((resultado["utilidades_monto"] / subtotal_casco * 100.0) if subtotal_casco > 0 else 15.0, 2)
 
     tot_soles = round(subtotal_casco + resultado["gg_monto"] + resultado["utilidades_monto"] + resultado["igv_monto"], 2)
     resultado["presupuesto_total"] = tot_soles
@@ -2326,6 +2400,14 @@ def aplicar_cotizacion_a_proyecto(
             st.session_state.proyectos.at[idx_p, "GG_Pct"] = float(parsed_data["gg_pct"])
         if parsed_data.get("utilidades_pct", 0.0) >= 0:
             st.session_state.proyectos.at[idx_p, "Utilidades_Pct"] = float(parsed_data["utilidades_pct"])
+        if "modo_gg" in parsed_data:
+            st.session_state.proyectos.at[idx_p, "Modo_GG"] = str(parsed_data["modo_gg"])
+        if "monto_fijo_gg" in parsed_data:
+            st.session_state.proyectos.at[idx_p, "Monto_Fijo_GG"] = float(parsed_data["monto_fijo_gg"])
+        if "modo_util" in parsed_data:
+            st.session_state.proyectos.at[idx_p, "Modo_Utilidades"] = str(parsed_data["modo_util"])
+        if "monto_fijo_util" in parsed_data:
+            st.session_state.proyectos.at[idx_p, "Monto_Fijo_Utilidades"] = float(parsed_data["monto_fijo_util"])
         st.session_state.proyectos.at[idx_p, "Incluir_IGV"] = bool(parsed_data.get("igv_pct", 0.0) > 0)
 
         cli_parsed = safe_str(parsed_data.get("cliente", ""))

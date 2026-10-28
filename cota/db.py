@@ -34,6 +34,7 @@ COLS_PROY = [
     'Archivado', 'Metodologia', 'Division', 'Tipo_Proyecto', 'Num_Pisos', 'Num_Sotanos',
     'Presupuesto_FFE', 'Honorarios_Diseno',
     'TC_Presupuesto', 'GG_Pct', 'Utilidades_Pct', 'Incluir_IGV',
+    'Modo_GG', 'Monto_Fijo_GG', 'Modo_Utilidades', 'Monto_Fijo_Utilidades',
     'Link_Drive', 'Pagos_Semanales_JSON'
 ]
 

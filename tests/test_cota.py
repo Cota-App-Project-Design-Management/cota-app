@@ -971,6 +971,92 @@ def test_dnd_column_compact_width():
     assert 'help="Mantén presionado el click en ⠿' not in code
 
 
+def test_redondeo_gg_y_utilidades():
+    from cota.cotizacion import redondear_arriba_10, redondear_arriba_100
+
+    # Gastos Generales: redondeo hacia arriba al 10 más cercano
+    assert redondear_arriba_10(0.0) == 0.0
+    assert redondear_arriba_10(10.0) == 10.0
+    assert redondear_arriba_10(10.01) == 20.0
+    assert redondear_arriba_10(23.45) == 30.0
+    assert redondear_arriba_10(29.0) == 30.0
+    assert redondear_arriba_10(30.0) == 30.0
+    assert redondear_arriba_10(145.2) == 150.0
+
+    # Utilidades: redondeo hacia arriba al 100 más cercano
+    assert redondear_arriba_100(0.0) == 0.0
+    assert redondear_arriba_100(100.0) == 100.0
+    assert redondear_arriba_100(100.01) == 200.0
+    assert redondear_arriba_100(1435.50) == 1500.0
+    assert redondear_arriba_100(1400.0) == 1400.0
+    assert redondear_arriba_100(250.0) == 300.0
+
+
+def test_recalcular_totales_modo_monto_y_pct():
+    import streamlit as st
+    from cota.cotizacion import (
+        recalcular_totales_presupuesto_proyecto,
+        guardar_parametros_presupuesto_proyecto,
+    )
+    proy_test = "Proyecto_Test_Redondeo"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": proy_test,
+        "TC_Presupuesto": 3.42,
+        "GG_Pct": 2.0,
+        "Utilidades_Pct": 15.0,
+        "Incluir_IGV": False,
+        "Modo_GG": "pct",
+        "Monto_Fijo_GG": 0.0,
+        "Modo_Utilidades": "pct",
+        "Monto_Fijo_Utilidades": 0.0,
+        "Presupuesto": 0.0,
+        "Utilidades": 0.0,
+        "GG_Presupuesto": 0.0,
+    }])
+    st.session_state["partidas"] = pd.DataFrame([{"Proyecto": proy_test, "Nombre_Partida": "01. Obra"}])
+    st.session_state["p_info"] = pd.DataFrame([{"Proyecto": proy_test, "Nombre_Partida": "01. Obra", "Monto_Pactado": 1055.0}])
+    st.session_state["tasks"] = pd.DataFrame([{
+        "Proyecto": proy_test,
+        "Partida": "01. Obra",
+        "Orden": 1,
+        "Codigo_Item": "1.01",
+        "Tarea": "1.01 Demo",
+        "Moneda": "Soles",
+        "Unidad": "glb",
+        "Metrado": 1.0,
+        "Valor_Unitario": 1055.0,
+        "Presupuesto": 1055.0,
+    }])
+
+    # 1. Modo % con redondeo hacia arriba:
+    # Subtotal = 1055.0
+    # GG 2% = 21.10 -> redondeo arriba al 10 = 30.0
+    # Util 15% = 158.25 -> redondeo arriba al 100 = 200.0
+    tot = recalcular_totales_presupuesto_proyecto(proy_test)
+    assert tot["subtotal_casco"] == 1055.0
+    assert tot["gg_monto"] == 30.0
+    assert tot["utilidades_monto"] == 200.0
+    assert tot["presupuesto_total"] == 1055.0 + 30.0 + 200.0  # 1285.0
+
+    # 2. Modo Monto Exacto con redondeo hacia arriba:
+    # Guardamos monto fijo GG = 42.0 (redondeo a 50.0) y Util = 310.0 (redondeo a 400.0)
+    guardar_parametros_presupuesto_proyecto(
+        proy_name=proy_test,
+        tc=3.42,
+        gg_pct=2.0,
+        utilidades_pct=15.0,
+        incluir_igv=False,
+        modo_gg="monto",
+        monto_fijo_gg=42.0,
+        modo_util="monto",
+        monto_fijo_util=310.0,
+    )
+    tot2 = recalcular_totales_presupuesto_proyecto(proy_test)
+    assert tot2["gg_monto"] == 50.0
+    assert tot2["utilidades_monto"] == 400.0
+    assert tot2["presupuesto_total"] == 1055.0 + 50.0 + 400.0  # 1505.0
+
+
 
 
 

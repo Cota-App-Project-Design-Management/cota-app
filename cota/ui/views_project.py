@@ -87,6 +87,8 @@ from cota.cotizacion import (
     puede_deshacer_presupuesto,
     puede_rehacer_presupuesto,
     recalcular_totales_presupuesto_proyecto,
+    redondear_arriba_10,
+    redondear_arriba_100,
     rehacer_presupuesto,
     renombrar_partida_presupuesto,
     reordenar_tareas_partida_por_indices,
@@ -1196,9 +1198,75 @@ def _render_tab_presupuesto(proy_name, proy_data):
             if parsed_imp is not None and parsed_imp.get("partidas"):
                 n_p_det = len(parsed_imp["partidas"])
                 n_t_det = sum(len(p.get("tareas", [])) for p in parsed_imp["partidas"])
+                st.markdown("---")
+                st.markdown("###### ⚙️ Ajustar Parámetros de Gastos Generales y Utilidades")
+                c_imp_g1, c_imp_g2, c_imp_g3, c_imp_g4 = st.columns([1.3, 1.3, 1.1, 1.0])
+                with c_imp_g1:
+                    modo_gg_imp_tab = st.radio(
+                        "Gastos Generales:",
+                        options=["pct", "monto"],
+                        format_func=lambda x: "% Casco" if x == "pct" else "Monto Fijo (S/)",
+                        horizontal=True,
+                        key=f"rad_modo_gg_imp_tab_{proy_name}",
+                    )
+                    if modo_gg_imp_tab == "pct":
+                        in_gg_pct = st.number_input("% GG", value=float(parsed_imp.get("gg_pct", 2.0)), min_value=0.0, max_value=100.0, step=0.5, format="%.1f", key=f"in_gg_pct_tab_{proy_name}")
+                        m_gg_imp_calc = redondear_arriba_10(parsed_imp["subtotal_casco"] * (in_gg_pct / 100.0))
+                        pct_gg_imp_calc = round((m_gg_imp_calc / parsed_imp["subtotal_casco"] * 100.0) if parsed_imp["subtotal_casco"] > 0 else in_gg_pct, 2)
+                        monto_fijo_gg_tab = 0.0
+                    else:
+                        in_gg_monto = st.number_input("Monto GG (S/)", value=float(parsed_imp.get("gg_monto", 0.0)), min_value=0.0, step=10.0, format="%.2f", key=f"in_gg_monto_tab_{proy_name}")
+                        m_gg_imp_calc = redondear_arriba_10(in_gg_monto)
+                        pct_gg_imp_calc = round((m_gg_imp_calc / parsed_imp["subtotal_casco"] * 100.0) if parsed_imp["subtotal_casco"] > 0 else 0.0, 2)
+                        monto_fijo_gg_tab = m_gg_imp_calc
+                with c_imp_g2:
+                    modo_util_imp_tab = st.radio(
+                        "Gestión y Supervisión:",
+                        options=["pct", "monto"],
+                        format_func=lambda x: "% Casco" if x == "pct" else "Monto Fijo (S/)",
+                        horizontal=True,
+                        key=f"rad_modo_util_imp_tab_{proy_name}",
+                    )
+                    if modo_util_imp_tab == "pct":
+                        in_util_pct = st.number_input("% Util.", value=float(parsed_imp.get("utilidades_pct", 15.0)), min_value=0.0, max_value=100.0, step=0.5, format="%.1f", key=f"in_util_pct_tab_{proy_name}")
+                        m_util_imp_calc = redondear_arriba_100(parsed_imp["subtotal_casco"] * (in_util_pct / 100.0))
+                        pct_util_imp_calc = round((m_util_imp_calc / parsed_imp["subtotal_casco"] * 100.0) if parsed_imp["subtotal_casco"] > 0 else in_util_pct, 2)
+                        monto_fijo_util_tab = 0.0
+                    else:
+                        in_util_monto = st.number_input("Monto Util. (S/)", value=float(parsed_imp.get("utilidades_monto", 0.0)), min_value=0.0, step=100.0, format="%.2f", key=f"in_util_monto_tab_{proy_name}")
+                        m_util_imp_calc = redondear_arriba_100(in_util_monto)
+                        pct_util_imp_calc = round((m_util_imp_calc / parsed_imp["subtotal_casco"] * 100.0) if parsed_imp["subtotal_casco"] > 0 else 0.0, 2)
+                        monto_fijo_util_tab = m_util_imp_calc
+                with c_imp_g3:
+                    in_tc_tab = st.number_input("TC", value=float(parsed_imp.get("tc", params["tc"])), min_value=1.0, max_value=10.0, step=0.01, format="%.2f", key=f"in_tc_tab_{proy_name}")
+                with c_imp_g4:
+                    st.markdown("<div style='padding-top: 26px;'></div>", unsafe_allow_html=True)
+                    in_igv_tab = st.checkbox("IGV (18%)", value=bool(parsed_imp.get("igv_pct", 0.0) > 0 or parsed_imp.get("incluir_igv", False)), key=f"in_igv_tab_{proy_name}")
+
+                # Recalcular valores ajustados
+                parsed_imp["modo_gg"] = modo_gg_imp_tab
+                parsed_imp["monto_fijo_gg"] = monto_fijo_gg_tab
+                parsed_imp["gg_monto"] = m_gg_imp_calc
+                parsed_imp["gg_pct"] = pct_gg_imp_calc
+
+                parsed_imp["modo_util"] = modo_util_imp_tab
+                parsed_imp["monto_fijo_util"] = monto_fijo_util_tab
+                parsed_imp["utilidades_monto"] = m_util_imp_calc
+                parsed_imp["utilidades_pct"] = pct_util_imp_calc
+
+                parsed_imp["tc"] = in_tc_tab
+                base_imp_tab = parsed_imp["subtotal_casco"] + m_gg_imp_calc + m_util_imp_calc
+                parsed_imp["igv_monto"] = round(base_imp_tab * 0.18, 2) if in_igv_tab else 0.0
+                parsed_imp["igv_pct"] = 18.0 if in_igv_tab else 0.0
+                parsed_imp["incluir_igv"] = in_igv_tab
+                parsed_imp["presupuesto_total"] = round(base_imp_tab + parsed_imp["igv_monto"], 2)
+                parsed_imp["presupuesto_dolares"] = round(parsed_imp["presupuesto_total"] / in_tc_tab, 2) if in_tc_tab > 0 else 0.0
+
                 st.markdown(
                     f"**✅ Presupuesto detectado:** `{n_p_det}` Partida(s) · `{n_t_det}` Tarea(s) · "
                     f"Sub Total Casco: `{format_currency(parsed_imp['subtotal_casco'])}` · "
+                    f"Gastos Generales: `{format_currency(parsed_imp['gg_monto'])}` ({parsed_imp['gg_pct']:g}%) · "
+                    f"Gestión/Utilidades: `{format_currency(parsed_imp['utilidades_monto'])}` ({parsed_imp['utilidades_pct']:g}%) · "
                     f"**TOTAL: `{format_currency(parsed_imp['presupuesto_total'])}`**"
                 )
                 modo_aplicar = st.radio(
@@ -1220,15 +1288,19 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     st.success(f"Presupuesto cargado con éxito: {res_imp['partidas_importadas']} partidas y {res_imp['tareas_importadas']} tareas.")
                     st.rerun()
 
-    # Panel de Configuración Global del Presupuesto (incluye Honorarios de Diseño)
+    # Panel de Configuración Global del Presupuesto (incluye Honorarios de Diseño, % o Monto Exacto con redondeo)
     with st.container(border=True):
         st.markdown("##### ⚙️ Configuración de Estructura y Parámetros Financieros")
-        c_cfg1, c_cfg2, c_cfg3, c_cfg4, c_cfg_hon, c_cfg5 = st.columns([1.5, 1.5, 1.7, 1.9, 1.9, 1.5])
+        c_cfg1, c_cfg2, c_cfg3, c_cfg4, c_cfg_hon, c_cfg5 = st.columns([1.3, 1.2, 2.2, 2.2, 1.6, 1.1])
 
         key_n_part = f"cfg_n_partidas_{proy_name}"
         key_tc = f"cfg_tc_ppto_{proy_name}"
-        key_gg = f"cfg_gg_pct_{proy_name}"
-        key_util = f"cfg_util_pct_{proy_name}"
+        key_modo_gg = f"cfg_modo_gg_{proy_name}"
+        key_gg_pct = f"cfg_gg_pct_{proy_name}"
+        key_gg_monto = f"cfg_gg_monto_{proy_name}"
+        key_modo_util = f"cfg_modo_util_{proy_name}"
+        key_util_pct = f"cfg_util_pct_{proy_name}"
+        key_util_monto = f"cfg_util_monto_{proy_name}"
         key_hon = f"cfg_hon_diseno_{proy_name}"
         key_igv = f"cfg_igv_chk_{proy_name}"
 
@@ -1240,12 +1312,24 @@ def _render_tab_presupuesto(proy_name, proy_data):
             ajustar_cantidad_partidas_proyecto(proy_name, int(nueva_cant), n_tareas_default=3)
 
         def _on_change_params_ppto():
+            modo_gg_val = st.session_state.get(key_modo_gg, params.get("modo_gg", "pct"))
+            gg_pct_val = safe_float(st.session_state.get(key_gg_pct, params["gg_pct"]), 2.0)
+            gg_monto_val = safe_float(st.session_state.get(key_gg_monto, params.get("monto_fijo_gg", 0.0)), 0.0)
+
+            modo_util_val = st.session_state.get(key_modo_util, params.get("modo_util", "pct"))
+            util_pct_val = safe_float(st.session_state.get(key_util_pct, params["utilidades_pct"]), 15.0)
+            util_monto_val = safe_float(st.session_state.get(key_util_monto, params.get("monto_fijo_util", 0.0)), 0.0)
+
             guardar_parametros_presupuesto_proyecto(
                 proy_name=proy_name,
                 tc=safe_float(st.session_state.get(key_tc, params["tc"]), 3.42),
-                gg_pct=safe_float(st.session_state.get(key_gg, params["gg_pct"]), 2.0),
-                utilidades_pct=safe_float(st.session_state.get(key_util, params["utilidades_pct"]), 15.0),
+                gg_pct=gg_pct_val,
+                utilidades_pct=util_pct_val,
                 incluir_igv=bool(st.session_state.get(key_igv, params["incluir_igv"])),
+                modo_gg=modo_gg_val,
+                monto_fijo_gg=gg_monto_val,
+                modo_util=modo_util_val,
+                monto_fijo_util=util_monto_val,
             )
             if key_hon in st.session_state and "proyectos" in st.session_state and not st.session_state.proyectos.empty:
                 st.session_state.proyectos["Honorarios_Diseno"] = pd.to_numeric(
@@ -1277,28 +1361,73 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 on_change=_on_change_params_ppto,
             )
         with c_cfg3:
-            st.number_input(
-                "% Gastos Gen.",
-                min_value=0.0,
-                max_value=100.0,
-                value=float(params["gg_pct"]),
-                step=0.5,
-                format="%.1f",
-                key=key_gg,
+            st.radio(
+                "Gastos Generales:",
+                options=["pct", "monto"],
+                index=0 if params.get("modo_gg", "pct") == "pct" else 1,
+                format_func=lambda x: "% Casco" if x == "pct" else "Monto Fijo (S/)",
+                horizontal=True,
+                key=key_modo_gg,
                 on_change=_on_change_params_ppto,
             )
+            if st.session_state.get(key_modo_gg, params.get("modo_gg", "pct")) == "pct":
+                st.number_input(
+                    "% Gastos Gen.",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=float(params["gg_pct"]),
+                    step=0.5,
+                    format="%.1f",
+                    key=key_gg_pct,
+                    on_change=_on_change_params_ppto,
+                    help="Calcula % del Casco y redondea hacia arriba al múltiplo de 10.",
+                )
+            else:
+                st.number_input(
+                    "Monto GG (S/.)",
+                    min_value=0.0,
+                    value=float(params.get("monto_fijo_gg", totales.get("gg_monto", 0.0))),
+                    step=10.0,
+                    format="%.2f",
+                    key=key_gg_monto,
+                    on_change=_on_change_params_ppto,
+                    help="Monto exacto de Gastos Generales (redondeo hacia arriba al 10).",
+                )
         with c_cfg4:
-            st.number_input(
-                "% Gestión / Util.",
-                min_value=0.0,
-                max_value=100.0,
-                value=float(params["utilidades_pct"]),
-                step=0.5,
-                format="%.1f",
-                key=key_util,
+            st.radio(
+                "Gestión y Supervisión:",
+                options=["pct", "monto"],
+                index=0 if params.get("modo_util", "pct") == "pct" else 1,
+                format_func=lambda x: "% Casco" if x == "pct" else "Monto Fijo (S/)",
+                horizontal=True,
+                key=key_modo_util,
                 on_change=_on_change_params_ppto,
             )
+            if st.session_state.get(key_modo_util, params.get("modo_util", "pct")) == "pct":
+                st.number_input(
+                    "% Gestión / Util.",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=float(params["utilidades_pct"]),
+                    step=0.5,
+                    format="%.1f",
+                    key=key_util_pct,
+                    on_change=_on_change_params_ppto,
+                    help="Calcula % del Casco y redondea hacia arriba al múltiplo de 100.",
+                )
+            else:
+                st.number_input(
+                    "Monto Util. (S/.)",
+                    min_value=0.0,
+                    value=float(params.get("monto_fijo_util", totales.get("utilidades_monto", 0.0))),
+                    step=100.0,
+                    format="%.2f",
+                    key=key_util_monto,
+                    on_change=_on_change_params_ppto,
+                    help="Monto exacto de Utilidades (redondeo hacia arriba al 100).",
+                )
         with c_cfg_hon:
+            st.markdown("<div style='padding-top: 24px;'></div>", unsafe_allow_html=True)
             st.number_input(
                 "Honorarios Diseño (S/)",
                 min_value=0.0,
@@ -1310,7 +1439,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 help="Honorarios de diseño del proyecto (se reflejan en el Resumen y Finanzas).",
             )
         with c_cfg5:
-            st.markdown("<div style='padding-top: 26px;'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='padding-top: 50px;'></div>", unsafe_allow_html=True)
             st.checkbox(
                 "IGV (18%)",
                 value=bool(params["incluir_igv"]),
@@ -1606,7 +1735,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
             "Ítem": "",
             "Descripción": "Gastos Generales",
             "Moneda": "Soles",
-            "Factor": f"{totales['gg_pct']:g}%",
+            "Factor": (f"Monto fijo" if totales.get("modo_gg") == "monto" else f"{totales['gg_pct']:g}%"),
             "Importe_Fmt": format_currency(totales["gg_monto"]),
             "Mix": f"{totales['gg_pct']:.1f}%" if totales["subtotal_casco"] > 0 else "",
             "Tipo_Fila": "cargo",
@@ -1615,7 +1744,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
             "Ítem": "",
             "Descripción": "Gestión y Supervisión de Obras (Utilidades)",
             "Moneda": "Soles",
-            "Factor": f"{totales['utilidades_pct']:g}%",
+            "Factor": (f"Monto fijo" if totales.get("modo_util") == "monto" else f"{totales['utilidades_pct']:g}%"),
             "Importe_Fmt": format_currency(totales["utilidades_monto"]),
             "Mix": f"{totales['utilidades_pct']:.1f}%" if totales["subtotal_casco"] > 0 else "",
             "Tipo_Fila": "cargo",
