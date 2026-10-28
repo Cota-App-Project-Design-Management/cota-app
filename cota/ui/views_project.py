@@ -967,7 +967,7 @@ def _render_table_dnd_controller(
                 const rect = editorWrap.getBoundingClientRect();
                 const relX = e.clientX - rect.left;
                 const relY = e.clientY - rect.top;
-                if (relX >= 0 && relX <= 88 && relY >= 36 && relY <= 36 + nRows * 35) {{
+                if (relX >= 0 && relX <= 75 && relY >= 36 && relY <= 36 + nRows * 35) {{
                     editorWrap.style.cursor = 'grab';
                 }} else {{
                     editorWrap.style.cursor = '';
@@ -980,7 +980,7 @@ def _render_table_dnd_controller(
                 const relX = e.clientX - rect.left;
                 const relY = e.clientY - rect.top;
 
-                if (relX >= 0 && relX <= 88 && relY >= 36 && relY <= 36 + nRows * 35) {{
+                if (relX >= 0 && relX <= 75 && relY >= 36 && relY <= 36 + nRows * 35) {{
                     const srcIdx = Math.floor((relY - 36) / 35);
                     if (srcIdx < 0 || srcIdx >= nRows) return;
 
@@ -1540,9 +1540,9 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 column_config={
                     "⠿": st.column_config.TextColumn(
                         "⠿",
-                        width="small",
+                        width=30,
                         disabled=True,
-                        help="Mantén presionado el click en ⠿ para mover la tarea arriba o abajo",
+                        alignment="center",
                     ),
                     "Item": st.column_config.TextColumn("Ítem", width="small", disabled=True),
                     "Descripcion": st.column_config.TextColumn("Descripción de la Tarea / Sub-partida", width="large"),

@@ -961,6 +961,16 @@ def test_gantt_hidden_by_default_code():
     assert 'with st.expander("📊 CRONOGRAMA GANTT POR PARTIDA Y TAREAS (INICIO → FIN Y ESTADOS)", expanded=True):' not in code
 
 
+def test_dnd_column_compact_width():
+    with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f:
+        code = f.read()
+    assert '"⠿": st.column_config.TextColumn(' in code
+    assert 'width=30' in code
+    assert 'alignment="center"' in code
+    # Verificar que no tenga help="..." que forzaba un icono "?" de ayuda ensanchando la cabecera
+    assert 'help="Mantén presionado el click en ⠿' not in code
+
+
 
 
 
