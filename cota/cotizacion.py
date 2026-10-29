@@ -952,6 +952,23 @@ def aplicar_edicion_tabla_presupuesto_partida(
     if not edited_rows:
         return
 
+    # Si el usuario hizo click en ⠿ y seleccionó Subir o Bajar, mover la fila inmediatamente
+    for r_str, changes in edited_rows.items():
+        if "⠿" in changes:
+            accion_mv = str(changes["⠿"]).strip()
+            r_idx_pos = int(r_str)
+            c_key = f"c_{base_key}"
+            if base_key in st.session_state:
+                del st.session_state[base_key]
+            if accion_mv in ("⬆ Subir", "subir", "⬆"):
+                mover_tarea_presupuesto(proy_name, idx_partida_1based, nombre_partida_completo, r_idx_pos, "subir")
+                st.session_state[c_key] = st.session_state.get(c_key, 0) + 1
+                return
+            elif accion_mv in ("⬇ Bajar", "bajar", "⬇"):
+                mover_tarea_presupuesto(proy_name, idx_partida_1based, nombre_partida_completo, r_idx_pos, "bajar")
+                st.session_state[c_key] = st.session_state.get(c_key, 0) + 1
+                return
+
     guardar_snapshot_presupuesto(proy_name)
 
     df_base = st.session_state[base_key].copy()

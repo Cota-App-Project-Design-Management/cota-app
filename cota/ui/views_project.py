@@ -875,8 +875,9 @@ def _render_table_dnd_controller(
     Permite reordenar las tareas haciendo click sostenido directamente sobre el símbolo ⠿ (o la columna Ítem)
     de la tabla, mostrando la fila flotante y la guía de inserción en tiempo real.
     """
-    bridge_label = f"dnd_bridge_{proy_name}_{idx_p}"
-    bridge_key = f"dnd_in_{proy_name}_{idx_p}"
+    safe_proy_id = re.sub(r"[^a-zA-Z0-9_]", "_", proy_name)
+    bridge_label = f"dnd_bridge_{safe_proy_id}_{idx_p}"
+    bridge_key = f"dnd_in_{safe_proy_id}_{idx_p}"
 
     def _on_dnd_change():
         raw_val = safe_str(st.session_state.get(bridge_key, "")).strip()
@@ -924,6 +925,7 @@ def _render_table_dnd_controller(
     ])
     bridge_label_js = json.dumps(bridge_label)
     proy_name_js = json.dumps(proy_name)
+    safe_proy_js = json.dumps(safe_proy_id)
     n_rows = len(rows_ed)
 
     html_code = f"""
@@ -936,14 +938,18 @@ def _render_table_dnd_controller(
         const parentDoc = window.parent.document;
         const partIdx = {int(idx_p)};
         const proyName = {proy_name_js};
+        const safeProy = {safe_proy_js};
         const nRows = {int(n_rows)};
         const rowsMeta = {rows_meta_json};
         const bridgeLabel = {bridge_label_js};
 
         function initDnd() {{
-            const anchor = parentDoc.getElementById('anchor_ppto_' + proyName + '_' + partIdx);
+            const anchor = parentDoc.getElementById('anchor_ppto_' + safeProy + '_' + partIdx) || parentDoc.getElementById('anchor_ppto_' + proyName + '_' + partIdx);
             if (!anchor) return false;
-            const container = anchor.closest('div[data-testid="stVerticalBlockBorderWrapper"]') || anchor.parentElement;
+            let container = anchor.parentElement;
+            while (container && !container.querySelector('div[data-testid="stDataEditor"]')) {{
+                container = container.parentElement;
+            }}
             if (!container) return false;
             const editorWrap = container.querySelector('div[data-testid="stDataEditor"]') || container.querySelector('div[data-testid="stDataFrame"]');
             if (!editorWrap) return false;
@@ -959,6 +965,11 @@ def _render_table_dnd_controller(
             let ghostPill = null;
             let dropLine = null;
 
+            function getOffsets() {{
+                const canvas = editorWrap.querySelector('canvas');
+                return canvas ? canvas.getBoundingClientRect() : editorWrap.getBoundingClientRect();
+            }}
+
             function getTargetDropIdx(clientY, rect) {{
                 const relY = clientY - rect.top - 36;
                 let target = Math.round(relY / 35);
@@ -967,7 +978,7 @@ def _render_table_dnd_controller(
 
             editorWrap.addEventListener('pointermove', function(e) {{
                 if (isDragging) return;
-                const rect = editorWrap.getBoundingClientRect();
+                const rect = getOffsets();
                 const relX = e.clientX - rect.left;
                 const relY = e.clientY - rect.top;
                 if (relX >= 0 && relX <= 75 && relY >= 36 && relY <= 36 + nRows * 35) {{
@@ -977,9 +988,9 @@ def _render_table_dnd_controller(
                 }}
             }});
 
-            editorWrap.addEventListener('pointerdown', function(e) {{
+            function startDrag(e) {{
                 if (e.button !== 0) return;
-                const rect = editorWrap.getBoundingClientRect();
+                const rect = getOffsets();
                 const relX = e.clientX - rect.left;
                 const relY = e.clientY - rect.top;
 
@@ -1017,7 +1028,7 @@ def _render_table_dnd_controller(
                             ghostPill.style.top = mEv.clientY + 'px';
                         }}
                         if (dropLine) {{
-                            const curR = editorWrap.getBoundingClientRect();
+                            const curR = getOffsets();
                             const tgt = getTargetDropIdx(mEv.clientY, curR);
                             dropLine.style.left = curR.left + 'px';
                             dropLine.style.width = curR.width + 'px';
@@ -1031,7 +1042,7 @@ def _render_table_dnd_controller(
                         editorWrap.style.cursor = '';
                         parentDoc.body.style.userSelect = '';
 
-                        const curR = editorWrap.getBoundingClientRect();
+                        const curR = getOffsets();
                         const targetIdx = getTargetDropIdx(uEv.clientY, curR);
 
                         if (ghostPill && ghostPill.parentNode) ghostPill.parentNode.removeChild(ghostPill);
@@ -1054,10 +1065,20 @@ def _render_table_dnd_controller(
                             try {{
                                 const inputEl = parentDoc.querySelector('input[aria-label=' + JSON.stringify(bridgeLabel) + ']');
                                 if (inputEl) {{
-                                    const nativeSetter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
-                                    nativeSetter.call(inputEl, payload);
+                                    const proto = window.parent.HTMLInputElement.prototype;
+                                    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                                    if (nativeSetter) {{
+                                        nativeSetter.call(inputEl, payload);
+                                    }} else {{
+                                        inputEl.value = payload;
+                                    }}
+                                    const tracker = inputEl._valueTracker;
+                                    if (tracker) {{
+                                        tracker.setValue('');
+                                    }}
                                     inputEl.dispatchEvent(new Event('input', {{ bubbles: true }}));
                                     inputEl.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    inputEl.focus();
                                     inputEl.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }}));
                                     inputEl.blur();
                                 }}
@@ -1071,7 +1092,10 @@ def _render_table_dnd_controller(
                     parentDoc.addEventListener('pointerup', onUp);
                     parentDoc.addEventListener('pointercancel', onUp);
                 }}
-            }}, true);
+            }}
+
+            editorWrap.addEventListener('pointerdown', startDrag, true);
+            editorWrap.addEventListener('mousedown', startDrag, true);
 
             return true;
         }}
@@ -1080,7 +1104,7 @@ def _render_table_dnd_controller(
             let attempts = 0;
             const timer = setInterval(() => {{
                 attempts++;
-                if (initDnd() || attempts > 15) {{
+                if (initDnd() || attempts > 25) {{
                     clearInterval(timer);
                 }}
             }}, 150);
@@ -1645,15 +1669,54 @@ def _render_tab_presupuesto(proy_name, proy_data):
 
             st.session_state[base_ppto_key] = df_ed_p.copy()
 
+            if len(rows_ed) > 1:
+                col_mv_info, col_mv_sel, col_mv_u, col_mv_d = st.columns([2.5, 4.3, 1.6, 1.6])
+                with col_mv_info:
+                    st.markdown(
+                        f"<div style='font-size:12px; font-weight:700; color:#6E665E; padding-top:6px;'>↕️ MOVER TAREA:</div>",
+                        unsafe_allow_html=True,
+                    )
+                with col_mv_sel:
+                    idx_t_sel = st.selectbox(
+                        f"Seleccionar tarea de {p_nom_limpio}",
+                        options=list(range(len(rows_ed))),
+                        format_func=lambda i: opciones_orden_t[i][1] if i < len(opciones_orden_t) else f"Tarea {i+1}",
+                        key=f"sel_mv_task_{proy_name}_{idx_p}",
+                        label_visibility="collapsed",
+                    )
+                with col_mv_u:
+                    if st.button(
+                        "⬆ Subir",
+                        key=f"btn_up_t_{proy_name}_{idx_p}",
+                        disabled=(idx_t_sel == 0),
+                        use_container_width=True,
+                        help="Sube la tarea seleccionada una posición",
+                    ):
+                        mover_tarea_presupuesto(proy_name, idx_p, p_nom_completo, idx_t_sel, "subir")
+                        st.session_state[c_ppto_key] = c_ppto_val + 1
+                        st.rerun()
+                with col_mv_d:
+                    if st.button(
+                        "⬇ Bajar",
+                        key=f"btn_dn_t_{proy_name}_{idx_p}",
+                        disabled=(idx_t_sel == len(rows_ed) - 1),
+                        use_container_width=True,
+                        help="Baja la tarea seleccionada una posición",
+                    ):
+                        mover_tarea_presupuesto(proy_name, idx_p, p_nom_completo, idx_t_sel, "bajar")
+                        st.session_state[c_ppto_key] = c_ppto_val + 1
+                        st.rerun()
+
+            safe_proy_id = re.sub(r"[^a-zA-Z0-9_]", "_", proy_name)
             # Ancla invisible para que el controlador de Drag & Drop ubique la tabla en el DOM
-            st.markdown(f'<div id="anchor_ppto_{proy_name}_{idx_p}" style="display:none;" data-partida="{idx_p}" data-n-rows="{len(rows_ed)}"></div>', unsafe_allow_html=True)
+            st.markdown(f'<div id="anchor_ppto_{safe_proy_id}_{idx_p}" style="display:none;" data-partida="{idx_p}" data-n-rows="{len(rows_ed)}"></div>', unsafe_allow_html=True)
 
             st.data_editor(
                 st.session_state[base_ppto_key],
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
-                disabled=["⠿", "Item", "Valor_Parcial"],
+                disabled=["Item", "Valor_Parcial"],
                 column_order=[
                     "⠿",
                     "Item",
@@ -1668,11 +1731,12 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 ],
                 key=w_ppto_key,
                 column_config={
-                    "⠿": st.column_config.TextColumn(
-                        "⠿",
-                        width=30,
-                        disabled=True,
-                        alignment="center",
+                    "⠿": st.column_config.SelectboxColumn(
+                        "⠿ Mover",
+                        options=["⠿", "⬆ Subir", "⬇ Bajar"],
+                        default="⠿",
+                        width=65,
+                        help="Haz click en ⠿ para subir o bajar esta tarea de posición",
                     ),
                     "Item": st.column_config.TextColumn("Ítem", width="small", disabled=True),
                     "Descripcion": st.column_config.TextColumn("Descripción de la Tarea / Sub-partida", width="large"),

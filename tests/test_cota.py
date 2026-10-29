@@ -1125,6 +1125,77 @@ def test_notas_pagos_semanales_y_excel():
     assert "Adelanto para compra de bolsas de cemento" in cell_adelanto.comment.text
 
 
+def test_mover_tarea_presupuesto_y_edicion_tabla():
+    import streamlit as st
+    from cota.cotizacion import (
+        mover_tarea_presupuesto,
+        reordenar_tareas_partida_por_indices,
+        aplicar_edicion_tabla_presupuesto_partida,
+    )
+
+    p_test = "Proy Mover Tarea Test"
+    part_nom = "01. Obras Civiles"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": p_test,
+        "TC_Presupuesto": 3.42,
+        "Modo_GG": "pct",
+        "GG_Presupuesto": 2.0,
+        "Modo_Utilidades": "pct",
+        "Utilidades": 15.0,
+        "Incluir_IGV": False,
+        "Pagos_Semanales_JSON": "",
+    }])
+    st.session_state["partidas"] = pd.DataFrame([{
+        "Proyecto": p_test,
+        "Nombre_Partida": part_nom,
+    }])
+    st.session_state["p_info"] = pd.DataFrame([{
+        "Proyecto": p_test,
+        "Nombre_Partida": part_nom,
+        "Monto_Pactado": 1000.0,
+        "Contratista": "",
+    }])
+    st.session_state["tasks"] = pd.DataFrame([
+        {"Proyecto": p_test, "Partida": part_nom, "Orden": 1, "Codigo_Item": "1.01", "Tarea": "1.01 Demolición pisos", "Moneda": "Soles", "Unidad": "m2", "Metrado": 10.0, "Valor_Unitario": 50.0, "Presupuesto": 500.0},
+        {"Proyecto": p_test, "Partida": part_nom, "Orden": 2, "Codigo_Item": "1.02", "Tarea": "1.02 Nuevo contrapiso", "Moneda": "Soles", "Unidad": "m2", "Metrado": 10.0, "Valor_Unitario": 30.0, "Presupuesto": 300.0},
+        {"Proyecto": p_test, "Partida": part_nom, "Orden": 3, "Codigo_Item": "1.03", "Tarea": "1.03 Instalacion de porcelanatos", "Moneda": "Soles", "Unidad": "m2", "Metrado": 10.0, "Valor_Unitario": 60.0, "Presupuesto": 600.0},
+        {"Proyecto": p_test, "Partida": part_nom, "Orden": 4, "Codigo_Item": "1.04", "Tarea": "1.04 Eliminacion desmonte", "Moneda": "Soles", "Unidad": "und", "Metrado": 3.0, "Valor_Unitario": 750.0, "Presupuesto": 2250.0},
+    ])
+
+    # 1. Mover directamente la tarea 4 (índice 3: Eliminacion desmonte) hacia arriba (subir)
+    res = mover_tarea_presupuesto(p_test, 1, part_nom, 3, "subir")
+    assert res is True
+    t_after = st.session_state["tasks"][st.session_state["tasks"]["Proyecto"] == p_test].reset_index(drop=True)
+    assert t_after.at[2, "Codigo_Item"] == "1.03"
+    assert "Eliminacion desmonte" in t_after.at[2, "Tarea"]
+    assert t_after.at[3, "Codigo_Item"] == "1.04"
+    assert "Instalacion de porcelanatos" in t_after.at[3, "Tarea"]
+
+    # 2. Reordenar por índices permutados
+    res2 = reordenar_tareas_partida_por_indices(p_test, 1, part_nom, [3, 0, 1, 2])
+    assert res2 is True
+    t_after2 = st.session_state["tasks"][st.session_state["tasks"]["Proyecto"] == p_test].reset_index(drop=True)
+    assert t_after2.at[0, "Codigo_Item"] == "1.01"
+    assert "Instalacion de porcelanatos" in t_after2.at[0, "Tarea"]
+
+    # 3. Simular edición en st.data_editor eligiendo '⬆ Subir' en la columna ⠿
+    base_k = f"base_df_ppto_{p_test}_1"
+    widget_k = f"ed_ppto_{p_test}_1_0"
+    st.session_state[base_k] = pd.DataFrame([
+        {"⠿": "⠿", "Item": "1.01", "Descripcion": "Instalacion de porcelanatos", "Moneda": "Soles", "Unidad": "m2", "Metrado": 10.0, "Valor_Unitario": 60.0, "Valor_Parcial": 600.0},
+        {"⠿": "⠿", "Item": "1.02", "Descripcion": "Demolición pisos", "Moneda": "Soles", "Unidad": "m2", "Metrado": 10.0, "Valor_Unitario": 50.0, "Valor_Parcial": 500.0},
+    ])
+    st.session_state[widget_k] = {
+        "edited_rows": {
+            "1": {"⠿": "⬆ Subir"}
+        }
+    }
+    aplicar_edicion_tabla_presupuesto_partida(base_k, widget_k, p_test, 1, part_nom)
+    t_after3 = st.session_state["tasks"][st.session_state["tasks"]["Proyecto"] == p_test].reset_index(drop=True)
+    assert "Demolición pisos" in t_after3.at[0, "Tarea"]
+
+
+
 
 
 
