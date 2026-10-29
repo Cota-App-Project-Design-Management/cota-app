@@ -1057,6 +1057,75 @@ def test_recalcular_totales_modo_monto_y_pct():
     assert tot2["presupuesto_total"] == 1055.0 + 50.0 + 400.0  # 1505.0
 
 
+def test_notas_pagos_semanales_y_excel():
+    import io
+    import openpyxl
+    import streamlit as st
+    from cota.cotizacion import (
+        obtener_cuadro_pagos_semanales_proyecto,
+        guardar_cuadro_pagos_semanales_proyecto,
+        exportar_cuadro_pagos_semanales_excel,
+        _normalizar_fila_pago,
+        obtener_columnas_pago_semanal,
+    )
+
+    cols_sem = obtener_columnas_pago_semanal(3)
+    f_raw = {
+        "Partida": "OBRAS CIVILES",
+        "Descripcion": "OBRAS CIVILES",
+        "Moneda": "Soles",
+        "TOTAL": 5000.0,
+        "ADELANTO 1": 2000.0,
+        "SEMANA 1": 1500.0,
+        "Notas": "Contratista Juan",
+        "Notas_Pagos": {
+            "ADELANTO 1": "Adelanto para compra de bolsas de cemento",
+            "SEMANA 1": "Avance de tarrajeo",
+        },
+    }
+    f_norm = _normalizar_fila_pago(f_raw, cols_sem)
+    assert f_norm["Notas_Pagos"]["ADELANTO 1"] == "Adelanto para compra de bolsas de cemento"
+    assert f_norm["Notas_Pagos"]["SEMANA 1"] == "Avance de tarrajeo"
+
+    # Persistencia en session_state y exportación Excel
+    proy_nombre = "Proy Notas Pagos Test"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": proy_nombre,
+        "Cliente": "Cliente Test",
+        "TC_Presupuesto": 3.75,
+        "Pagos_Semanales_JSON": "",
+    }])
+    st.session_state["partidas"] = pd.DataFrame()
+    st.session_state["p_info"] = pd.DataFrame()
+    st.session_state["tasks"] = pd.DataFrame()
+
+    data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_nombre)
+    data_cuadro["filas_contratistas"] = [f_norm]
+    data_cuadro["fila_gestion"]["Notas_Pagos"] = {
+        "SEMANA 1": "Honorarios supervisión semana 1"
+    }
+    guardar_cuadro_pagos_semanales_proyecto(proy_nombre, data_cuadro)
+
+    # Recargar y verificar
+    data_loaded = obtener_cuadro_pagos_semanales_proyecto(proy_nombre)
+    assert len(data_loaded["filas_contratistas"]) == 1
+    np_loaded = data_loaded["filas_contratistas"][0].get("Notas_Pagos", {})
+    assert np_loaded.get("ADELANTO 1") == "Adelanto para compra de bolsas de cemento"
+    assert data_loaded["fila_gestion"]["Notas_Pagos"]["SEMANA 1"] == "Honorarios supervisión semana 1"
+
+    # Exportar a Excel y verificar comentarios
+    xlsx_bytes = exportar_cuadro_pagos_semanales_excel(proy_nombre, data_loaded)
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Control de Pagos"]
+
+    # Fila 7 es la primera fila de contratistas
+    # Col 5 es ADELANTO 1 (columna E)
+    cell_adelanto = ws.cell(row=7, column=5)
+    assert cell_adelanto.comment is not None
+    assert "Adelanto para compra de bolsas de cemento" in cell_adelanto.comment.text
+
+
+
 
 
 

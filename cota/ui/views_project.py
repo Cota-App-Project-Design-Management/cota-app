@@ -7,6 +7,7 @@ Ejecución de Obra, Cobros y Finanzas, Reuniones y Actas, y Punch List de Entreg
 import datetime
 import html as html_lib
 import json
+import re
 import uuid
 import altair as alt
 import pandas as pd
@@ -2479,6 +2480,314 @@ def _render_tab_obra(proy_name, proy_data):
                                 st.info(f"**{row_s.get('Tarea')}**: {sug}")
 
 
+def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cuadro: dict, cols_pago: list[str]):
+    """Inyecta un controlador DOM que muestra tooltips flotantes al pasar el mouse sobre celdas con notas."""
+    notas_cont_map = {}
+    filas_c = data_cuadro.get("filas_contratistas", [])
+    for idx_f, f in enumerate(filas_c):
+        np_dict = f.get("Notas_Pagos", {})
+        if np_dict and isinstance(np_dict, dict):
+            m_r = {}
+            part_name = safe_str(f.get("Descripcion", "")) or safe_str(f.get("Partida", f"Partida {idx_f+1}"))
+            es_usd = "dólar" in safe_str(f.get("Moneda", "")).lower() or "dolar" in safe_str(f.get("Moneda", "")).lower()
+            pref_m = "US$ " if es_usd else "S/ "
+            for col_k, txt_n in np_dict.items():
+                if safe_str(txt_n).strip():
+                    val_c = safe_float(f.get(col_k, 0.0), 0.0)
+                    m_r[col_k] = {
+                        "partida": part_name,
+                        "monto": f"{pref_m}{val_c:,.2f}",
+                        "nota": safe_str(txt_n).strip(),
+                    }
+            if m_r:
+                notas_cont_map[str(idx_f)] = m_r
+
+    notas_ges_map = {}
+    filas_g = [
+        ("0", data_cuadro.get("fila_gestion", {}), "Gestión y supervisión de obras"),
+        ("1", data_cuadro.get("fila_gg", {}), "Gastos Generales"),
+    ]
+    for idx_str, f_obj, def_nom in filas_g:
+        np_dict = f_obj.get("Notas_Pagos", {})
+        if np_dict and isinstance(np_dict, dict):
+            m_r = {}
+            part_name = safe_str(f_obj.get("Descripcion", "")) or def_nom
+            es_usd = "dólar" in safe_str(f_obj.get("Moneda", "")).lower() or "dolar" in safe_str(f_obj.get("Moneda", "")).lower()
+            pref_m = "US$ " if es_usd else "S/ "
+            for col_k, txt_n in np_dict.items():
+                if safe_str(txt_n).strip():
+                    val_c = safe_float(f_obj.get(col_k, 0.0), 0.0)
+                    m_r[col_k] = {
+                        "partida": part_name,
+                        "monto": f"{pref_m}{val_c:,.2f}",
+                        "nota": safe_str(txt_n).strip(),
+                    }
+            if m_r:
+                notas_ges_map[idx_str] = m_r
+
+    payload_json = json.dumps({
+        "safeId": safe_proy_id,
+        "colsPago": cols_pago,
+        "nRowsCont": len(filas_c),
+        "notasCont": notas_cont_map,
+        "notasGes": notas_ges_map,
+    })
+
+    html_code = f"""
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="utf-8"></head>
+    <body style="margin:0; padding:0; overflow:hidden; background:transparent;">
+    <script>
+    (function() {{
+        const payload = {payload_json};
+        const parentDoc = window.parent.document;
+        const safeId = payload.safeId;
+        const colsPago = payload.colsPago;
+        const notasCont = payload.notasCont;
+        const notasGes = payload.notasGes;
+
+        function getOrCreateTooltip() {{
+            let tt = parentDoc.getElementById('cota_payment_tooltip_box');
+            if (!tt) {{
+                tt = parentDoc.createElement('div');
+                tt.id = 'cota_payment_tooltip_box';
+                tt.style.cssText = 'position:fixed; z-index:99999999; pointer-events:none; background:#262320; color:#FFFFFF; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; padding:10px 14px; border-radius:8px; box-shadow:0 10px 28px rgba(38,35,32,0.45); border:1px solid rgba(255,255,255,0.18); max-width:340px; display:none; opacity:0; transition:opacity 0.12s ease;';
+                parentDoc.body.appendChild(tt);
+            }}
+            return tt;
+        }}
+
+        function initPagosTooltips() {{
+            const anchor = parentDoc.getElementById('anchor_pagos_' + safeId);
+            if (!anchor) return false;
+            const container = anchor.closest('div[data-testid="stVerticalBlockBorderWrapper"]') || anchor.parentElement;
+            if (!container) return false;
+
+            const editors = container.querySelectorAll('div[data-testid="stDataEditor"]');
+            if (!editors || editors.length === 0) return false;
+
+            const tooltip = getOrCreateTooltip();
+
+            function attachToEditor(editorWrap, notesMap, isContratistas, nRowsExpected) {{
+                if (!editorWrap) return;
+                const instKey = safeId + '_' + (isContratistas ? 'cont' : 'ges') + '_' + Object.keys(notesMap).length;
+                if (editorWrap.dataset.cotaPagosTooltipKey === instKey) return;
+                editorWrap.dataset.cotaPagosTooltipKey = instKey;
+
+                function getColumnInfo() {{
+                    try {{
+                        const fiberKey = Object.keys(editorWrap).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
+                        if (fiberKey) {{
+                            let curr = editorWrap[fiberKey];
+                            for (let d = 0; d < 25 && curr; d++) {{
+                                const p = curr.memoizedProps;
+                                if (p && p.columns && Array.isArray(p.columns) && p.columns.length > 0) {{
+                                    return p.columns.map(c => ({{
+                                        title: c.title || c.name || c.id || '',
+                                        width: c.width || (c.title === 'Partida' || c.title === 'Contratista / Especialidad / Frente' || c.title === 'Concepto' || c.title === 'Notas' ? 200 : (c.title === 'Moneda' ? 75 : 95))
+                                    }}));
+                                }}
+                                curr = curr.return;
+                            }}
+                        }}
+                    }} catch (e) {{}}
+
+                    if (isContratistas) {{
+                        const resCols = [
+                            {{ title: 'Partida', width: 200 }},
+                            {{ title: 'Contratista / Especialidad / Frente', width: 200 }},
+                            {{ title: 'Moneda', width: 75 }},
+                            {{ title: 'TOTAL', width: 95 }}
+                        ];
+                        for (let i = 0; i < colsPago.length; i++) {{
+                            resCols.push({{ title: colsPago[i], width: 95 }});
+                        }}
+                        resCols.push({{ title: 'PAGADO ✓', width: 95 }});
+                        resCols.push({{ title: 'SALDO', width: 95 }});
+                        resCols.push({{ title: 'Notas', width: 200 }});
+                        return resCols;
+                    }} else {{
+                        const resCols = [
+                            {{ title: 'Concepto', width: 200 }},
+                            {{ title: 'Moneda', width: 75 }},
+                            {{ title: 'TOTAL', width: 95 }}
+                        ];
+                        for (let i = 0; i < colsPago.length; i++) {{
+                            resCols.push({{ title: colsPago[i], width: 95 }});
+                        }}
+                        resCols.push({{ title: 'PAGADO ✓', width: 95 }});
+                        resCols.push({{ title: 'SALDO', width: 95 }});
+                        resCols.push({{ title: 'Notas', width: 200 }});
+                        return resCols;
+                    }}
+                }}
+
+                function cleanColTitle(raw) {{
+                    if (!raw) return '';
+                    return raw.replace(/^⏳\s*/, '').replace(/\\s*\\(Por Pagar\\)$/, '').trim();
+                }}
+
+                editorWrap.style.position = 'relative';
+                let markerCanvas = editorWrap.querySelector('.cota-pago-markers-overlay');
+                if (!markerCanvas) {{
+                    markerCanvas = parentDoc.createElement('canvas');
+                    markerCanvas.className = 'cota-pago-markers-overlay';
+                    markerCanvas.style.cssText = 'position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:3;';
+                    editorWrap.appendChild(markerCanvas);
+                }}
+
+                function drawMarkers() {{
+                    if (!markerCanvas) return;
+                    const w = editorWrap.clientWidth;
+                    const h = editorWrap.clientHeight;
+                    if (markerCanvas.width !== w || markerCanvas.height !== h) {{
+                        markerCanvas.width = w;
+                        markerCanvas.height = h;
+                    }}
+                    const ctx = markerCanvas.getContext('2d');
+                    ctx.clearRect(0, 0, w, h);
+
+                    const scroller = editorWrap.querySelector('.dvn-scroller') || editorWrap.querySelector('div[style*="overflow"]') || editorWrap;
+                    const sLeft = scroller.scrollLeft || 0;
+                    const sTop = scroller.scrollTop || 0;
+
+                    const cols = getColumnInfo();
+                    const hasNotes = Object.keys(notesMap).length > 0;
+                    if (!hasNotes) return;
+
+                    ctx.fillStyle = '#C85A32';
+
+                    for (const rStr in notesMap) {{
+                        const rIdx = parseInt(rStr, 10);
+                        const rowNotes = notesMap[rStr];
+                        const cellTop = 36 + rIdx * 35 - sTop;
+                        if (cellTop < 20 || cellTop > h) continue;
+
+                        let accX = 0;
+                        for (let i = 0; i < cols.length; i++) {{
+                            const colW = cols[i].width || 95;
+                            const colClean = cleanColTitle(cols[i].title);
+                            if (rowNotes[colClean]) {{
+                                const cornerX = accX + colW - sLeft;
+                                if (cornerX > 0 && cornerX <= w) {{
+                                    ctx.beginPath();
+                                    ctx.moveTo(cornerX, cellTop);
+                                    ctx.lineTo(cornerX - 8, cellTop);
+                                    ctx.lineTo(cornerX, cellTop + 8);
+                                    ctx.closePath();
+                                    ctx.fill();
+                                }}
+                            }}
+                            accX += colW;
+                        }}
+                    }}
+                }}
+
+                drawMarkers();
+                const scroller = editorWrap.querySelector('.dvn-scroller') || editorWrap.querySelector('div[style*="overflow"]');
+                if (scroller) {{
+                    scroller.addEventListener('scroll', drawMarkers, {{ passive: true }});
+                }}
+                window.addEventListener('resize', drawMarkers, {{ passive: true }});
+
+                editorWrap.addEventListener('pointermove', function(e) {{
+                    const rect = editorWrap.getBoundingClientRect();
+                    const sLeft = scroller ? (scroller.scrollLeft || 0) : 0;
+                    const sTop = scroller ? (scroller.scrollTop || 0) : 0;
+
+                    const relX = (e.clientX - rect.left) + sLeft;
+                    const relY = (e.clientY - rect.top) + sTop;
+
+                    if (relY < 36) {{
+                        tooltip.style.display = 'none';
+                        tooltip.style.opacity = '0';
+                        return;
+                    }}
+
+                    const rowIdx = Math.floor((relY - 36) / 35);
+                    const rowNotes = notesMap[String(rowIdx)];
+                    if (!rowNotes) {{
+                        tooltip.style.display = 'none';
+                        tooltip.style.opacity = '0';
+                        return;
+                    }}
+
+                    const cols = getColumnInfo();
+                    let accX = 0;
+                    let matchedColName = null;
+                    for (let i = 0; i < cols.length; i++) {{
+                        const colW = cols[i].width || 95;
+                        if (relX >= accX && relX < accX + colW) {{
+                            matchedColName = cleanColTitle(cols[i].title);
+                            break;
+                        }}
+                        accX += colW;
+                    }}
+
+                    if (matchedColName && rowNotes[matchedColName]) {{
+                        const nInfo = rowNotes[matchedColName];
+                        tooltip.innerHTML = `
+                            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; border-bottom:1px solid rgba(255,255,255,0.18); padding-bottom:5px;">
+                                <span style="background:#C85A32; color:#FFFFFF; font-size:10px; font-weight:800; text-transform:uppercase; padding:2px 7px; border-radius:4px; letter-spacing:0.5px;">💬 NOTA DE PAGO</span>
+                                <span style="font-size:11.5px; font-weight:700; color:#EFECE6;">${{matchedColName}}</span>
+                            </div>
+                            <div style="font-size:13px; font-weight:700; color:#FFFFFF; margin-bottom:2px;">${{nInfo.partida}}</div>
+                            <div style="font-size:11.5px; font-weight:700; color:#78C288; background:rgba(74,124,89,0.25); display:inline-block; padding:2px 6px; border-radius:4px; margin-bottom:7px;">Monto: ${{nInfo.monto}}</div>
+                            <div style="font-size:12.5px; color:#EFECE6; line-height:1.4; font-style:italic; border-left:3px solid #C85A32; padding-left:8px; margin-top:2px;">"${{nInfo.nota}}"</div>
+                        `;
+                        tooltip.style.display = 'block';
+                        tooltip.style.opacity = '1';
+
+                        let posX = e.clientX + 16;
+                        let posY = e.clientY + 16;
+                        if (posX + 350 > window.innerWidth) {{
+                            posX = Math.max(10, e.clientX - 355);
+                        }}
+                        if (posY + 140 > window.innerHeight) {{
+                            posY = Math.max(10, e.clientY - 130);
+                        }}
+                        tooltip.style.left = posX + 'px';
+                        tooltip.style.top = posY + 'px';
+                    }} else {{
+                        tooltip.style.display = 'none';
+                        tooltip.style.opacity = '0';
+                    }}
+                }});
+
+                editorWrap.addEventListener('pointerleave', function() {{
+                    tooltip.style.display = 'none';
+                    tooltip.style.opacity = '0';
+                }});
+            }}
+
+            if (editors.length >= 1) {{
+                attachToEditor(editors[0], notasCont, true, payload.nRowsCont);
+            }}
+            if (editors.length >= 2) {{
+                attachToEditor(editors[1], notasGes, false, 2);
+            }}
+
+            return true;
+        }}
+
+        if (!initPagosTooltips()) {{
+            let attempts = 0;
+            const timer = setInterval(() => {{
+                attempts++;
+                if (initPagosTooltips() || attempts > 25) {{
+                    clearInterval(timer);
+                }}
+            }}, 200);
+        }}
+    }})();
+    </script>
+    </body>
+    </html>
+    """
+    components.html(html_code, height=0)
+
+
 def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
     """Renderiza el Cuadro de Pagos Semanales por Partida / Contratista y su exportación a Excel para el cliente."""
     cliente_str = safe_str(proy_data.get("Cliente", "")).strip() or "Sin cliente asignado"
@@ -2489,6 +2798,8 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
     cols_pago = obtener_columnas_pago_semanal(num_sem_actual)
     cols_por_pagar_actual = [c for c in data_cuadro.get("cols_por_pagar", []) if c in cols_pago]
 
+    safe_proy_id = re.sub(r"[^a-zA-Z0-9_]", "_", proy_name)
+    st.markdown(f"<div id='anchor_pagos_{safe_proy_id}'></div>", unsafe_allow_html=True)
     st.markdown("#### 📊 CUADRO DE PAGOS SEMANALES POR PARTIDA / CONTRATISTA")
     st.caption(
         f"**Proyecto:** {proy_name}  ·  **Cliente:** {cliente_str}  ·  "
@@ -2681,10 +2992,154 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
     w_cont_key = f"ed_pagos_cont_{proy_name}_{c_cont_val}"
 
     # 1. Editor de TRABAJOS CONTRATISTAS (permite múltiples filas por Partida)
-    col_hdr_cont, col_add_sub_cont = st.columns([5.8, 4.2])
+    col_hdr_cont, col_btn_notes, col_add_sub_cont = st.columns([4.4, 2.6, 3.0])
     with col_hdr_cont:
         st.markdown("##### 👷 TRABAJOS CONTRATISTAS")
-        st.caption("Puedes tener múltiples contratistas/empresas para una misma Partida (ej. en Instalaciones: una fila para Eléctricas y otra para Sanitarias). Todos sus pagos se suman al `PAGADO:` de esa Partida en `05. PARTIDAS Y TAREAS`.")
+        st.caption("Puedes tener múltiples contratistas/empresas por Partida. Pasa el cursor sobre cualquier celda con nota para ver su detalle flotante.")
+
+    total_notas_reg = sum(len(f.get("Notas_Pagos", {})) for f in data_cuadro.get("filas_contratistas", []))
+    total_notas_reg += len(data_cuadro.get("fila_gestion", {}).get("Notas_Pagos", {}))
+    total_notas_reg += len(data_cuadro.get("fila_gg", {}).get("Notas_Pagos", {}))
+    btn_lbl_notas = f"💬 Notas de Pagos ({total_notas_reg})" if total_notas_reg > 0 else "💬 Notas de Pagos"
+
+    with col_btn_notes:
+        with st.popover(btn_lbl_notas, use_container_width=True):
+            st.markdown("##### 💬 Notas y Detalle de Pagos")
+            st.caption("Registra notas o motivos sobre cualquier desembolso (Adelanto o Semana). Al pasar el mouse sobre el pago en el cuadro, la nota aparecerá flotando.")
+
+            opciones_filas_np = []
+            mapa_filas_np = {}
+            for i_fc, f_c_item in enumerate(data_cuadro.get("filas_contratistas", [])):
+                lbl_f = f"👷 {i_fc + 1}. {safe_str(f_c_item.get('Descripcion', '')) or safe_str(f_c_item.get('Partida', ''))}"
+                opciones_filas_np.append(lbl_f)
+                mapa_filas_np[lbl_f] = ("contratista", i_fc, f_c_item)
+
+            lbl_f_ges = "📐 Gestión y supervisión de obras"
+            opciones_filas_np.append(lbl_f_ges)
+            mapa_filas_np[lbl_f_ges] = ("gestion", 0, data_cuadro.get("fila_gestion", {}))
+
+            lbl_f_gg = "📐 Gastos Generales"
+            opciones_filas_np.append(lbl_f_gg)
+            mapa_filas_np[lbl_f_gg] = ("gg", 0, data_cuadro.get("fila_gg", {}))
+
+            fila_sel_lbl = st.selectbox(
+                "Concepto / Fila:",
+                options=opciones_filas_np,
+                key=f"sel_fila_np_{proy_name}",
+            )
+            tipo_f_sel, idx_f_sel, obj_f_sel = mapa_filas_np[fila_sel_lbl]
+            mon_sel = safe_str(obj_f_sel.get("Moneda", "Soles"))
+            pref_sel = "US$ " if "dólar" in mon_sel.lower() or "dolar" in mon_sel.lower() else "S/ "
+
+            def _fmt_col_np(c_n):
+                m_val = safe_float(obj_f_sel.get(c_n, 0.0), 0.0)
+                np_dict_curr = obj_f_sel.get("Notas_Pagos", {})
+                has_badge = " [✓ Tiene Nota]" if (isinstance(np_dict_curr, dict) and c_n in np_dict_curr and np_dict_curr[c_n]) else ""
+                return f"{c_n} ({pref_sel}{m_val:,.2f}){has_badge}"
+
+            col_sel_pago = st.selectbox(
+                "Semana / Desembolso:",
+                options=cols_pago,
+                format_func=_fmt_col_np,
+                key=f"sel_col_pago_np_{proy_name}",
+            )
+
+            np_dict_f = obj_f_sel.get("Notas_Pagos", {})
+            nota_existente = np_dict_f.get(col_sel_pago, "") if isinstance(np_dict_f, dict) else ""
+
+            txt_nota_input = st.text_area(
+                f"Detalle / Motivo del pago ({col_sel_pago}):",
+                value=nota_existente,
+                placeholder="Ej. Adelanto 50% para compra de tableros y cables, o pago contra entrega de desmonte...",
+                key=f"txt_nota_p_{proy_name}_{fila_sel_lbl}_{col_sel_pago}",
+                height=90,
+            )
+
+            c_btn_n1, c_btn_n2 = st.columns(2)
+            with c_btn_n1:
+                if st.button("💾 Guardar Nota", key=f"btn_save_np_{proy_name}", type="primary", use_container_width=True):
+                    d_cur_np = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+                    if tipo_f_sel == "contratista":
+                        filas_c_np = list(d_cur_np.get("filas_contratistas", []))
+                        if idx_f_sel < len(filas_c_np):
+                            cur_np = dict(filas_c_np[idx_f_sel].get("Notas_Pagos", {}))
+                            if txt_nota_input.strip():
+                                cur_np[col_sel_pago] = txt_nota_input.strip()
+                            else:
+                                cur_np.pop(col_sel_pago, None)
+                            filas_c_np[idx_f_sel]["Notas_Pagos"] = cur_np
+                            d_cur_np["filas_contratistas"] = filas_c_np
+                    elif tipo_f_sel == "gestion":
+                        fg_np = dict(d_cur_np.get("fila_gestion", {}))
+                        cur_np = dict(fg_np.get("Notas_Pagos", {}))
+                        if txt_nota_input.strip():
+                            cur_np[col_sel_pago] = txt_nota_input.strip()
+                        else:
+                            cur_np.pop(col_sel_pago, None)
+                        fg_np["Notas_Pagos"] = cur_np
+                        d_cur_np["fila_gestion"] = fg_np
+                    elif tipo_f_sel == "gg":
+                        fgg_np = dict(d_cur_np.get("fila_gg", {}))
+                        cur_np = dict(fgg_np.get("Notas_Pagos", {}))
+                        if txt_nota_input.strip():
+                            cur_np[col_sel_pago] = txt_nota_input.strip()
+                        else:
+                            cur_np.pop(col_sel_pago, None)
+                        fgg_np["Notas_Pagos"] = cur_np
+                        d_cur_np["fila_gg"] = fgg_np
+
+                    guardar_cuadro_pagos_semanales_proyecto(proy_name, d_cur_np)
+                    st.session_state[cnt_cont_key] = st.session_state.get(cnt_cont_key, 0) + 1
+                    st.session_state[cnt_ges_key] = st.session_state.get(cnt_ges_key, 0) + 1
+                    st.rerun()
+
+            with c_btn_n2:
+                if nota_existente:
+                    if st.button("🗑️ Borrar Nota", key=f"btn_del_np_{proy_name}", use_container_width=True):
+                        d_cur_np = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+                        if tipo_f_sel == "contratista":
+                            filas_c_np = list(d_cur_np.get("filas_contratistas", []))
+                            if idx_f_sel < len(filas_c_np):
+                                cur_np = dict(filas_c_np[idx_f_sel].get("Notas_Pagos", {}))
+                                cur_np.pop(col_sel_pago, None)
+                                filas_c_np[idx_f_sel]["Notas_Pagos"] = cur_np
+                                d_cur_np["filas_contratistas"] = filas_c_np
+                        elif tipo_f_sel == "gestion":
+                            fg_np = dict(d_cur_np.get("fila_gestion", {}))
+                            cur_np = dict(fg_np.get("Notas_Pagos", {}))
+                            cur_np.pop(col_sel_pago, None)
+                            fg_np["Notas_Pagos"] = cur_np
+                            d_cur_np["fila_gestion"] = fg_np
+                        elif tipo_f_sel == "gg":
+                            fgg_np = dict(d_cur_np.get("fila_gg", {}))
+                            cur_np = dict(fgg_np.get("Notas_Pagos", {}))
+                            cur_np.pop(col_sel_pago, None)
+                            fgg_np["Notas_Pagos"] = cur_np
+                            d_cur_np["fila_gg"] = fgg_np
+
+                        guardar_cuadro_pagos_semanales_proyecto(proy_name, d_cur_np)
+                        st.session_state[cnt_cont_key] = st.session_state.get(cnt_cont_key, 0) + 1
+                        st.session_state[cnt_ges_key] = st.session_state.get(cnt_ges_key, 0) + 1
+                        st.rerun()
+
+            # Resumen de notas existentes dentro del popover
+            todas_np_pop = []
+            for i_fc, f_c_item in enumerate(data_cuadro.get("filas_contratistas", [])):
+                desc_f = safe_str(f_c_item.get("Descripcion", "")) or safe_str(f_c_item.get("Partida", f"Fila {i_fc+1}"))
+                for col_k, txt_k in f_c_item.get("Notas_Pagos", {}).items():
+                    if txt_k:
+                        todas_np_pop.append((desc_f, col_k, txt_k))
+            for desc_g, obj_g in [("Gestión y supervisión de obras", data_cuadro.get("fila_gestion", {})), ("Gastos Generales", data_cuadro.get("fila_gg", {}))]:
+                for col_k, txt_k in obj_g.get("Notas_Pagos", {}).items():
+                    if txt_k:
+                        todas_np_pop.append((desc_g, col_k, txt_k))
+
+            if todas_np_pop:
+                st.divider()
+                st.markdown(f"**Notas registradas ({len(todas_np_pop)}):**")
+                for f_nom, sem_k, txt_k in todas_np_pop:
+                    st.caption(f"• **{f_nom}** ({sem_k}): *\"{txt_k}\"*")
+
     with col_add_sub_cont:
         with st.popover("➕ Agregar Contratista / Sub-partida a una Partida", use_container_width=True):
             st.caption("Agrega otra fila asociada a una misma Partida (ej. Instalaciones → Eléctricas / Sanitarias).")
@@ -2775,7 +3230,14 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             df_b = pd.concat([df_b, pd.DataFrame([new_r])], ignore_index=True)
 
         d_cur = obtener_cuadro_pagos_semanales_proyecto(p_name)
-        d_cur["filas_contratistas"] = df_b.to_dict(orient="records")
+        filas_ant = d_cur.get("filas_contratistas", [])
+        filas_nuevas = df_b.to_dict(orient="records")
+        for i_fn, fn in enumerate(filas_nuevas):
+            if i_fn < len(filas_ant) and isinstance(filas_ant[i_fn], dict):
+                fn["Notas_Pagos"] = dict(filas_ant[i_fn].get("Notas_Pagos", {}))
+            else:
+                fn["Notas_Pagos"] = dict(fn.get("Notas_Pagos", {}))
+        d_cur["filas_contratistas"] = filas_nuevas
         guardar_cuadro_pagos_semanales_proyecto(p_name, d_cur)
         st.session_state[cnt_cont_key] = st.session_state.get(cnt_cont_key, 0) + 1
 
@@ -2820,9 +3282,13 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
 
         d_cur = obtener_cuadro_pagos_semanales_proyecto(p_name)
         if len(df_b) >= 1:
-            d_cur["fila_gestion"] = df_b.iloc[0].to_dict()
+            fg = df_b.iloc[0].to_dict()
+            fg["Notas_Pagos"] = dict(d_cur.get("fila_gestion", {}).get("Notas_Pagos", {}))
+            d_cur["fila_gestion"] = fg
         if len(df_b) >= 2:
-            d_cur["fila_gg"] = df_b.iloc[1].to_dict()
+            fgg = df_b.iloc[1].to_dict()
+            fgg["Notas_Pagos"] = dict(d_cur.get("fila_gg", {}).get("Notas_Pagos", {}))
+            d_cur["fila_gg"] = fgg
         guardar_cuadro_pagos_semanales_proyecto(p_name, d_cur)
         st.session_state[cnt_ges_key] = st.session_state.get(cnt_ges_key, 0) + 1
 
@@ -2864,10 +3330,21 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         else:
             r_st = "background:#FFFFFF; color:#262320; border-bottom:1px solid #EFECE6;"
 
-        tds_sem = "".join(
-            f"<td style='padding:8px 8px; text-align:right; font-family:monospace;'>{pref_m}{safe_float(fila_r.get(c_s, 0.0)):,.2f}</td>"
-            for c_s in cols_pago
-        )
+        tds_sem_list = []
+        for c_s in cols_pago:
+            v_num = safe_float(fila_r.get(c_s, 0.0))
+            np_dict_r = fila_r.get("Notas_Pagos", {})
+            n_txt = np_dict_r.get(c_s, "") if isinstance(np_dict_r, dict) else ""
+            if n_txt:
+                esc_note = html_lib.escape(n_txt)
+                tds_sem_list.append(
+                    f"<td style='padding:8px 8px; text-align:right; font-family:monospace;' title='💬 {esc_note}'>{pref_m}{v_num:,.2f} <span style='color:#C85A32; font-size:10px;' title='💬 {esc_note}'>💬</span></td>"
+                )
+            else:
+                tds_sem_list.append(
+                    f"<td style='padding:8px 8px; text-align:right; font-family:monospace;'>{pref_m}{v_num:,.2f}</td>"
+                )
+        tds_sem = "".join(tds_sem_list)
         trs_pag_cierre.append(
             f"<tr style='{r_st}'>"
             f"<td style='padding:8px 12px; text-align:left;'>{safe_str(fila_r.get('Descripcion', ''))}</td>"
@@ -2897,6 +3374,57 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         "</div>"
     )
     st.markdown(html_cierre_pagos, unsafe_allow_html=True)
+
+    # 4. Sección de Notas Registradas (Expander visible con tarjetas para acceso directo)
+    todas_las_notas = []
+    for idx_f, f_item in enumerate(data_cuadro.get("filas_contratistas", [])):
+        nom = safe_str(f_item.get("Descripcion", "")) or safe_str(f_item.get("Partida", f"Partida {idx_f+1}"))
+        mon = safe_str(f_item.get("Moneda", "Soles"))
+        pref = "US$ " if "dólar" in mon.lower() or "dolar" in mon.lower() else "S/ "
+        for c_sem, txt_n in f_item.get("Notas_Pagos", {}).items():
+            if txt_n:
+                monto_val = safe_float(f_item.get(c_sem, 0.0), 0.0)
+                todas_las_notas.append({
+                    "fila": nom,
+                    "semana": c_sem,
+                    "monto": f"{pref}{monto_val:,.2f}",
+                    "nota": txt_n,
+                })
+    for obj_g, nom_g in [(data_cuadro.get("fila_gestion", {}), "Gestión y supervisión de obras"), (data_cuadro.get("fila_gg", {}), "Gastos Generales")]:
+        mon = safe_str(obj_g.get("Moneda", "Soles"))
+        pref = "US$ " if "dólar" in mon.lower() or "dolar" in mon.lower() else "S/ "
+        for c_sem, txt_n in obj_g.get("Notas_Pagos", {}).items():
+            if txt_n:
+                monto_val = safe_float(obj_g.get(c_sem, 0.0), 0.0)
+                todas_las_notas.append({
+                    "fila": nom_g,
+                    "semana": c_sem,
+                    "monto": f"{pref}{monto_val:,.2f}",
+                    "nota": txt_n,
+                })
+
+    if todas_las_notas:
+        with st.expander(f"📝 Notas Registradas en Pagos ({len(todas_las_notas)})", expanded=False):
+            st.caption("Pasa el mouse sobre cualquier celda de pago en las tablas de arriba para ver su detalle flotante. También puedes editarlas desde el botón `💬 Notas de Pagos`.")
+            n_cols_card = min(3, len(todas_las_notas))
+            c_cards = st.columns(n_cols_card)
+            for idx_nc, n_card in enumerate(todas_las_notas):
+                with c_cards[idx_nc % n_cols_card]:
+                    esc_part = html_lib.escape(n_card['fila'])
+                    esc_sem = html_lib.escape(n_card['semana'])
+                    esc_monto = html_lib.escape(n_card['monto'])
+                    esc_body = html_lib.escape(n_card['nota'])
+                    st.markdown(
+                        f"<div style='background:#FAF8F5; border-left:4px solid #C85A32; border-radius:6px; padding:9px 12px; margin-bottom:8px; box-shadow:0 1px 3px rgba(0,0,0,0.04);'>"
+                        f"<div style='display:flex; justify-content:space-between; align-items:center;'><span style='font-size:10.5px; font-weight:800; color:#C85A32; text-transform:uppercase;'>💬 {esc_sem}</span><span style='font-size:11px; font-weight:700; color:#4A7C59;'>{esc_monto}</span></div>"
+                        f"<div style='font-size:12.5px; font-weight:700; color:#262320; margin-top:3px;'>{esc_part}</div>"
+                        f"<div style='font-size:12px; color:#494541; margin-top:4px; font-style:italic; line-height:1.3;'>\"{esc_body}\"</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+    # Inyectar el controlador de tooltips flotantes al pasar el mouse por las celdas
+    _render_pagos_tooltip_controller(proy_name, safe_proy_id, data_cuadro, cols_pago)
 
 
 def _render_tab_finanzas(proy_name, proy_data):

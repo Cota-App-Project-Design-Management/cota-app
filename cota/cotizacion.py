@@ -22,6 +22,7 @@ import json
 import math
 import re
 import openpyxl
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 import pandas as pd
@@ -2572,6 +2573,11 @@ def _normalizar_fila_pago(fila: dict, cols_pago: list[str], desc_default: str = 
     for c in cols_pago:
         res[c] = round(safe_float(fila.get(c, 0.0), 0.0), 2)
     res["Notas"] = safe_str(fila.get("Notas", "")).strip()
+    raw_np = fila.get("Notas_Pagos", {})
+    if isinstance(raw_np, dict):
+        res["Notas_Pagos"] = {safe_str(k).strip(): safe_str(v).strip() for k, v in raw_np.items() if safe_str(v).strip()}
+    else:
+        res["Notas_Pagos"] = {}
     return res
 
 
@@ -3095,6 +3101,9 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
             ws[f"{c_let}{curr_r}"] = val_c if val_c != 0.0 else None
             ws[f"{c_let}{curr_r}"].number_format = "#,##0.00"
             ws[f"{c_let}{curr_r}"].alignment = align_right
+            np_c = f_c.get("Notas_Pagos", {})
+            if isinstance(np_c, dict) and c_name in np_c and np_c[c_name]:
+                ws[f"{c_let}{curr_r}"].comment = Comment(str(np_c[c_name]).strip(), "Cota")
 
         ws[f"{let_pagado}{curr_r}"] = _formula_pagado(curr_r)
         ws[f"{let_pagado}{curr_r}"].number_format = "#,##0.00"
@@ -3146,6 +3155,9 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
         ws[f"{c_let}{row_ges}"] = v_g if v_g != 0.0 else None
         ws[f"{c_let}{row_ges}"].number_format = "#,##0.00"
         ws[f"{c_let}{row_ges}"].alignment = align_right
+        np_ges = f_ges.get("Notas_Pagos", {})
+        if isinstance(np_ges, dict) and c_name in np_ges and np_ges[c_name]:
+            ws[f"{c_let}{row_ges}"].comment = Comment(str(np_ges[c_name]).strip(), "Cota")
     ws[f"{let_pagado}{row_ges}"] = _formula_pagado(row_ges)
     ws[f"{let_pagado}{row_ges}"].number_format = "#,##0.00"
     ws[f"{let_pagado}{row_ges}"].alignment = align_right
@@ -3173,6 +3185,9 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
         ws[f"{c_let}{row_gg}"] = v_gg if v_gg != 0.0 else None
         ws[f"{c_let}{row_gg}"].number_format = "#,##0.00"
         ws[f"{c_let}{row_gg}"].alignment = align_right
+        np_gg = f_gg.get("Notas_Pagos", {})
+        if isinstance(np_gg, dict) and c_name in np_gg and np_gg[c_name]:
+            ws[f"{c_let}{row_gg}"].comment = Comment(str(np_gg[c_name]).strip(), "Cota")
     ws[f"{let_pagado}{row_gg}"] = _formula_pagado(row_gg)
     ws[f"{let_pagado}{row_gg}"].number_format = "#,##0.00"
     ws[f"{let_pagado}{row_gg}"].alignment = align_right
