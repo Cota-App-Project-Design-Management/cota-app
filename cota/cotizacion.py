@@ -2885,6 +2885,131 @@ def guardar_cuadro_pagos_semanales_proyecto(proy_name: str, data_cuadro: dict):
         st.session_state.proyectos.at[idx_p, "Pagos_Semanales_JSON"] = json.dumps(data_cuadro, ensure_ascii=False)
 
 
+def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
+    """
+    Aplica ediciones realizadas directamente sobre el Cuadro de Pagos principal (tanto en vista normal
+    como en modo Pantalla Completa): edición de montos, totales, descripción, moneda, notas de pago,
+    estado 'Por Pagar' y agregado/eliminación de filas de contratistas.
+    """
+    if not payload_raw:
+        return False
+    if isinstance(payload_raw, str):
+        s_clean = payload_raw.strip()
+        if not s_clean:
+            return False
+        try:
+            payload = json.loads(s_clean)
+        except Exception:
+            return False
+    elif isinstance(payload_raw, dict):
+        payload = payload_raw
+    else:
+        return False
+
+    if not isinstance(payload, dict):
+        return False
+
+    data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+    num_sem = max(1, min(30, int(data_cuadro.get("num_semanas", 5) or 5)))
+    cols_pago = obtener_columnas_pago_semanal(num_sem)
+    filas_c = list(data_cuadro.get("filas_contratistas", []))
+    fila_ges = dict(data_cuadro.get("fila_gestion", {}))
+    fila_gg = dict(data_cuadro.get("fila_gg", {}))
+    cols_pp = list(data_cuadro.get("cols_por_pagar", []))
+
+    action = safe_str(payload.get("action", "edit_cells")).strip()
+
+    def _apply_single_edit(ed: dict):
+        r_type = safe_str(ed.get("row_type", "contratista")).strip()
+        r_idx = int(ed.get("row_idx", 0) or 0)
+        field = safe_str(ed.get("field", "")).strip()
+        val = ed.get("value")
+        has_nota_pago = "nota_pago" in ed
+        nota_pago_val = safe_str(ed.get("nota_pago", "")).strip()
+
+        target = None
+        if r_type == "contratista":
+            if 0 <= r_idx < len(filas_c):
+                target = filas_c[r_idx]
+        elif r_type == "gestion":
+            target = fila_ges
+        elif r_type == "gg":
+            target = fila_gg
+
+        if target is None or not field:
+            return
+
+        if field in ("Descripcion", "Partida", "Notas", "Moneda"):
+            if val is not None:
+                s_v = safe_str(val).strip()
+                if field == "Moneda":
+                    target["Moneda"] = "Dólares" if ("dolar" in s_v.lower() or "dólar" in s_v.lower() or "usd" in s_v.lower()) else "Soles"
+                elif field == "Descripcion":
+                    if s_v:
+                        target["Descripcion"] = s_v
+                else:
+                    target[field] = s_v
+        elif field == "TOTAL" or field in cols_pago:
+            if val is not None:
+                if isinstance(val, str):
+                    v_clean = re.sub(r"[^\d.\-]", "", val.replace(",", ""))
+                    num_v = safe_float(v_clean, 0.0)
+                else:
+                    num_v = safe_float(val, 0.0)
+                target[field] = round(max(0.0, num_v), 2)
+            if has_nota_pago and field in cols_pago:
+                np_map = dict(target.get("Notas_Pagos", {}) if isinstance(target.get("Notas_Pagos"), dict) else {})
+                if nota_pago_val:
+                    np_map[field] = nota_pago_val
+                else:
+                    np_map.pop(field, None)
+                target["Notas_Pagos"] = np_map
+
+    if action == "edit_cells":
+        edits = payload.get("edits", [])
+        if isinstance(edits, list):
+            for ed_item in edits:
+                if isinstance(ed_item, dict):
+                    _apply_single_edit(ed_item)
+        elif "field" in payload:
+            _apply_single_edit(payload)
+    elif action == "toggle_por_pagar":
+        col_t = safe_str(payload.get("col", "")).strip()
+        if col_t in cols_pago:
+            if col_t in cols_pp:
+                cols_pp.remove(col_t)
+            else:
+                cols_pp.append(col_t)
+            data_cuadro["cols_por_pagar"] = cols_pp
+            st.session_state.pop(f"por_pagar_cols_{proy_name}", None)
+    elif action == "add_row":
+        part_name = safe_str(payload.get("Partida", "")).strip() or (filas_c[-1].get("Partida", "General") if filas_c else "General")
+        desc_name = safe_str(payload.get("Descripcion", "")).strip() or f"{part_name} — Nuevo Contratista"
+        mon_name = safe_str(payload.get("Moneda", "Soles")).strip() or "Soles"
+        tot_val = round(safe_float(payload.get("TOTAL", 0.0), 0.0), 2)
+        notas_txt = safe_str(payload.get("Notas", "")).strip()
+        nueva_f = _normalizar_fila_pago(
+            {"Partida": part_name, "Descripcion": desc_name, "Moneda": mon_name, "TOTAL": tot_val, "Notas": notas_txt},
+            cols_pago,
+            desc_name,
+            part_name,
+        )
+        filas_c.append(nueva_f)
+    elif action == "delete_row":
+        r_idx = int(payload.get("row_idx", -1))
+        if len(filas_c) > 1 and 0 <= r_idx < len(filas_c):
+            filas_c.pop(r_idx)
+
+    data_cuadro["filas_contratistas"] = [
+        _normalizar_fila_pago(f, cols_pago, f.get("Descripcion", f"Partida {i+1}"), f.get("Partida", ""))
+        for i, f in enumerate(filas_c)
+    ]
+    data_cuadro["fila_gestion"] = _normalizar_fila_pago(fila_ges, cols_pago, "Gestión y supervisión de obras")
+    data_cuadro["fila_gg"] = _normalizar_fila_pago(fila_gg, cols_pago, "Gastos Generales")
+    guardar_cuadro_pagos_semanales_proyecto(proy_name, data_cuadro)
+    return True
+
+
 def calcular_resumen_cuadro_pagos_semanales(data_cuadro: dict) -> dict:
     """
     Calcula PAGADO, POR_PAGAR y SALDO de cada fila, así como las filas de cierre:

@@ -54,7 +54,11 @@ import importlib
 import cota.cotizacion
 import cota.pdf
 try:
-    if not hasattr(cota.cotizacion, "deshacer_presupuesto") or not hasattr(cota.cotizacion, "mover_partida_presupuesto"):
+    if (
+        not hasattr(cota.cotizacion, "deshacer_presupuesto")
+        or not hasattr(cota.cotizacion, "mover_partida_presupuesto")
+        or not hasattr(cota.cotizacion, "aplicar_edicion_inline_cuadro_pagos")
+    ):
         importlib.reload(cota.cotizacion)
     if not hasattr(cota.pdf, "generar_pdf_minuta"):
         importlib.reload(cota.pdf)
@@ -64,6 +68,7 @@ from cota.cotizacion import (
     ajustar_cantidad_partidas_proyecto,
     ajustar_cantidad_tareas_partida,
     aplicar_cotizacion_a_proyecto,
+    aplicar_edicion_inline_cuadro_pagos,
     aplicar_edicion_tabla_presupuesto_partida,
     asegurar_estructura_presupuesto_proyecto,
     calcular_resumen_cuadro_pagos_semanales,
@@ -2548,64 +2553,18 @@ def _render_tab_obra(proy_name, proy_data):
 
 
 def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cuadro: dict, cols_pago: list[str]):
-    """Inyecta un controlador DOM que muestra tooltips flotantes al pasar el mouse sobre celdas con notas y controla el modo Pantalla Completa (tipo YouTube)."""
-    notas_cont_map = {}
-    filas_c = data_cuadro.get("filas_contratistas", [])
-    for idx_f, f in enumerate(filas_c):
-        np_dict = f.get("Notas_Pagos", {})
-        if np_dict and isinstance(np_dict, dict):
-            m_r = {}
-            part_name = safe_str(f.get("Descripcion", "")) or safe_str(f.get("Partida", f"Partida {idx_f+1}"))
-            es_usd = "dólar" in safe_str(f.get("Moneda", "")).lower() or "dolar" in safe_str(f.get("Moneda", "")).lower()
-            pref_m = "US$ " if es_usd else "S/ "
-            for col_k, txt_n in np_dict.items():
-                if safe_str(txt_n).strip():
-                    val_c = safe_float(f.get(col_k, 0.0), 0.0)
-                    info_obj = {
-                        "partida": part_name,
-                        "semana": etiqueta_corta_columna_pago(col_k),
-                        "monto": f"{pref_m}{val_c:,.2f}",
-                        "nota": safe_str(txt_n).strip(),
-                    }
-                    m_r[col_k] = info_obj
-                    m_r[etiqueta_corta_columna_pago(col_k)] = info_obj
-            if m_r:
-                notas_cont_map[str(idx_f)] = m_r
-
-    notas_ges_map = {}
-    filas_g = [
-        ("0", data_cuadro.get("fila_gestion", {}), "Gestión y supervisión de obras"),
-        ("1", data_cuadro.get("fila_gg", {}), "Gastos Generales"),
-    ]
-    for idx_str, f_obj, def_nom in filas_g:
-        np_dict = f_obj.get("Notas_Pagos", {})
-        if np_dict and isinstance(np_dict, dict):
-            m_r = {}
-            part_name = safe_str(f_obj.get("Descripcion", "")) or def_nom
-            es_usd = "dólar" in safe_str(f_obj.get("Moneda", "")).lower() or "dolar" in safe_str(f_obj.get("Moneda", "")).lower()
-            pref_m = "US$ " if es_usd else "S/ "
-            for col_k, txt_n in np_dict.items():
-                if safe_str(txt_n).strip():
-                    val_c = safe_float(f_obj.get(col_k, 0.0), 0.0)
-                    info_obj = {
-                        "partida": part_name,
-                        "semana": etiqueta_corta_columna_pago(col_k),
-                        "monto": f"{pref_m}{val_c:,.2f}",
-                        "nota": safe_str(txt_n).strip(),
-                    }
-                    m_r[col_k] = info_obj
-                    m_r[etiqueta_corta_columna_pago(col_k)] = info_obj
-            if m_r:
-                notas_ges_map[idx_str] = m_r
-
-    cols_pago_short = [etiqueta_corta_columna_pago(c) for c in cols_pago]
+    """Inyecta el controlador interactivo del Cuadro de Pagos: edición en vivo dentro del cuadro con colores (normal y Pantalla Completa), recálculo instantáneo y tooltips flotantes."""
+    tc_val = float(data_cuadro.get("tc", 3.60) or 3.60)
+    if tc_val <= 0:
+        tc_val = 3.60
+    cols_por_pagar = list(data_cuadro.get("cols_por_pagar", []))
 
     payload_json = json.dumps({
         "safeId": safe_proy_id,
-        "colsPago": cols_pago_short,
-        "nRowsCont": len(filas_c),
-        "notasCont": notas_cont_map,
-        "notasGes": notas_ges_map,
+        "bridgeLabel": f"PAGOS_BRIDGE_{safe_proy_id}",
+        "colsPago": cols_pago,
+        "colsPorPagar": cols_por_pagar,
+        "tc": tc_val,
     })
 
     html_code = f"""
@@ -2616,16 +2575,22 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
     <script>
     (function() {{
         const payload = {payload_json};
-        const parentDoc = window.parent.document;
+        const parentWin = window.parent;
+        const parentDoc = parentWin.document;
         const safeId = payload.safeId;
+        const bridgeLabel = payload.bridgeLabel;
         const colsPago = payload.colsPago;
-        const notasCont = payload.notasCont;
-        const notasGes = payload.notasGes;
+        let tc = payload.tc || 3.60;
 
-        function ensureFullscreenStyles() {{
-            if (parentDoc.getElementById('cota_pagos_fs_styles')) return;
-            const stEl = parentDoc.createElement('style');
-            stEl.id = 'cota_pagos_fs_styles';
+        parentWin.__cotaPagosFsState = parentWin.__cotaPagosFsState || {{}};
+
+        function ensureInteractiveStyles() {{
+            let stEl = parentDoc.getElementById('cota_pagos_fs_styles');
+            if (!stEl) {{
+                stEl = parentDoc.createElement('style');
+                stEl.id = 'cota_pagos_fs_styles';
+                parentDoc.head.appendChild(stEl);
+            }}
             stEl.textContent = `
                 .cota-pagos-fs-active {{
                     position: fixed !important;
@@ -2636,7 +2601,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
                     max-height: 100vh !important;
                     z-index: 999990 !important;
                     background: #FAF8F5 !important;
-                    padding: 20px 28px !important;
+                    padding: 18px 26px !important;
                     margin: 0 !important;
                     border-radius: 0 !important;
                     overflow: auto !important;
@@ -2644,7 +2609,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
                     box-shadow: none !important;
                 }}
                 .cota-pagos-fs-active .cota-pagos-scroll-area {{
-                    max-height: calc(100vh - 105px) !important;
+                    max-height: calc(100vh - 95px) !important;
                     overflow: auto !important;
                 }}
                 .cota-pagos-fs-active table {{
@@ -2653,8 +2618,86 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
                 .cota-pagos-fs-active th, .cota-pagos-fs-active td {{
                     padding: 8px 11px !important;
                 }}
+                td.cota-editable-cell {{
+                    cursor: pointer !important;
+                    transition: background 0.1s ease, box-shadow 0.1s ease;
+                }}
+                td.cota-editable-cell:hover {{
+                    background: #FFF6EE !important;
+                    box-shadow: inset 0 0 0 1.5px rgba(200, 90, 50, 0.55) !important;
+                }}
+                td.cota-cell-editing {{
+                    padding: 2px 4px !important;
+                    background: #FFFFFF !important;
+                    box-shadow: inset 0 0 0 2px #C85A32 !important;
+                }}
+                .cota-inline-input {{
+                    width: 100%;
+                    box-sizing: border-box;
+                    border: none;
+                    outline: none;
+                    background: transparent;
+                    font-family: inherit;
+                    font-size: inherit;
+                    font-weight: 700;
+                    color: #262320;
+                    padding: 4px 4px;
+                }}
+                .cota-row-del-btn {{
+                    opacity: 0.25;
+                    transition: opacity 0.15s ease, color 0.15s ease;
+                    cursor: pointer;
+                    border: none;
+                    background: transparent;
+                    color: #9E9589;
+                    font-size: 13px;
+                    padding: 2px 5px;
+                    border-radius: 4px;
+                }}
+                tr:hover .cota-row-del-btn {{
+                    opacity: 1;
+                }}
+                .cota-row-del-btn:hover {{
+                    background: #FDECEA;
+                    color: #D92B2B;
+                }}
             `;
-            parentDoc.head.appendChild(stEl);
+        }}
+
+        function findBridgeInput() {{
+            const inputs = parentDoc.querySelectorAll('input[aria-label="' + bridgeLabel + '"]');
+            if (inputs && inputs.length > 0) return inputs[0];
+            const labels = parentDoc.querySelectorAll('label');
+            for (let i = 0; i < labels.length; i++) {{
+                if ((labels[i].textContent || '').trim() === bridgeLabel) {{
+                    const container = labels[i].closest('div[data-testid="stTextInput"]');
+                    if (container) {{
+                        const inp = container.querySelector('input');
+                        if (inp) return inp;
+                    }}
+                }}
+            }}
+            return null;
+        }}
+
+        function sendBridgePayload(obj) {{
+            const inp = findBridgeInput();
+            if (!inp) return;
+            const valStr = JSON.stringify(Object.assign({{ ts: Date.now() }}, obj));
+            const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            const tracker = inp._valueTracker;
+            if (tracker) tracker.setValue('');
+            nativeSetter.call(inp, valStr);
+            inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            inp.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }}));
+            inp.blur();
+        }}
+
+        function fmtMoney(val, pref, blankZero) {{
+            const v = Number(val) || 0;
+            if (blankZero && Math.abs(v) < 0.005) return '';
+            return pref + v.toLocaleString('en-US', {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }});
         }}
 
         function getOrCreateTooltip() {{
@@ -2675,6 +2718,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
         }}
 
         function showTooltipContent(e, partida, semana, monto, nota) {{
+            if (!nota) return;
             const tooltip = getOrCreateTooltip();
             tooltip.innerHTML = `
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; border-bottom:1px solid rgba(255,255,255,0.18); padding-bottom:5px;">
@@ -2690,10 +2734,10 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
 
             let posX = e.clientX + 16;
             let posY = e.clientY + 16;
-            if (posX + 350 > window.parent.innerWidth) {{
+            if (posX + 350 > parentWin.innerWidth) {{
                 posX = Math.max(10, e.clientX - 355);
             }}
-            if (posY + 140 > window.parent.innerHeight) {{
+            if (posY + 140 > parentWin.innerHeight) {{
                 posY = Math.max(10, e.clientY - 130);
             }}
             tooltip.style.left = posX + 'px';
@@ -2708,37 +2752,187 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
             }}
         }}
 
+        function recalculateTableDOM(fsWrap) {{
+            if (!fsWrap) return;
+            const rows = fsWrap.querySelectorAll('tr[data-row-type]');
+            let subTotal = 0;
+            let subPagado = 0;
+            let subSaldo = 0;
+            const subSem = {{}};
+            colsPago.forEach(c => {{ subSem[c] = 0; }});
+
+            let gesTotal = 0, gesPagado = 0, gesSaldo = 0;
+            const gesSem = {{}};
+            let ggTotal = 0, ggPagado = 0, ggSaldo = 0;
+            const ggSem = {{}};
+            colsPago.forEach(c => {{ gesSem[c] = 0; ggSem[c] = 0; }});
+
+            rows.forEach(tr => {{
+                const rType = tr.getAttribute('data-row-type');
+                if (rType !== 'contratista' && rType !== 'gestion' && rType !== 'gg') return;
+                const monCell = tr.querySelector('td[data-col-field="Moneda"]');
+                const monTxt = monCell ? (monCell.getAttribute('data-raw-val') || monCell.textContent || 'Soles') : 'Soles';
+                const isUsd = monTxt.toLowerCase().indexOf('dolar') >= 0 || monTxt.toLowerCase().indexOf('dólar') >= 0;
+                const pref = isUsd ? '$' : 'S/ ';
+
+                const totCell = tr.querySelector('td[data-col-field="TOTAL"]');
+                const totVal = totCell ? (parseFloat(totCell.getAttribute('data-raw-val')) || 0) : 0;
+
+                let rPagado = 0;
+                colsPago.forEach(cName => {{
+                    const cCell = tr.querySelector('td[data-col-field="' + cName + '"]');
+                    if (!cCell) return;
+                    const v = parseFloat(cCell.getAttribute('data-raw-val')) || 0;
+                    const isPp = cCell.getAttribute('data-is-pp') === '1';
+                    if (!isPp) {{
+                        rPagado += v;
+                    }}
+                    if (rType === 'contratista') {{
+                        subSem[cName] = (subSem[cName] || 0) + v;
+                    }} else if (rType === 'gestion') {{
+                        gesSem[cName] = v;
+                    }} else if (rType === 'gg') {{
+                        ggSem[cName] = v;
+                    }}
+                }});
+
+                const rSaldo = totVal - rPagado;
+                const pagCell = tr.querySelector('td[data-calc-role="row-pagado"]');
+                const salCell = tr.querySelector('td[data-calc-role="row-saldo"]');
+                if (pagCell) pagCell.textContent = fmtMoney(rPagado, pref, false);
+                if (salCell) salCell.textContent = fmtMoney(rSaldo, pref, false);
+
+                if (rType === 'contratista') {{
+                    subTotal += totVal;
+                    subPagado += rPagado;
+                    subSaldo += rSaldo;
+                }} else if (rType === 'gestion') {{
+                    gesTotal = totVal;
+                    gesPagado = rPagado;
+                    gesSaldo = rSaldo;
+                }} else if (rType === 'gg') {{
+                    ggTotal = totVal;
+                    ggPagado = rPagado;
+                    ggSaldo = rSaldo;
+                }}
+            }});
+
+            // Actualizar fila SUB TOTAL
+            const trSub = fsWrap.querySelector('tr[data-summary-row="subtotal"]');
+            if (trSub) {{
+                const cTot = trSub.querySelector('td[data-sum-col="TOTAL"]');
+                if (cTot) cTot.textContent = fmtMoney(subTotal, 'S/ ', false);
+                colsPago.forEach(cName => {{
+                    const cS = trSub.querySelector('td[data-sum-col="' + cName + '"]');
+                    if (cS) cS.textContent = fmtMoney(subSem[cName] || 0, 'S/ ', false);
+                }});
+                const cPag = trSub.querySelector('td[data-sum-col="PAGADO"]');
+                if (cPag) cPag.textContent = fmtMoney(subPagado, 'S/ ', false);
+                const cSal = trSub.querySelector('td[data-sum-col="SALDO"]');
+                if (cSal) cSal.textContent = fmtMoney(subSaldo, 'S/ ', false);
+            }}
+
+            // Actualizar filas TOTAL Soles y Dólares
+            const totSolesTotal = subTotal + gesTotal + ggTotal;
+            const totSolesPagado = subPagado + gesPagado + ggPagado;
+            const totSolesSaldo = subSaldo + gesSaldo + ggSaldo;
+
+            const trTotSoles = fsWrap.querySelector('tr[data-summary-row="total_soles"]');
+            const trTotUsd = fsWrap.querySelector('tr[data-summary-row="total_usd"]');
+
+            if (trTotSoles) {{
+                const cTot = trTotSoles.querySelector('td[data-sum-col="TOTAL"]');
+                if (cTot) cTot.textContent = fmtMoney(totSolesTotal, 'S/ ', false);
+                colsPago.forEach(cName => {{
+                    const vCol = (subSem[cName] || 0) + (gesSem[cName] || 0) + (ggSem[cName] || 0);
+                    const cS = trTotSoles.querySelector('td[data-sum-col="' + cName + '"]');
+                    if (cS) cS.textContent = fmtMoney(vCol, 'S/ ', false);
+                }});
+                const cPag = trTotSoles.querySelector('td[data-sum-col="PAGADO"]');
+                if (cPag) cPag.textContent = fmtMoney(totSolesPagado, 'S/ ', false);
+                const cSal = trTotSoles.querySelector('td[data-sum-col="SALDO"]');
+                if (cSal) cSal.textContent = fmtMoney(totSolesSaldo, 'S/ ', false);
+            }}
+
+            if (trTotUsd && tc > 0) {{
+                const cTot = trTotUsd.querySelector('td[data-sum-col="TOTAL"]');
+                if (cTot) cTot.textContent = fmtMoney(totSolesTotal / tc, '$', false);
+                colsPago.forEach(cName => {{
+                    const vCol = (subSem[cName] || 0) + (gesSem[cName] || 0) + (ggSem[cName] || 0);
+                    const cS = trTotUsd.querySelector('td[data-sum-col="' + cName + '"]');
+                    if (cS) cS.textContent = fmtMoney(vCol / tc, '$', false);
+                }});
+                const cPag = trTotUsd.querySelector('td[data-sum-col="PAGADO"]');
+                if (cPag) cPag.textContent = fmtMoney(totSolesPagado / tc, '$', false);
+                const cSal = trTotUsd.querySelector('td[data-sum-col="SALDO"]');
+                if (cSal) cSal.textContent = fmtMoney(totSolesSaldo / tc, '$', false);
+            }}
+        }}
+
+        function renderAmountCellInner(cell, rawVal, notaTxt) {{
+            const pref = cell.getAttribute('data-pref') || 'S/ ';
+            const isTotal = cell.getAttribute('data-col-field') === 'TOTAL';
+            const isPp = cell.getAttribute('data-is-pp') === '1';
+            const numV = parseFloat(rawVal) || 0;
+            cell.setAttribute('data-raw-val', String(numV));
+
+            const dispTxt = fmtMoney(numV, pref, !isTotal);
+            cell.style.color = isTotal ? '#262320' : (isPp ? '#262320' : '#D92B2B');
+
+            if (notaTxt && !isTotal) {{
+                cell.setAttribute('data-cota-note-text', notaTxt);
+                cell.setAttribute('data-cota-note-monto', fmtMoney(numV, pref, false));
+                cell.style.background = '#FFFDF9';
+                const innerVal = dispTxt ? dispTxt : '<span style="color:#C85A32; font-size:11px;">💬</span>';
+                cell.innerHTML = innerVal + '<span style="position:absolute; top:0; right:0; width:0; height:0; border-top:8px solid #C85A32; border-left:8px solid transparent;"></span>';
+            }} else {{
+                cell.removeAttribute('data-cota-note-text');
+                cell.style.background = '';
+                cell.textContent = dispTxt;
+            }}
+        }}
+
         function initPagosUI() {{
-            ensureFullscreenStyles();
+            ensureInteractiveStyles();
             const fsWrap = parentDoc.getElementById('cota_cuadro_pagos_fs_wrap_' + safeId);
             const btnFs = parentDoc.getElementById('btn_fs_pagos_' + safeId);
+            if (!fsWrap) return false;
 
-            if (fsWrap && btnFs && !btnFs.dataset.cotaFsBound) {{
-                btnFs.dataset.cotaFsBound = '1';
-                const iconExpand = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>`;
-                const iconCollapse = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>`;
+            const iconExpand = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>`;
+            const iconCollapse = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>`;
 
-                function updateFsButtonState(isFs) {{
-                    if (isFs) {{
-                        btnFs.innerHTML = iconCollapse + '<span>Salir de Pantalla Completa (ESC)</span>';
-                        btnFs.style.background = '#262320';
-                    }} else {{
-                        btnFs.innerHTML = iconExpand + '<span>Pantalla Completa</span>';
-                        btnFs.style.background = 'rgba(38, 35, 32, 0.28)';
-                    }}
+            function updateFsButtonState(isFs) {{
+                if (!btnFs) return;
+                if (isFs) {{
+                    btnFs.innerHTML = iconCollapse + '<span>Salir de Pantalla Completa (ESC)</span>';
+                    btnFs.style.background = '#262320';
+                }} else {{
+                    btnFs.innerHTML = iconExpand + '<span>Pantalla Completa</span>';
+                    btnFs.style.background = 'rgba(38, 35, 32, 0.28)';
                 }}
+            }}
 
+            // Restaurar Pantalla Completa automáticamente si estaba activa antes de guardar una celda
+            if (parentWin.__cotaPagosFsState[safeId]) {{
+                fsWrap.classList.add('cota-pagos-fs-active');
+                updateFsButtonState(true);
+            }}
+
+            if (btnFs && !btnFs.dataset.cotaFsBound) {{
+                btnFs.dataset.cotaFsBound = '1';
                 btnFs.addEventListener('click', function(ev) {{
                     ev.preventDefault();
                     ev.stopPropagation();
                     const isCurrentlyActive = fsWrap.classList.contains('cota-pagos-fs-active') || (parentDoc.fullscreenElement === fsWrap);
                     if (isCurrentlyActive) {{
+                        parentWin.__cotaPagosFsState[safeId] = false;
                         fsWrap.classList.remove('cota-pagos-fs-active');
                         if (parentDoc.fullscreenElement && parentDoc.exitFullscreen) {{
                             parentDoc.exitFullscreen().catch(() => {{}});
                         }}
                         updateFsButtonState(false);
                     }} else {{
+                        parentWin.__cotaPagosFsState[safeId] = true;
                         fsWrap.classList.add('cota-pagos-fs-active');
                         if (fsWrap.requestFullscreen) {{
                             fsWrap.requestFullscreen().catch(() => {{}});
@@ -2748,8 +2942,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
                 }});
 
                 parentDoc.addEventListener('fullscreenchange', function() {{
-                    if (!parentDoc.fullscreenElement && fsWrap.classList.contains('cota-pagos-fs-active')) {{
-                        // Si salió del fullscreen nativo con ESC, restaurar también la clase CSS
+                    if (!parentDoc.fullscreenElement && fsWrap.classList.contains('cota-pagos-fs-active') && !parentWin.__cotaPagosFsState[safeId]) {{
                         fsWrap.classList.remove('cota-pagos-fs-active');
                         updateFsButtonState(false);
                     }}
@@ -2757,212 +2950,266 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
                 }});
 
                 parentDoc.addEventListener('keydown', function(ev) {{
-                    if (ev.key === 'Escape' && fsWrap.classList.contains('cota-pagos-fs-active')) {{
-                        fsWrap.classList.remove('cota-pagos-fs-active');
-                        updateFsButtonState(false);
+                    if (ev.key === 'Escape') {{
+                        if (fsWrap.querySelector('.cota-cell-editing')) return;
+                        if (fsWrap.classList.contains('cota-pagos-fs-active')) {{
+                            parentWin.__cotaPagosFsState[safeId] = false;
+                            fsWrap.classList.remove('cota-pagos-fs-active');
+                            updateFsButtonState(false);
+                        }}
                     }}
                 }});
             }}
 
-            // Vincular tooltips a las celdas con nota en la tabla visual unificada
-            if (fsWrap) {{
-                const noteCells = fsWrap.querySelectorAll('td[data-cota-note-text]');
-                noteCells.forEach(function(cell) {{
-                    if (cell.dataset.cotaNoteBound === '1') return;
-                    cell.dataset.cotaNoteBound = '1';
-                    cell.addEventListener('pointermove', function(e) {{
-                        showTooltipContent(
-                            e,
-                            cell.getAttribute('data-cota-note-partida') || '',
-                            cell.getAttribute('data-cota-note-semana') || '',
-                            cell.getAttribute('data-cota-note-monto') || '',
-                            cell.getAttribute('data-cota-note-text') || ''
-                        );
+            // Botón para agregar fila directamente desde el cuadro coloreado
+            const btnAddRow = fsWrap.querySelector('[data-cota-action="add-row"]');
+            if (btnAddRow && !btnAddRow.dataset.cotaBound) {{
+                btnAddRow.dataset.cotaBound = '1';
+                btnAddRow.addEventListener('click', function(e) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    sendBridgePayload({{ action: 'add_row', Descripcion: 'NUEVA PARTIDA / CONTRATISTA', Moneda: 'Soles', TOTAL: 0 }});
+                }});
+            }}
+
+            // Botones para eliminar fila de contratista
+            fsWrap.querySelectorAll('[data-cota-action="del-row"]').forEach(function(btnDel) {{
+                if (btnDel.dataset.cotaBound) return;
+                btnDel.dataset.cotaBound = '1';
+                btnDel.addEventListener('click', function(e) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const rIdx = parseInt(btnDel.getAttribute('data-row-idx') || '-1', 10);
+                    if (rIdx >= 0) {{
+                        sendBridgePayload({{ action: 'delete_row', row_idx: rIdx }});
+                    }}
+                }});
+            }});
+
+            // Cabeceras de semanas: clic en Por Pagar / Estado para alternar estado de la semana
+            fsWrap.querySelectorAll('th[data-cota-toggle-pp]').forEach(function(thEl) {{
+                if (thEl.dataset.cotaBound) return;
+                thEl.dataset.cotaBound = '1';
+                thEl.addEventListener('click', function(e) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const colName = thEl.getAttribute('data-cota-toggle-pp');
+                    if (colName) {{
+                        sendBridgePayload({{ action: 'toggle_por_pagar', col: colName }});
+                    }}
+                }});
+            }});
+
+            // Tooltips flotantes al pasar el mouse sobre celdas con nota
+            fsWrap.addEventListener('pointermove', function(e) {{
+                const cell = e.target.closest('td[data-cota-note-text]');
+                if (cell && !cell.classList.contains('cota-cell-editing')) {{
+                    showTooltipContent(
+                        e,
+                        cell.getAttribute('data-cota-note-partida') || '',
+                        cell.getAttribute('data-cota-note-semana') || '',
+                        cell.getAttribute('data-cota-note-monto') || '',
+                        cell.getAttribute('data-cota-note-text') || ''
+                    );
+                }} else {{
+                    hideTooltip();
+                }}
+            }});
+            fsWrap.addEventListener('pointerleave', hideTooltip);
+
+            // Edición directa (inline) en todas las celdas editables del cuadro coloreado
+            const editableCells = Array.from(fsWrap.querySelectorAll('td.cota-editable-cell'));
+            editableCells.forEach(function(cell, cellOrderIdx) {{
+                if (cell.dataset.cotaEditBound === '1') return;
+                cell.dataset.cotaEditBound = '1';
+
+                cell.addEventListener('click', function(e) {{
+                    if (e.target.closest('[data-cota-action="del-row"]')) return;
+                    if (cell.classList.contains('cota-cell-editing')) return;
+                    hideTooltip();
+
+                    const rType = cell.getAttribute('data-row-type');
+                    const rIdx = parseInt(cell.getAttribute('data-row-idx') || '0', 10);
+                    const colField = cell.getAttribute('data-col-field');
+
+                    // Caso 1: Columna Moneda (alternar Soles / Dólares con selector directo)
+                    if (colField === 'Moneda') {{
+                        const curMon = (cell.getAttribute('data-raw-val') || 'Soles').trim();
+                        const nextMon = curMon === 'Dólares' ? 'Soles' : 'Dólares';
+                        cell.setAttribute('data-raw-val', nextMon);
+                        cell.textContent = nextMon;
+                        const tr = cell.closest('tr');
+                        if (tr) {{
+                            const newPref = nextMon === 'Dólares' ? '$' : 'S/ ';
+                            tr.querySelectorAll('td[data-pref]').forEach(tdP => {{
+                                tdP.setAttribute('data-pref', newPref);
+                                const rv = parseFloat(tdP.getAttribute('data-raw-val')) || 0;
+                                renderAmountCellInner(tdP, rv, tdP.getAttribute('data-cota-note-text') || '');
+                            }});
+                        }}
+                        recalculateTableDOM(fsWrap);
+                        sendBridgePayload({{
+                            action: 'edit_cells',
+                            edits: [{{ row_type: rType, row_idx: rIdx, field: 'Moneda', value: nextMon }}]
+                        }});
+                        return;
+                    }}
+
+                    // Caso 2: Columna Descripción + Contratista/Nota
+                    if (colField === 'Descripcion') {{
+                        const curDesc = cell.getAttribute('data-raw-desc') || '';
+                        const curNotas = cell.getAttribute('data-raw-notas') || '';
+                        const origHtml = cell.innerHTML;
+                        cell.classList.add('cota-cell-editing');
+                        cell.innerHTML = `
+                            <div style="display:flex; flex-direction:column; gap:4px; padding:3px;">
+                                <input type="text" class="cota-inline-input inp-desc" value="${{curDesc.replace(/"/g, '&quot;')}}" placeholder="Partida / Especialidad" style="border-bottom:1px solid #DFD9CE; font-weight:700; font-size:12px;" />
+                                <input type="text" class="cota-inline-input inp-notas" value="${{curNotas.replace(/"/g, '&quot;')}}" placeholder="Contratista / Nota (ej. Contratista: Juan)" style="font-weight:500; font-size:11px; color:#5A534A;" />
+                            </div>
+                        `;
+                        const inpD = cell.querySelector('.inp-desc');
+                        const inpN = cell.querySelector('.inp-notas');
+                        inpD.focus();
+                        inpD.select();
+
+                        let committed = false;
+                        function commitDesc() {{
+                            if (committed) return;
+                            committed = true;
+                            const newD = (inpD.value || '').trim() || curDesc;
+                            const newN = (inpN.value || '').trim();
+                            cell.classList.remove('cota-cell-editing');
+                            cell.setAttribute('data-raw-desc', newD);
+                            cell.setAttribute('data-raw-notas', newN);
+                            cell.innerHTML = origHtml;
+                            const titleSpan = cell.querySelector('.cota-desc-title');
+                            if (titleSpan) titleSpan.textContent = newD;
+                            const noteSpan = cell.querySelector('.cota-desc-sub');
+                            if (noteSpan) {{
+                                noteSpan.textContent = newN;
+                                noteSpan.style.display = newN ? 'block' : 'none';
+                            }}
+                            if (newD !== curDesc || newN !== curNotas) {{
+                                sendBridgePayload({{
+                                    action: 'edit_cells',
+                                    edits: [
+                                        {{ row_type: rType, row_idx: rIdx, field: 'Descripcion', value: newD }},
+                                        {{ row_type: rType, row_idx: rIdx, field: 'Notas', value: newN }}
+                                    ]
+                                }});
+                            }}
+                        }}
+
+                        cell.addEventListener('focusout', function onFo(ev) {{
+                            if (cell.contains(ev.relatedTarget)) return;
+                            cell.removeEventListener('focusout', onFo);
+                            commitDesc();
+                        }});
+                        [inpD, inpN].forEach(inpEl => {{
+                            inpEl.addEventListener('keydown', function(ke) {{
+                                if (ke.key === 'Enter') {{
+                                    ke.preventDefault();
+                                    commitDesc();
+                                }} else if (ke.key === 'Escape') {{
+                                    ke.preventDefault();
+                                    committed = true;
+                                    cell.classList.remove('cota-cell-editing');
+                                    cell.innerHTML = origHtml;
+                                }}
+                            }});
+                        }});
+                        return;
+                    }}
+
+                    // Caso 3: Celda de Monto (TOTAL o Semana de Pago ADELANTO 1, S1, S2...)
+                    const curVal = parseFloat(cell.getAttribute('data-raw-val')) || 0;
+                    const curNote = cell.getAttribute('data-cota-note-text') || '';
+                    const isPaymentCol = colField !== 'TOTAL';
+
+                    cell.classList.add('cota-cell-editing');
+                    const initStr = curVal !== 0 ? String(curVal) : '';
+
+                    if (isPaymentCol) {{
+                        cell.innerHTML = `
+                            <div style="display:flex; flex-direction:column; gap:3px; min-width:110px;">
+                                <input type="text" inputmode="decimal" class="cota-inline-input inp-monto" value="${{initStr}}" placeholder="0.00" style="text-align:right;" />
+                                <input type="text" class="cota-inline-input inp-nota-pago" value="${{curNote.replace(/"/g, '&quot;')}}" placeholder="💬 Nota opcional..." style="font-size:10.5px; font-weight:500; color:#6E665E; border-top:1px dashed #DFD9CE; padding-top:2px; text-align:left;" />
+                            </div>
+                        `;
+                    }} else {{
+                        cell.innerHTML = `<input type="text" inputmode="decimal" class="cota-inline-input inp-monto" value="${{initStr}}" placeholder="0.00" style="text-align:right;" />`;
+                    }}
+
+                    const inpM = cell.querySelector('.inp-monto');
+                    const inpNP = cell.querySelector('.inp-nota-pago');
+                    inpM.focus();
+                    inpM.select();
+
+                    let committedM = false;
+                    function commitMonto(moveDir) {{
+                        if (committedM) return;
+                        committedM = true;
+                        const rawTyped = (inpM.value || '').replace(/,/g, '').replace(/[^0-9.\\-]/g, '');
+                        const newNum = Math.max(0, Math.round((parseFloat(rawTyped) || 0) * 100) / 100);
+                        const newNota = inpNP ? (inpNP.value || '').trim() : curNote;
+
+                        cell.classList.remove('cota-cell-editing');
+                        renderAmountCellInner(cell, newNum, newNota);
+                        recalculateTableDOM(fsWrap);
+
+                        if (Math.abs(newNum - curVal) > 0.001 || newNota !== curNote) {{
+                            const edPayload = {{
+                                row_type: rType,
+                                row_idx: rIdx,
+                                field: colField,
+                                value: newNum
+                            }};
+                            if (isPaymentCol) {{
+                                edPayload.nota_pago = newNota;
+                            }}
+                            sendBridgePayload({{
+                                action: 'edit_cells',
+                                edits: [edPayload]
+                            }});
+                        }}
+
+                        if (moveDir !== 0) {{
+                            const nextCell = editableCells[cellOrderIdx + moveDir];
+                            if (nextCell && nextCell.getAttribute('data-col-field') !== 'Moneda') {{
+                                setTimeout(() => nextCell.click(), 20);
+                            }}
+                        }}
+                    }}
+
+                    cell.addEventListener('focusout', function onFoM(ev) {{
+                        if (cell.contains(ev.relatedTarget)) return;
+                        cell.removeEventListener('focusout', onFoM);
+                        commitMonto(0);
                     }});
-                    cell.addEventListener('pointerleave', hideTooltip);
-                }});
-            }}
 
-            const anchor = parentDoc.getElementById('anchor_pagos_' + safeId);
-            if (!anchor) return false;
-            const container = anchor.closest('div[data-testid="stVerticalBlockBorderWrapper"]') || anchor.parentElement;
-            if (!container) return false;
-
-            const editors = container.querySelectorAll('div[data-testid="stDataEditor"]');
-
-            function attachToEditor(editorWrap, notesMap, isContratistas) {{
-                if (!editorWrap) return;
-                const instKey = safeId + '_' + (isContratistas ? 'cont' : 'ges') + '_' + Object.keys(notesMap).length;
-                if (editorWrap.dataset.cotaPagosTooltipKey === instKey) return;
-                editorWrap.dataset.cotaPagosTooltipKey = instKey;
-
-                function getColumnInfo() {{
-                    try {{
-                        const fiberKey = Object.keys(editorWrap).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
-                        if (fiberKey) {{
-                            let curr = editorWrap[fiberKey];
-                            for (let d = 0; d < 25 && curr; d++) {{
-                                const p = curr.memoizedProps;
-                                if (p && p.columns && Array.isArray(p.columns) && p.columns.length > 0) {{
-                                    return p.columns.map(c => ({{
-                                        title: c.title || c.name || c.id || '',
-                                        width: c.width || (c.title === 'Partida' || c.title === 'Contratista / Especialidad / Frente' || c.title === 'Concepto' || c.title === 'Notas' ? 200 : (c.title === 'Moneda' ? 75 : 95))
-                                    }}));
+                    [inpM, inpNP].filter(Boolean).forEach(elInp => {{
+                        elInp.addEventListener('keydown', function(ke) {{
+                            if (ke.key === 'Enter') {{
+                                ke.preventDefault();
+                                commitMonto(0);
+                            }} else if (ke.key === 'Tab') {{
+                                if (elInp === inpM && inpNP && !ke.shiftKey && ke.altKey) {{
+                                    return;
                                 }}
-                                curr = curr.return;
+                                ke.preventDefault();
+                                commitMonto(ke.shiftKey ? -1 : 1);
+                            }} else if (ke.key === 'Escape') {{
+                                ke.preventDefault();
+                                committedM = true;
+                                cell.classList.remove('cota-cell-editing');
+                                renderAmountCellInner(cell, curVal, curNote);
                             }}
-                        }}
-                    }} catch (e) {{}}
-
-                    if (isContratistas) {{
-                        const resCols = [
-                            {{ title: 'Partida', width: 200 }},
-                            {{ title: 'Contratista / Especialidad / Frente', width: 200 }},
-                            {{ title: 'Moneda', width: 75 }},
-                            {{ title: 'TOTAL', width: 95 }}
-                        ];
-                        for (let i = 0; i < colsPago.length; i++) {{
-                            resCols.push({{ title: colsPago[i], width: 95 }});
-                        }}
-                        resCols.push({{ title: 'PAGADO ✓', width: 95 }});
-                        resCols.push({{ title: 'SALDO', width: 95 }});
-                        resCols.push({{ title: 'Notas', width: 200 }});
-                        return resCols;
-                    }} else {{
-                        const resCols = [
-                            {{ title: 'Concepto', width: 200 }},
-                            {{ title: 'Moneda', width: 75 }},
-                            {{ title: 'TOTAL', width: 95 }}
-                        ];
-                        for (let i = 0; i < colsPago.length; i++) {{
-                            resCols.push({{ title: colsPago[i], width: 95 }});
-                        }}
-                        resCols.push({{ title: 'PAGADO ✓', width: 95 }});
-                        resCols.push({{ title: 'SALDO', width: 95 }});
-                        resCols.push({{ title: 'Notas', width: 200 }});
-                        return resCols;
-                    }}
-                }}
-
-                function cleanColTitle(raw) {{
-                    if (!raw) return '';
-                    return raw.replace(/^⏳\s*/, '').replace(/\\s*\\(Por Pagar\\)$/, '').trim();
-                }}
-
-                editorWrap.style.position = 'relative';
-                let markerCanvas = editorWrap.querySelector('.cota-pago-markers-overlay');
-                if (!markerCanvas) {{
-                    markerCanvas = parentDoc.createElement('canvas');
-                    markerCanvas.className = 'cota-pago-markers-overlay';
-                    markerCanvas.style.cssText = 'position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:3;';
-                    editorWrap.appendChild(markerCanvas);
-                }}
-
-                function drawMarkers() {{
-                    if (!markerCanvas) return;
-                    const w = editorWrap.clientWidth;
-                    const h = editorWrap.clientHeight;
-                    if (markerCanvas.width !== w || markerCanvas.height !== h) {{
-                        markerCanvas.width = w;
-                        markerCanvas.height = h;
-                    }}
-                    const ctx = markerCanvas.getContext('2d');
-                    ctx.clearRect(0, 0, w, h);
-
-                    const scroller = editorWrap.querySelector('.dvn-scroller') || editorWrap.querySelector('div[style*="overflow"]') || editorWrap;
-                    const sLeft = scroller.scrollLeft || 0;
-                    const sTop = scroller.scrollTop || 0;
-
-                    const cols = getColumnInfo();
-                    const hasNotes = Object.keys(notesMap).length > 0;
-                    if (!hasNotes) return;
-
-                    ctx.fillStyle = '#C85A32';
-
-                    for (const rStr in notesMap) {{
-                        const rIdx = parseInt(rStr, 10);
-                        const rowNotes = notesMap[rStr];
-                        const cellTop = 36 + rIdx * 35 - sTop;
-                        if (cellTop < 20 || cellTop > h) continue;
-
-                        let accX = 0;
-                        for (let i = 0; i < cols.length; i++) {{
-                            const colW = cols[i].width || 95;
-                            const colClean = cleanColTitle(cols[i].title);
-                            if (rowNotes[colClean]) {{
-                                const cornerX = accX + colW - sLeft;
-                                if (cornerX > 0 && cornerX <= w) {{
-                                    ctx.beginPath();
-                                    ctx.moveTo(cornerX, cellTop);
-                                    ctx.lineTo(cornerX - 8, cellTop);
-                                    ctx.lineTo(cornerX, cellTop + 8);
-                                    ctx.closePath();
-                                    ctx.fill();
-                                }}
-                            }}
-                            accX += colW;
-                        }}
-                    }}
-                }}
-
-                drawMarkers();
-                const scroller = editorWrap.querySelector('.dvn-scroller') || editorWrap.querySelector('div[style*="overflow"]');
-                if (scroller) {{
-                    scroller.addEventListener('scroll', drawMarkers, {{ passive: true }});
-                }}
-                window.addEventListener('resize', drawMarkers, {{ passive: true }});
-
-                editorWrap.addEventListener('pointermove', function(e) {{
-                    const rect = editorWrap.getBoundingClientRect();
-                    const sLeft = scroller ? (scroller.scrollLeft || 0) : 0;
-                    const sTop = scroller ? (scroller.scrollTop || 0) : 0;
-
-                    const relX = (e.clientX - rect.left) + sLeft;
-                    const relY = (e.clientY - rect.top) + sTop;
-
-                    if (relY < 36) {{
-                        hideTooltip();
-                        return;
-                    }}
-
-                    const rowIdx = Math.floor((relY - 36) / 35);
-                    const rowNotes = notesMap[String(rowIdx)];
-                    if (!rowNotes) {{
-                        hideTooltip();
-                        return;
-                    }}
-
-                    const cols = getColumnInfo();
-                    let accX = 0;
-                    let matchedColName = null;
-                    for (let i = 0; i < cols.length; i++) {{
-                        const colW = cols[i].width || 95;
-                        if (relX >= accX && relX < accX + colW) {{
-                            matchedColName = cleanColTitle(cols[i].title);
-                            break;
-                        }}
-                        accX += colW;
-                    }}
-
-                    if (matchedColName && rowNotes[matchedColName]) {{
-                        const nInfo = rowNotes[matchedColName];
-                        showTooltipContent(e, nInfo.partida, nInfo.semana || matchedColName, nInfo.monto, nInfo.nota);
-                    }} else {{
-                        hideTooltip();
-                    }}
+                        }});
+                    }});
                 }});
+            }});
 
-                editorWrap.addEventListener('pointerleave', hideTooltip);
-            }}
-
-            if (editors && editors.length >= 1) {{
-                attachToEditor(editors[0], notasCont, true);
-            }}
-            if (editors && editors.length >= 2) {{
-                attachToEditor(editors[1], notasGes, false);
-            }}
-
-            return Boolean(fsWrap);
+            return true;
         }}
 
         if (!initPagosUI()) {{
@@ -2972,7 +3219,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
                 if (initPagosUI() || attempts > 25) {{
                     clearInterval(timer);
                 }}
-            }}, 200);
+            }}, 150);
         }}
     }})();
     </script>
@@ -3438,30 +3685,69 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                     st.rerun()
 
     # =========================================================================
-    # 1. CUADRO VISUAL UNIFICADO TIPO EXCEL (Color Arcilla #C85A32 + Pagos en Rojo + Fullscreen)
+    # 1. CUADRO PRINCIPAL EDITABLE CON COLORES ARCILLA Y ROJO (Normal + Pantalla Completa)
     # =========================================================================
+    # Puente oculto para persistir ediciones hechas directamente sobre las celdas del cuadro coloreado
+    bridge_key = f"pagos_inline_bridge_{proy_name}"
+
+    def _on_inline_pagos_bridge_change(p_name: str, b_key: str):
+        raw_val = st.session_state.get(b_key, "")
+        if raw_val:
+            aplicar_edicion_inline_cuadro_pagos(p_name, raw_val)
+            st.session_state[b_key] = ""
+
+    st.markdown(
+        f"""
+        <style>
+        div[data-testid="stTextInput"]:has(input[aria-label="PAGOS_BRIDGE_{safe_proy_id}"]) {{
+            position: absolute !important;
+            width: 1px !important;
+            height: 1px !important;
+            overflow: hidden !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.text_input(
+        f"PAGOS_BRIDGE_{safe_proy_id}",
+        key=bridge_key,
+        label_visibility="collapsed",
+        on_change=_on_inline_pagos_bridge_change,
+        args=(proy_name, bridge_key),
+    )
+
     border_grid = "1px solid #B8B0A4"
     border_clay = "1px solid rgba(255,255,255,0.22)"
 
     ths_semanas_list = []
     for c_s in cols_pago:
         lbl_short = html_lib.escape(etiqueta_corta_columna_pago(c_s))
+        esc_col_attr = html_lib.escape(c_s, quote=True)
         if c_s in cols_por_pagar_actual:
             ths_semanas_list.append(
-                f"<th style='padding:7px 9px; text-align:center; border:{border_clay}; min-width:86px;'>"
+                f"<th data-cota-toggle-pp='{esc_col_attr}' title='Haz clic para marcar {lbl_short} como Pagado (Rojo)' "
+                f"style='padding:7px 9px; text-align:center; border:{border_clay}; min-width:86px; cursor:pointer;'>"
                 f"<div>{lbl_short}</div>"
                 f"<div style='font-size:10px; font-weight:800; color:#FFE066; margin-top:2px; letter-spacing:0.2px;'>Por Pagar</div>"
                 f"</th>"
             )
         else:
             ths_semanas_list.append(
-                f"<th style='padding:8px 9px; text-align:center; border:{border_clay}; min-width:82px;'>{lbl_short}</th>"
+                f"<th data-cota-toggle-pp='{esc_col_attr}' title='Haz clic si deseas marcar {lbl_short} como Por Pagar' "
+                f"style='padding:8px 9px; text-align:center; border:{border_clay}; min-width:82px; cursor:pointer;'>{lbl_short}</th>"
             )
     ths_semanas_html = "".join(ths_semanas_list)
 
-    def _build_payment_cells_html(fila_d: dict, pref_m: str, part_label: str) -> str:
+    def _build_payment_cells_html(fila_d: dict, pref_m: str, part_label: str, r_type: str, r_idx: int) -> str:
         np_dict_r = fila_d.get("Notas_Pagos", {}) if isinstance(fila_d.get("Notas_Pagos"), dict) else {}
         tds = []
+        esc_part = html_lib.escape(part_label, quote=True)
+        esc_pref = html_lib.escape(pref_m, quote=True)
         for c_s in cols_pago:
             v_num = safe_float(fila_d.get(c_s, 0.0), 0.0)
             is_zero = abs(v_num) < 0.005
@@ -3470,34 +3756,44 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             color_txt = "#262320" if is_pp else "#D92B2B"
             val_str = "" if is_zero else f"{pref_m}{v_num:,.2f}"
             nota_txt = safe_str(np_dict_r.get(c_s, "")).strip()
+            esc_sem_short = html_lib.escape(etiqueta_corta_columna_pago(c_s), quote=True)
+            esc_col_f = html_lib.escape(c_s, quote=True)
+            esc_mon = html_lib.escape(f"{pref_m}{v_num:,.2f}", quote=True)
 
             if nota_txt:
-                esc_part = html_lib.escape(part_label, quote=True)
-                esc_sem = html_lib.escape(etiqueta_corta_columna_pago(c_s), quote=True)
-                esc_mon = html_lib.escape(f"{pref_m}{v_num:,.2f}", quote=True)
                 esc_not = html_lib.escape(nota_txt, quote=True)
                 disp_inner = val_str if val_str else "<span style='color:#C85A32; font-size:11px;'>💬</span>"
                 tds.append(
-                    f"<td data-cota-note-partida='{esc_part}' data-cota-note-semana='{esc_sem}' "
+                    f"<td class='cota-editable-cell' data-row-type='{r_type}' data-row-idx='{r_idx}' "
+                    f"data-col-field='{esc_col_f}' data-raw-val='{v_num:.2f}' data-is-pp='{'1' if is_pp else '0'}' data-pref='{esc_pref}' "
+                    f"data-cota-note-partida='{esc_part}' data-cota-note-semana='{esc_sem_short}' "
                     f"data-cota-note-monto='{esc_mon}' data-cota-note-text='{esc_not}' "
-                    f"title='💬 {esc_not}' "
-                    f"style='position:relative; padding:6px 9px; text-align:right; border:{border_grid}; color:{color_txt}; font-weight:600; font-variant-numeric:tabular-nums; cursor:help; background:#FFFDF9;'>"
+                    f"style='position:relative; padding:6px 9px; text-align:right; border:{border_grid}; color:{color_txt}; font-weight:600; font-variant-numeric:tabular-nums; background:#FFFDF9;'>"
                     f"{disp_inner}"
                     f"<span style='position:absolute; top:0; right:0; width:0; height:0; border-top:8px solid #C85A32; border-left:8px solid transparent;'></span>"
                     f"</td>"
                 )
             else:
                 tds.append(
-                    f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; color:{color_txt}; font-weight:600; font-variant-numeric:tabular-nums;'>{val_str}</td>"
+                    f"<td class='cota-editable-cell' data-row-type='{r_type}' data-row-idx='{r_idx}' "
+                    f"data-col-field='{esc_col_f}' data-raw-val='{v_num:.2f}' data-is-pp='{'1' if is_pp else '0'}' data-pref='{esc_pref}' "
+                    f"data-cota-note-partida='{esc_part}' data-cota-note-semana='{esc_sem_short}' "
+                    f"style='position:relative; padding:6px 9px; text-align:right; border:{border_grid}; color:{color_txt}; font-weight:600; font-variant-numeric:tabular-nums;'>{val_str}</td>"
                 )
         return "".join(tds)
 
     trs_body = []
-    # Fila de sección: TRABAJOS CONTRATISTAS
+    # Fila de sección: TRABAJOS CONTRATISTAS (con botón directo para agregar fila)
     empty_sem_section = "".join(f"<td style='padding:6px 9px; border:{border_grid};'></td>" for _ in cols_pago)
     trs_body.append(
         f"<tr style='background:#FFFFFF;'>"
-        f"<td style='padding:7px 12px; text-align:left; border:{border_grid}; font-weight:800; color:#262320; text-decoration:underline; position:sticky; left:0; background:#FFFFFF; z-index:1;'>TRABAJOS CONTRATISTAS</td>"
+        f"<td style='padding:7px 12px; text-align:left; border:{border_grid}; position:sticky; left:0; background:#FFFFFF; z-index:1;'>"
+        f"<div style='display:flex; justify-content:space-between; align-items:center; gap:8px;'>"
+        f"<span style='font-weight:800; color:#262320; text-decoration:underline;'>TRABAJOS CONTRATISTAS</span>"
+        f"<button type='button' data-cota-action='add-row' title='Agregar otra fila de contratista en este cuadro' "
+        f"style='background:#FAF8F5; color:#C85A32; border:1px solid #DFD9CE; border-radius:5px; padding:2px 8px; font-size:11px; font-weight:700; cursor:pointer;'>+ Fila</button>"
+        f"</div>"
+        f"</td>"
         f"<td style='padding:6px 8px; border:{border_grid};'></td>"
         f"<td style='padding:6px 9px; border:{border_grid};'></td>"
         f"{empty_sem_section}"
@@ -3506,8 +3802,9 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         f"</tr>"
     )
 
-    # Filas de Contratistas / Partidas
-    for f_c in res_calc["filas_contratistas"]:
+    # Filas de Contratistas / Partidas (100% editables en el mismo cuadro)
+    n_filas_c = len(res_calc["filas_contratistas"])
+    for idx_fc, f_c in enumerate(res_calc["filas_contratistas"]):
         part_s = safe_str(f_c.get("Partida", "")).strip()
         desc_s = safe_str(f_c.get("Descripcion", "")).strip()
         lbl_row = f"{part_s} — {desc_s}" if (part_s and desc_s and part_s.upper() not in desc_s.upper()) else (desc_s or part_s)
@@ -3515,77 +3812,102 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         mon_c = safe_str(f_c.get("Moneda", "Soles"))
         es_usd_c = "dólar" in mon_c.lower() or "dolar" in mon_c.lower()
         pref_c = "$" if es_usd_c else "S/ "
+        tot_c_val = safe_float(f_c.get("TOTAL", 0.0), 0.0)
 
-        sub_nota_html = (
-            f"<span style='display:block; font-size:10.5px; color:#7A7267; font-weight:500; margin-top:1px;'>{html_lib.escape(nota_gral)}</span>"
-            if nota_gral
+        del_btn_html = (
+            f"<button type='button' class='cota-row-del-btn' data-cota-action='del-row' data-row-idx='{idx_fc}' title='Eliminar esta fila'>✕</button>"
+            if n_filas_c > 1
             else ""
         )
-        tds_sem_c = _build_payment_cells_html(f_c, pref_c, lbl_row)
+        sub_nota_disp = "block" if nota_gral else "none"
+        sub_nota_html = (
+            f"<span class='cota-desc-sub' style='display:{sub_nota_disp}; font-size:10.5px; color:#7A7267; font-weight:500; margin-top:1px;'>{html_lib.escape(nota_gral)}</span>"
+        )
+        tds_sem_c = _build_payment_cells_html(f_c, pref_c, lbl_row, "contratista", idx_fc)
+        esc_raw_desc = html_lib.escape(lbl_row, quote=True)
+        esc_raw_notas = html_lib.escape(nota_gral, quote=True)
+        esc_mon_c = html_lib.escape(mon_c, quote=True)
+        esc_pref_c = html_lib.escape(pref_c, quote=True)
+
         trs_body.append(
-            f"<tr style='background:#FFFFFF; color:#262320;'>"
-            f"<td style='padding:6px 12px; text-align:left; border:{border_grid}; font-weight:500; position:sticky; left:0; background:#FFFFFF; z-index:1;'>{html_lib.escape(lbl_row)}{sub_nota_html}</td>"
-            f"<td style='padding:6px 8px; text-align:center; border:{border_grid};'>{html_lib.escape(mon_c)}</td>"
-            f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_c}{safe_float(f_c.get('TOTAL', 0.0)):,.2f}</td>"
+            f"<tr data-row-type='contratista' data-row-idx='{idx_fc}' style='background:#FFFFFF; color:#262320;'>"
+            f"<td class='cota-editable-cell' data-row-type='contratista' data-row-idx='{idx_fc}' data-col-field='Descripcion' "
+            f"data-raw-desc='{esc_raw_desc}' data-raw-notas='{esc_raw_notas}' title='Haz clic para editar nombre o contratista' "
+            f"style='padding:6px 12px; text-align:left; border:{border_grid}; font-weight:500; position:sticky; left:0; background:#FFFFFF; z-index:1;'>"
+            f"<div style='display:flex; justify-content:space-between; align-items:flex-start; gap:6px;'>"
+            f"<div><span class='cota-desc-title'>{html_lib.escape(lbl_row)}</span>{sub_nota_html}</div>"
+            f"{del_btn_html}"
+            f"</div>"
+            f"</td>"
+            f"<td class='cota-editable-cell' data-row-type='contratista' data-row-idx='{idx_fc}' data-col-field='Moneda' data-raw-val='{esc_mon_c}' "
+            f"title='Haz clic para alternar Soles / Dólares' style='padding:6px 8px; text-align:center; border:{border_grid};'>{html_lib.escape(mon_c)}</td>"
+            f"<td class='cota-editable-cell' data-row-type='contratista' data-row-idx='{idx_fc}' data-col-field='TOTAL' data-raw-val='{tot_c_val:.2f}' data-pref='{esc_pref_c}' "
+            f"title='Haz clic para editar el monto TOTAL pactado' style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_c}{tot_c_val:,.2f}</td>"
             f"{tds_sem_c}"
-            f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_c}{safe_float(f_c.get('PAGADO', 0.0)):,.2f}</td>"
-            f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_c}{safe_float(f_c.get('SALDO', 0.0)):,.2f}</td>"
+            f"<td data-calc-role='row-pagado' style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_c}{safe_float(f_c.get('PAGADO', 0.0)):,.2f}</td>"
+            f"<td data-calc-role='row-saldo' style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_c}{safe_float(f_c.get('SALDO', 0.0)):,.2f}</td>"
             f"</tr>"
         )
 
     # Fila SUB TOTAL (Color Arcilla Cota #C85A32 + Texto Blanco)
     tds_sub_sem = "".join(
-        f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:700; font-variant-numeric:tabular-nums;'>S/ {safe_float(sub_cont.get(c_s, 0.0)):,.2f}</td>"
+        f"<td data-sum-col='{html_lib.escape(c_s, quote=True)}' style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:700; font-variant-numeric:tabular-nums;'>S/ {safe_float(sub_cont.get(c_s, 0.0)):,.2f}</td>"
         for c_s in cols_pago
     )
     trs_body.append(
-        f"<tr style='background:#C85A32; color:#FFFFFF; font-weight:700;'>"
+        f"<tr data-summary-row='subtotal' style='background:#C85A32; color:#FFFFFF; font-weight:700;'>"
         f"<td style='padding:7px 12px; text-align:center; border:{border_clay}; font-weight:800; position:sticky; left:0; background:#C85A32; z-index:1;'>SUB TOTAL</td>"
         f"<td style='padding:7px 8px; text-align:center; border:{border_clay};'></td>"
-        f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>S/ {safe_float(sub_cont.get('TOTAL', 0.0)):,.2f}</td>"
+        f"<td data-sum-col='TOTAL' style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>S/ {safe_float(sub_cont.get('TOTAL', 0.0)):,.2f}</td>"
         f"{tds_sub_sem}"
-        f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>S/ {safe_float(sub_cont.get('PAGADO', 0.0)):,.2f}</td>"
-        f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>S/ {safe_float(sub_cont.get('SALDO', 0.0)):,.2f}</td>"
+        f"<td data-sum-col='PAGADO' style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>S/ {safe_float(sub_cont.get('PAGADO', 0.0)):,.2f}</td>"
+        f"<td data-sum-col='SALDO' style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>S/ {safe_float(sub_cont.get('SALDO', 0.0)):,.2f}</td>"
         f"</tr>"
     )
 
-    # Filas Gestión y supervisión de obras & Gastos Generales
-    for nom_cargo, fila_cargo in [
-        ("Gestión y supervisión de obras", res_calc["fila_gestion"]),
-        ("Gastos Generales", res_calc["fila_gg"]),
+    # Filas Gestión y supervisión de obras & Gastos Generales (también editables directamente en el cuadro)
+    for r_type_cargo, nom_cargo, fila_cargo in [
+        ("gestion", "Gestión y supervisión de obras", res_calc["fila_gestion"]),
+        ("gg", "Gastos Generales", res_calc["fila_gg"]),
     ]:
         mon_g = safe_str(fila_cargo.get("Moneda", "Soles"))
         es_usd_g = "dólar" in mon_g.lower() or "dolar" in mon_g.lower()
         pref_g = "$" if es_usd_g else "S/ "
-        tds_sem_g = _build_payment_cells_html(fila_cargo, pref_g, nom_cargo)
+        tot_g_val = safe_float(fila_cargo.get("TOTAL", 0.0), 0.0)
+        esc_mon_g = html_lib.escape(mon_g, quote=True)
+        esc_pref_g = html_lib.escape(pref_g, quote=True)
+
+        tds_sem_g = _build_payment_cells_html(fila_cargo, pref_g, nom_cargo, r_type_cargo, 0)
         trs_body.append(
-            f"<tr style='background:#FFFFFF; color:#262320;'>"
+            f"<tr data-row-type='{r_type_cargo}' data-row-idx='0' style='background:#FFFFFF; color:#262320;'>"
             f"<td style='padding:6px 12px; text-align:left; border:{border_grid}; font-weight:500; position:sticky; left:0; background:#FFFFFF; z-index:1;'>{html_lib.escape(nom_cargo)}</td>"
-            f"<td style='padding:6px 8px; text-align:center; border:{border_grid};'>{html_lib.escape(mon_g)}</td>"
-            f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_g}{safe_float(fila_cargo.get('TOTAL', 0.0)):,.2f}</td>"
+            f"<td class='cota-editable-cell' data-row-type='{r_type_cargo}' data-row-idx='0' data-col-field='Moneda' data-raw-val='{esc_mon_g}' "
+            f"title='Haz clic para alternar Soles / Dólares' style='padding:6px 8px; text-align:center; border:{border_grid};'>{html_lib.escape(mon_g)}</td>"
+            f"<td class='cota-editable-cell' data-row-type='{r_type_cargo}' data-row-idx='0' data-col-field='TOTAL' data-raw-val='{tot_g_val:.2f}' data-pref='{esc_pref_g}' "
+            f"title='Haz clic para editar el monto TOTAL' style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_g}{tot_g_val:,.2f}</td>"
             f"{tds_sem_g}"
-            f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_g}{safe_float(fila_cargo.get('PAGADO', 0.0)):,.2f}</td>"
-            f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_g}{safe_float(fila_cargo.get('SALDO', 0.0)):,.2f}</td>"
+            f"<td data-calc-role='row-pagado' style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_g}{safe_float(fila_cargo.get('PAGADO', 0.0)):,.2f}</td>"
+            f"<td data-calc-role='row-saldo' style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_g}{safe_float(fila_cargo.get('SALDO', 0.0)):,.2f}</td>"
             f"</tr>"
         )
 
     # Filas TOTAL (Soles y Dólares) en Color Arcilla Cota #C85A32 con celda PAGADO resaltada en amarillo (#FFE066)
-    for lbl_tot, mon_tot, pref_t, d_tot in [
-        ("TOTAL", "Soles", "S/ ", tot_soles),
-        ("", "Dólares", "$", tot_usd),
+    for sum_key, lbl_tot, mon_tot, pref_t, d_tot in [
+        ("total_soles", "TOTAL", "Soles", "S/ ", tot_soles),
+        ("total_usd", "", "Dólares", "$", tot_usd),
     ]:
         tds_tot_sem = "".join(
-            f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:700; font-variant-numeric:tabular-nums;'>{pref_t}{safe_float(d_tot.get(c_s, 0.0)):,.2f}</td>"
+            f"<td data-sum-col='{html_lib.escape(c_s, quote=True)}' style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:700; font-variant-numeric:tabular-nums;'>{pref_t}{safe_float(d_tot.get(c_s, 0.0)):,.2f}</td>"
             for c_s in cols_pago
         )
         trs_body.append(
-            f"<tr style='background:#C85A32; color:#FFFFFF; font-weight:700;'>"
+            f"<tr data-summary-row='{sum_key}' style='background:#C85A32; color:#FFFFFF; font-weight:700;'>"
             f"<td style='padding:7px 12px; text-align:center; border:{border_clay}; font-weight:800; position:sticky; left:0; background:#C85A32; z-index:1;'>{lbl_tot}</td>"
             f"<td style='padding:7px 8px; text-align:center; border:{border_clay}; font-weight:700;'>{mon_tot}</td>"
-            f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>{pref_t}{safe_float(d_tot.get('TOTAL', 0.0)):,.2f}</td>"
+            f"<td data-sum-col='TOTAL' style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>{pref_t}{safe_float(d_tot.get('TOTAL', 0.0)):,.2f}</td>"
             f"{tds_tot_sem}"
-            f"<td style='padding:7px 9px; text-align:right; border:1px solid #262320; background:#FFE066; color:#262320; font-weight:800; font-variant-numeric:tabular-nums;'>{pref_t}{safe_float(d_tot.get('PAGADO', 0.0)):,.2f}</td>"
-            f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>{pref_t}{safe_float(d_tot.get('SALDO', 0.0)):,.2f}</td>"
+            f"<td data-sum-col='PAGADO' style='padding:7px 9px; text-align:right; border:1px solid #262320; background:#FFE066; color:#262320; font-weight:800; font-variant-numeric:tabular-nums;'>{pref_t}{safe_float(d_tot.get('PAGADO', 0.0)):,.2f}</td>"
+            f"<td data-sum-col='SALDO' style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>{pref_t}{safe_float(d_tot.get('SALDO', 0.0)):,.2f}</td>"
             f"</tr>"
         )
 
@@ -3598,9 +3920,9 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         f"<div style='font-size:15.5px; font-weight:800; letter-spacing:0.2px;'>Proyecto {esc_proy_banner}</div>"
         f"<div style='font-size:12.5px; color:#FAF8F5; opacity:0.95;'>Cliente: {esc_cli_banner} &nbsp;·&nbsp; TC: S/ {tc_actual:.2f}</div>"
         f"</div>"
-        f"<div style='display:flex; align-items:center; gap:10px;'>"
-        f"<span style='font-size:11px; color:#FAF8F5; opacity:0.9;'>🔴 Rojo = Pagado &nbsp;|&nbsp; 💬 Pasa el mouse para ver nota</span>"
-        f"<button id='btn_fs_pagos_{safe_proy_id}' type='button' title='Ver Cuadro en Pantalla Completa (como en YouTube / Excel)' "
+        f"<div style='display:flex; align-items:center; gap:10px; flex-wrap:wrap;'>"
+        f"<span style='font-size:11px; color:#FAF8F5; background:rgba(38,35,32,0.18); padding:4px 9px; border-radius:5px;'>✏️ Haz clic en cualquier celda para editar monto o nota &nbsp;·&nbsp; 🔴 Rojo = Pagado</span>"
+        f"<button id='btn_fs_pagos_{safe_proy_id}' type='button' title='Ver y editar Cuadro en Pantalla Completa (como en YouTube / Excel)' "
         f"style='background:rgba(38,35,32,0.28); color:#FFFFFF; border:1px solid rgba(255,255,255,0.45); border-radius:6px; padding:6px 12px; font-size:12px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; transition:background 0.15s ease;'>"
         f"<svg width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round' style='vertical-align:middle; margin-right:5px;'><path d='M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3'/></svg>"
         f"<span>Pantalla Completa</span>"
@@ -3626,148 +3948,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
     )
     st.markdown(html_cuadro_unificado, unsafe_allow_html=True)
 
-    # =========================================================================
-    # 2. MODO EDICIÓN EN TABLA INTERACTIVA (Con encabezados cortos S1, S2...)
-    # =========================================================================
-    ordered_cols_cont = ["Partida", "Descripcion", "Moneda", "TOTAL"] + cols_pago + ["PAGADO", "SALDO", "Notas"]
-    ordered_cols = ["Descripcion", "Moneda", "TOTAL"] + cols_pago + ["PAGADO", "SALDO", "Notas"]
-
-    col_cfg_common = {
-        "Partida": st.column_config.SelectboxColumn(
-            "Partida",
-            options=opciones_partida_cont,
-            width="medium",
-            help="Partida del proyecto a la que pertenece este pago (puedes tener varias filas/contratistas para una misma Partida, ej. Eléctricas y Sanitarias).",
-        ),
-        "Descripcion": st.column_config.TextColumn("Contratista / Especialidad / Frente", width="medium", required=True),
-        "Moneda": st.column_config.SelectboxColumn("Moneda", options=["Soles", "Dólares"], default="Soles", width="small"),
-        "TOTAL": st.column_config.NumberColumn("TOTAL", format="%.2f", width="small"),
-    }
-    for c_sem in cols_pago:
-        is_pp = c_sem in cols_por_pagar_actual
-        short_lbl = etiqueta_corta_columna_pago(c_sem)
-        header_lbl = f"⏳ {short_lbl}" if is_pp else short_lbl
-        col_cfg_common[c_sem] = st.column_config.NumberColumn(
-            header_lbl,
-            format="%.2f",
-            width="small",
-            help=f"{c_sem} — Marcada como 'Por Pagar' (no suma a PAGADO)" if is_pp else f"{c_sem} — Columna pagada (suma a PAGADO)",
-        )
-    col_cfg_common["PAGADO"] = st.column_config.NumberColumn("PAGADO ✓", format="%.2f", width="small", disabled=True)
-    col_cfg_common["SALDO"] = st.column_config.NumberColumn("SALDO", format="%.2f", width="small", disabled=True)
-    col_cfg_common["Notas"] = st.column_config.TextColumn("Notas", width="medium")
-
-    df_cont_view = pd.DataFrame(res_calc["filas_contratistas"])
-    if df_cont_view.empty:
-        df_cont_view = pd.DataFrame(columns=ordered_cols_cont)
-    else:
-        for c_o in ordered_cols_cont:
-            if c_o not in df_cont_view.columns:
-                df_cont_view[c_o] = "" if c_o in ("Partida", "Descripcion", "Moneda", "Notas") else 0.0
-        df_cont_view = df_cont_view[ordered_cols_cont].copy()
-
-    st.session_state[base_cont_key] = df_cont_view.copy()
-
-    def _on_edit_pagos_cont(b_key, w_key, p_name):
-        if w_key not in st.session_state or b_key not in st.session_state:
-            return
-        state_ed = st.session_state[w_key]
-        df_b = st.session_state[b_key].copy()
-        for r_idx_str, changes in state_ed.get("edited_rows", {}).items():
-            r_idx = int(r_idx_str)
-            if r_idx < len(df_b):
-                for col_k, val_k in changes.items():
-                    if col_k in df_b.columns and df_b[col_k].dtype != object and isinstance(val_k, str):
-                        df_b[col_k] = df_b[col_k].astype(object)
-                    df_b.at[r_idx, col_k] = val_k
-        for del_idx in sorted(state_ed.get("deleted_rows", []), reverse=True):
-            if del_idx < len(df_b):
-                df_b = df_b.drop(df_b.index[del_idx]).reset_index(drop=True)
-        for add_r in state_ed.get("added_rows", []):
-            new_r = {c: ("" if c in ("Partida", "Descripcion", "Notas") else ("Soles" if c == "Moneda" else 0.0)) for c in df_b.columns}
-            new_r.update(add_r)
-            if not str(new_r.get("Partida", "")).strip() and str(new_r.get("Descripcion", "")).strip() in opciones_partida_cont:
-                new_r["Partida"] = str(new_r.get("Descripcion", "")).strip()
-            if not str(new_r.get("Descripcion", "")).strip():
-                new_r["Descripcion"] = str(new_r.get("Partida", "")).strip() or f"NUEVA PARTIDA {len(df_b) + 1}"
-            df_b = pd.concat([df_b, pd.DataFrame([new_r])], ignore_index=True)
-
-        d_cur = obtener_cuadro_pagos_semanales_proyecto(p_name)
-        filas_ant = d_cur.get("filas_contratistas", [])
-        filas_nuevas = df_b.to_dict(orient="records")
-        for i_fn, fn in enumerate(filas_nuevas):
-            if i_fn < len(filas_ant) and isinstance(filas_ant[i_fn], dict):
-                fn["Notas_Pagos"] = dict(filas_ant[i_fn].get("Notas_Pagos", {}))
-            else:
-                fn["Notas_Pagos"] = dict(fn.get("Notas_Pagos", {}))
-        d_cur["filas_contratistas"] = filas_nuevas
-        guardar_cuadro_pagos_semanales_proyecto(p_name, d_cur)
-        st.session_state[cnt_cont_key] = st.session_state.get(cnt_cont_key, 0) + 1
-        st.session_state[f"exp_ed_pagos_{p_name}"] = True
-
-    df_ges_view = pd.DataFrame([res_calc["fila_gestion"], res_calc["fila_gg"]])[ordered_cols].copy()
-    st.session_state[base_ges_key] = df_ges_view.copy()
-
-    col_cfg_ges = dict(col_cfg_common)
-    col_cfg_ges.pop("Partida", None)
-    col_cfg_ges["Descripcion"] = st.column_config.TextColumn("Concepto", width="medium", disabled=True)
-
-    def _on_edit_pagos_ges(b_key, w_key, p_name):
-        if w_key not in st.session_state or b_key not in st.session_state:
-            return
-        state_ed = st.session_state[w_key]
-        df_b = st.session_state[b_key].copy()
-        for r_idx_str, changes in state_ed.get("edited_rows", {}).items():
-            r_idx = int(r_idx_str)
-            if r_idx < len(df_b):
-                for col_k, val_k in changes.items():
-                    if col_k in df_b.columns and df_b[col_k].dtype != object and isinstance(val_k, str):
-                        df_b[col_k] = df_b[col_k].astype(object)
-                    df_b.at[r_idx, col_k] = val_k
-
-        d_cur = obtener_cuadro_pagos_semanales_proyecto(p_name)
-        if len(df_b) >= 1:
-            fg = df_b.iloc[0].to_dict()
-            fg["Notas_Pagos"] = dict(d_cur.get("fila_gestion", {}).get("Notas_Pagos", {}))
-            d_cur["fila_gestion"] = fg
-        if len(df_b) >= 2:
-            fgg = df_b.iloc[1].to_dict()
-            fgg["Notas_Pagos"] = dict(d_cur.get("fila_gg", {}).get("Notas_Pagos", {}))
-            d_cur["fila_gg"] = fgg
-        guardar_cuadro_pagos_semanales_proyecto(p_name, d_cur)
-        st.session_state[cnt_ges_key] = st.session_state.get(cnt_ges_key, 0) + 1
-        st.session_state[f"exp_ed_pagos_{p_name}"] = True
-
-    with st.expander(
-        "✏️ Editar Celdas en Tabla Interactiva (Contratistas, Gestión y Gastos Generales)",
-        expanded=st.session_state.get(f"exp_ed_pagos_{proy_name}", False),
-    ):
-        st.markdown("##### 👷 TRABAJOS CONTRATISTAS")
-        st.caption("Edita directamente los montos totales, semanas (S1, S2...) o agrega/elimina filas. Los cambios actualizan el cuadro superior automáticamente.")
-        st.data_editor(
-            st.session_state[base_cont_key],
-            use_container_width=True,
-            hide_index=True,
-            num_rows="dynamic",
-            key=w_cont_key,
-            column_config=col_cfg_common,
-            on_change=_on_edit_pagos_cont,
-            args=(base_cont_key, w_cont_key, proy_name),
-        )
-
-        st.markdown("##### 📐 GESTIÓN, SUPERVISIÓN Y GASTOS GENERALES")
-        st.data_editor(
-            st.session_state[base_ges_key],
-            use_container_width=True,
-            hide_index=True,
-            num_rows="fixed",
-            key=w_ges_key,
-            column_config=col_cfg_ges,
-            on_change=_on_edit_pagos_ges,
-            args=(base_ges_key, w_ges_key, proy_name),
-        )
-
-    # 3. Sección de Notas Registradas (Expander visible con tarjetas para acceso directo)
+    # 2. Sección de Notas Registradas (Expander visible con tarjetas para acceso directo)
     todas_las_notas = []
     for idx_f, f_item in enumerate(data_cuadro.get("filas_contratistas", [])):
         nom = safe_str(f_item.get("Descripcion", "")) or safe_str(f_item.get("Partida", f"Partida {idx_f+1}"))
@@ -3797,7 +3978,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
 
     if todas_las_notas:
         with st.expander(f"📝 Notas Registradas en Pagos ({len(todas_las_notas)})", expanded=False):
-            st.caption("Pasa el mouse sobre cualquier celda con marca naranja en el cuadro de arriba para ver su nota flotante, o edítalas desde `💬 Notas de Pagos`.")
+            st.caption("Pasa el mouse sobre cualquier celda con marca naranja en el cuadro de arriba para ver su nota flotante, o haz clic directamente en la celda para editarla.")
             n_cols_card = min(3, len(todas_las_notas))
             c_cards = st.columns(n_cols_card)
             for idx_nc, n_card in enumerate(todas_las_notas):
@@ -3815,7 +3996,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                         unsafe_allow_html=True,
                     )
 
-    # Inyectar el controlador de tooltips flotantes y Pantalla Completa
+    # Inyectar el controlador de edición en vivo, Pantalla Completa y tooltips flotantes
     _render_pagos_tooltip_controller(proy_name, safe_proy_id, data_cuadro, cols_pago)
 
 

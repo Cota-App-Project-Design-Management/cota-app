@@ -1275,3 +1275,66 @@ def test_etiquetas_y_exportacion_cuadro_pagos_arcilla_y_rojo():
     assert isinstance(pdf_bytes, (bytes, bytearray))
     assert pdf_bytes.startswith(b"%PDF")
 
+
+def test_aplicar_edicion_inline_cuadro_pagos():
+    import json
+    import streamlit as st
+    from cota.cotizacion import (
+        aplicar_edicion_inline_cuadro_pagos,
+        guardar_cuadro_pagos_semanales_proyecto,
+        obtener_cuadro_pagos_semanales_proyecto,
+    )
+
+    proy_test = "Casa Rapallo Inline"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": proy_test,
+        "Cliente": "Familia Zela",
+        "TC_Presupuesto": 3.42,
+        "Pagos_Semanales_JSON": "",
+    }])
+    st.session_state["partidas"] = pd.DataFrame([
+        {"Proyecto": proy_test, "Nombre_Partida": "1. Obras Civiles"}
+    ])
+    st.session_state["p_info"] = pd.DataFrame([
+        {"Proyecto": proy_test, "Nombre_Partida": "1. Obras Civiles", "Monto_Pactado": 31650.0, "Contratista": "Antonio Atauplico"}
+    ])
+    st.session_state["tasks"] = pd.DataFrame()
+
+    data_ini = obtener_cuadro_pagos_semanales_proyecto(proy_test)
+    guardar_cuadro_pagos_semanales_proyecto(proy_test, data_ini)
+
+    # 1. Editar monto de pago en SEMANA 1 + nota y TOTAL de gestión
+    payload_edit = json.dumps({
+        "action": "edit_cells",
+        "ts": 1001,
+        "edits": [
+            {"row_type": "contratista", "row_idx": 0, "col": "SEMANA 1", "value": 4500.0, "nota": "Avance 1ra semana"},
+            {"row_type": "gestion", "row_idx": 0, "col": "TOTAL", "value": 12000.0},
+            {"row_type": "contratista", "row_idx": 0, "col": "Descripcion", "value": "OBRAS CIVILES - FRENTE 1", "notas_row": "Contratista: Antonio Atauplico"},
+        ],
+    })
+    assert aplicar_edicion_inline_cuadro_pagos(proy_test, payload_edit) is True
+    data_after = obtener_cuadro_pagos_semanales_proyecto(proy_test)
+    assert data_after["filas_contratistas"][0]["SEMANA 1"] == 4500.0
+    assert data_after["filas_contratistas"][0]["Notas_Pagos"]["SEMANA 1"] == "Avance 1ra semana"
+    assert data_after["filas_contratistas"][0]["Descripcion"] == "OBRAS CIVILES - FRENTE 1"
+    assert data_after["fila_gestion"]["TOTAL"] == 12000.0
+
+    # 2. Alternar 'Por Pagar' en SEMANA 2
+    payload_toggle = json.dumps({"action": "toggle_por_pagar", "col": "SEMANA 2", "ts": 1002})
+    assert aplicar_edicion_inline_cuadro_pagos(proy_test, payload_toggle) is True
+    data_after2 = obtener_cuadro_pagos_semanales_proyecto(proy_test)
+    assert "SEMANA 2" in data_after2["cols_por_pagar"]
+
+    # 3. Agregar y eliminar fila de contratista desde el mismo cuadro
+    payload_add = json.dumps({"action": "add_row", "partida": "1. Obras Civiles", "ts": 1003})
+    assert aplicar_edicion_inline_cuadro_pagos(proy_test, payload_add) is True
+    data_after3 = obtener_cuadro_pagos_semanales_proyecto(proy_test)
+    assert len(data_after3["filas_contratistas"]) == 2
+
+    payload_del = json.dumps({"action": "delete_row", "row_idx": 1, "ts": 1004})
+    assert aplicar_edicion_inline_cuadro_pagos(proy_test, payload_del) is True
+    data_after4 = obtener_cuadro_pagos_semanales_proyecto(proy_test)
+    assert len(data_after4["filas_contratistas"]) == 1
+
+
