@@ -1195,13 +1195,83 @@ def test_mover_tarea_presupuesto_y_edicion_tabla():
     assert "Demolición pisos" in t_after3.at[0, "Tarea"]
 
 
+def test_etiquetas_y_exportacion_cuadro_pagos_arcilla_y_rojo():
+    import io
+    import openpyxl
+    import streamlit as st
+    from cota.cotizacion import (
+        etiqueta_corta_columna_pago,
+        etiqueta_export_columna_pago,
+        exportar_cuadro_pagos_semanales_excel,
+        exportar_cuadro_pagos_semanales_pdf,
+    )
 
+    assert etiqueta_corta_columna_pago("SEMANA 1") == "S1"
+    assert etiqueta_corta_columna_pago("SEMANA 7") == "S7"
+    assert etiqueta_corta_columna_pago("ADELANTO 1") == "ADELANTO 1"
 
+    assert etiqueta_export_columna_pago("SEMANA 1") == "Semana 1"
+    assert etiqueta_export_columna_pago("S2") == "Semana 2"
+    assert etiqueta_export_columna_pago("ADELANTO 1") == "ADELANTO 1"
 
+    st.session_state["proyectos"] = pd.DataFrame([
+        {"Nombre": "Juana Alarco 243", "Cliente": "Lorena Zuazo", "TC_Presupuesto": 3.60}
+    ])
 
+    data_cuadro = {
+        "num_semanas": 2,
+        "tc": 3.60,
+        "cols_por_pagar": ["SEMANA 2"],
+        "filas_contratistas": [
+            {
+                "Partida": "OBRAS CIVILES",
+                "Descripcion": "OBRAS CIVILES",
+                "Moneda": "Soles",
+                "TOTAL": 10915.0,
+                "ADELANTO 1": 0.0,
+                "SEMANA 1": 3970.0,
+                "SEMANA 2": 1337.0,
+                "Notas": "",
+                "Notas_Pagos": {"SEMANA 1": "Pago avance piso"},
+            }
+        ],
+        "fila_gestion": {
+            "Descripcion": "Gestión y supervisión de obras",
+            "Moneda": "Soles",
+            "TOTAL": 8650.0,
+            "ADELANTO 1": 0.0,
+            "SEMANA 1": 450.0,
+            "SEMANA 2": 0.0,
+        },
+        "fila_gg": {
+            "Descripcion": "Gastos Generales",
+            "Moneda": "Soles",
+            "TOTAL": 1100.0,
+            "ADELANTO 1": 1000.0,
+            "SEMANA 1": 0.0,
+            "SEMANA 2": 0.0,
+        },
+    }
 
+    xlsx_bytes = exportar_cuadro_pagos_semanales_excel("Juana Alarco 243", data_cuadro)
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Control de Pagos"]
 
+    # Verificar que en Excel las columnas digan "Semana 1", "Semana 2"
+    assert ws["F4"].value == "Semana 1"
+    assert ws["G4"].value == "Semana 2"
 
+    # Verificar color arcilla Cota (C85A32) en encabezado (B4), SUB TOTAL (B8) y TOTAL (B11)
+    assert "C85A32" in ws["B4"].fill.start_color.rgb
+    assert "C85A32" in ws["B8"].fill.start_color.rgb
+    assert "C85A32" in ws["B11"].fill.start_color.rgb
 
+    # Verificar pago realizado en rojo (D92B2B) en SEMANA 1 (F7) y Por Pagar en negro (262320) en SEMANA 2 (G7)
+    assert "D92B2B" in ws["F7"].font.color.rgb
+    assert "262320" in ws["G7"].font.color.rgb
 
+    # Verificar que exportar PDF retorne un documento PDF válido
+    pdf_bytes = exportar_cuadro_pagos_semanales_pdf("Juana Alarco 243", data_cuadro)
+    assert isinstance(pdf_bytes, (bytes, bytearray))
+    assert pdf_bytes.startswith(b"%PDF")
 

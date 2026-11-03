@@ -68,7 +68,10 @@ from cota.cotizacion import (
     asegurar_estructura_presupuesto_proyecto,
     calcular_resumen_cuadro_pagos_semanales,
     deshacer_presupuesto,
+    etiqueta_corta_columna_pago,
+    etiqueta_export_columna_pago,
     exportar_cuadro_pagos_semanales_excel,
+    exportar_cuadro_pagos_semanales_pdf,
     exportar_proyecto_a_formato_venti,
     extraer_descripcion_tarea,
     generar_plantilla_cotizacion_venti,
@@ -2545,7 +2548,7 @@ def _render_tab_obra(proy_name, proy_data):
 
 
 def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cuadro: dict, cols_pago: list[str]):
-    """Inyecta un controlador DOM que muestra tooltips flotantes al pasar el mouse sobre celdas con notas."""
+    """Inyecta un controlador DOM que muestra tooltips flotantes al pasar el mouse sobre celdas con notas y controla el modo Pantalla Completa (tipo YouTube)."""
     notas_cont_map = {}
     filas_c = data_cuadro.get("filas_contratistas", [])
     for idx_f, f in enumerate(filas_c):
@@ -2558,11 +2561,14 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
             for col_k, txt_n in np_dict.items():
                 if safe_str(txt_n).strip():
                     val_c = safe_float(f.get(col_k, 0.0), 0.0)
-                    m_r[col_k] = {
+                    info_obj = {
                         "partida": part_name,
+                        "semana": etiqueta_corta_columna_pago(col_k),
                         "monto": f"{pref_m}{val_c:,.2f}",
                         "nota": safe_str(txt_n).strip(),
                     }
+                    m_r[col_k] = info_obj
+                    m_r[etiqueta_corta_columna_pago(col_k)] = info_obj
             if m_r:
                 notas_cont_map[str(idx_f)] = m_r
 
@@ -2581,17 +2587,22 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
             for col_k, txt_n in np_dict.items():
                 if safe_str(txt_n).strip():
                     val_c = safe_float(f_obj.get(col_k, 0.0), 0.0)
-                    m_r[col_k] = {
+                    info_obj = {
                         "partida": part_name,
+                        "semana": etiqueta_corta_columna_pago(col_k),
                         "monto": f"{pref_m}{val_c:,.2f}",
                         "nota": safe_str(txt_n).strip(),
                     }
+                    m_r[col_k] = info_obj
+                    m_r[etiqueta_corta_columna_pago(col_k)] = info_obj
             if m_r:
                 notas_ges_map[idx_str] = m_r
 
+    cols_pago_short = [etiqueta_corta_columna_pago(c) for c in cols_pago]
+
     payload_json = json.dumps({
         "safeId": safe_proy_id,
-        "colsPago": cols_pago,
+        "colsPago": cols_pago_short,
         "nRowsCont": len(filas_c),
         "notasCont": notas_cont_map,
         "notasGes": notas_ges_map,
@@ -2611,29 +2622,175 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
         const notasCont = payload.notasCont;
         const notasGes = payload.notasGes;
 
+        function ensureFullscreenStyles() {{
+            if (parentDoc.getElementById('cota_pagos_fs_styles')) return;
+            const stEl = parentDoc.createElement('style');
+            stEl.id = 'cota_pagos_fs_styles';
+            stEl.textContent = `
+                .cota-pagos-fs-active {{
+                    position: fixed !important;
+                    inset: 0 !important;
+                    width: 100vw !important;
+                    height: 100vh !important;
+                    max-width: 100vw !important;
+                    max-height: 100vh !important;
+                    z-index: 999990 !important;
+                    background: #FAF8F5 !important;
+                    padding: 20px 28px !important;
+                    margin: 0 !important;
+                    border-radius: 0 !important;
+                    overflow: auto !important;
+                    box-sizing: border-box !important;
+                    box-shadow: none !important;
+                }}
+                .cota-pagos-fs-active .cota-pagos-scroll-area {{
+                    max-height: calc(100vh - 105px) !important;
+                    overflow: auto !important;
+                }}
+                .cota-pagos-fs-active table {{
+                    font-size: 13.5px !important;
+                }}
+                .cota-pagos-fs-active th, .cota-pagos-fs-active td {{
+                    padding: 8px 11px !important;
+                }}
+            `;
+            parentDoc.head.appendChild(stEl);
+        }}
+
         function getOrCreateTooltip() {{
             let tt = parentDoc.getElementById('cota_payment_tooltip_box');
             if (!tt) {{
                 tt = parentDoc.createElement('div');
                 tt.id = 'cota_payment_tooltip_box';
-                tt.style.cssText = 'position:fixed; z-index:99999999; pointer-events:none; background:#262320; color:#FFFFFF; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; padding:10px 14px; border-radius:8px; box-shadow:0 10px 28px rgba(38,35,32,0.45); border:1px solid rgba(255,255,255,0.18); max-width:340px; display:none; opacity:0; transition:opacity 0.12s ease;';
+                tt.style.cssText = 'position:fixed; z-index:2147483647; pointer-events:none; background:#262320; color:#FFFFFF; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; padding:10px 14px; border-radius:8px; box-shadow:0 10px 28px rgba(38,35,32,0.45); border:1px solid rgba(255,255,255,0.18); max-width:340px; display:none; opacity:0; transition:opacity 0.12s ease;';
+                parentDoc.body.appendChild(tt);
+            }}
+            const fsEl = parentDoc.fullscreenElement;
+            if (fsEl && tt.parentElement !== fsEl) {{
+                fsEl.appendChild(tt);
+            }} else if (!fsEl && tt.parentElement !== parentDoc.body) {{
                 parentDoc.body.appendChild(tt);
             }}
             return tt;
         }}
 
-        function initPagosTooltips() {{
+        function showTooltipContent(e, partida, semana, monto, nota) {{
+            const tooltip = getOrCreateTooltip();
+            tooltip.innerHTML = `
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; border-bottom:1px solid rgba(255,255,255,0.18); padding-bottom:5px;">
+                    <span style="background:#C85A32; color:#FFFFFF; font-size:10px; font-weight:800; text-transform:uppercase; padding:2px 7px; border-radius:4px; letter-spacing:0.5px;">💬 NOTA DE PAGO</span>
+                    <span style="font-size:11.5px; font-weight:700; color:#EFECE6;">${{semana}}</span>
+                </div>
+                <div style="font-size:13px; font-weight:700; color:#FFFFFF; margin-bottom:2px;">${{partida}}</div>
+                <div style="font-size:11.5px; font-weight:700; color:#78C288; background:rgba(74,124,89,0.25); display:inline-block; padding:2px 6px; border-radius:4px; margin-bottom:7px;">Monto: ${{monto}}</div>
+                <div style="font-size:12.5px; color:#EFECE6; line-height:1.4; font-style:italic; border-left:3px solid #C85A32; padding-left:8px; margin-top:2px;">"${{nota}}"</div>
+            `;
+            tooltip.style.display = 'block';
+            tooltip.style.opacity = '1';
+
+            let posX = e.clientX + 16;
+            let posY = e.clientY + 16;
+            if (posX + 350 > window.parent.innerWidth) {{
+                posX = Math.max(10, e.clientX - 355);
+            }}
+            if (posY + 140 > window.parent.innerHeight) {{
+                posY = Math.max(10, e.clientY - 130);
+            }}
+            tooltip.style.left = posX + 'px';
+            tooltip.style.top = posY + 'px';
+        }}
+
+        function hideTooltip() {{
+            const tt = parentDoc.getElementById('cota_payment_tooltip_box');
+            if (tt) {{
+                tt.style.display = 'none';
+                tt.style.opacity = '0';
+            }}
+        }}
+
+        function initPagosUI() {{
+            ensureFullscreenStyles();
+            const fsWrap = parentDoc.getElementById('cota_cuadro_pagos_fs_wrap_' + safeId);
+            const btnFs = parentDoc.getElementById('btn_fs_pagos_' + safeId);
+
+            if (fsWrap && btnFs && !btnFs.dataset.cotaFsBound) {{
+                btnFs.dataset.cotaFsBound = '1';
+                const iconExpand = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>`;
+                const iconCollapse = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>`;
+
+                function updateFsButtonState(isFs) {{
+                    if (isFs) {{
+                        btnFs.innerHTML = iconCollapse + '<span>Salir de Pantalla Completa (ESC)</span>';
+                        btnFs.style.background = '#262320';
+                    }} else {{
+                        btnFs.innerHTML = iconExpand + '<span>Pantalla Completa</span>';
+                        btnFs.style.background = 'rgba(38, 35, 32, 0.28)';
+                    }}
+                }}
+
+                btnFs.addEventListener('click', function(ev) {{
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    const isCurrentlyActive = fsWrap.classList.contains('cota-pagos-fs-active') || (parentDoc.fullscreenElement === fsWrap);
+                    if (isCurrentlyActive) {{
+                        fsWrap.classList.remove('cota-pagos-fs-active');
+                        if (parentDoc.fullscreenElement && parentDoc.exitFullscreen) {{
+                            parentDoc.exitFullscreen().catch(() => {{}});
+                        }}
+                        updateFsButtonState(false);
+                    }} else {{
+                        fsWrap.classList.add('cota-pagos-fs-active');
+                        if (fsWrap.requestFullscreen) {{
+                            fsWrap.requestFullscreen().catch(() => {{}});
+                        }}
+                        updateFsButtonState(true);
+                    }}
+                }});
+
+                parentDoc.addEventListener('fullscreenchange', function() {{
+                    if (!parentDoc.fullscreenElement && fsWrap.classList.contains('cota-pagos-fs-active')) {{
+                        // Si salió del fullscreen nativo con ESC, restaurar también la clase CSS
+                        fsWrap.classList.remove('cota-pagos-fs-active');
+                        updateFsButtonState(false);
+                    }}
+                    getOrCreateTooltip();
+                }});
+
+                parentDoc.addEventListener('keydown', function(ev) {{
+                    if (ev.key === 'Escape' && fsWrap.classList.contains('cota-pagos-fs-active')) {{
+                        fsWrap.classList.remove('cota-pagos-fs-active');
+                        updateFsButtonState(false);
+                    }}
+                }});
+            }}
+
+            // Vincular tooltips a las celdas con nota en la tabla visual unificada
+            if (fsWrap) {{
+                const noteCells = fsWrap.querySelectorAll('td[data-cota-note-text]');
+                noteCells.forEach(function(cell) {{
+                    if (cell.dataset.cotaNoteBound === '1') return;
+                    cell.dataset.cotaNoteBound = '1';
+                    cell.addEventListener('pointermove', function(e) {{
+                        showTooltipContent(
+                            e,
+                            cell.getAttribute('data-cota-note-partida') || '',
+                            cell.getAttribute('data-cota-note-semana') || '',
+                            cell.getAttribute('data-cota-note-monto') || '',
+                            cell.getAttribute('data-cota-note-text') || ''
+                        );
+                    }});
+                    cell.addEventListener('pointerleave', hideTooltip);
+                }});
+            }}
+
             const anchor = parentDoc.getElementById('anchor_pagos_' + safeId);
             if (!anchor) return false;
             const container = anchor.closest('div[data-testid="stVerticalBlockBorderWrapper"]') || anchor.parentElement;
             if (!container) return false;
 
             const editors = container.querySelectorAll('div[data-testid="stDataEditor"]');
-            if (!editors || editors.length === 0) return false;
 
-            const tooltip = getOrCreateTooltip();
-
-            function attachToEditor(editorWrap, notesMap, isContratistas, nRowsExpected) {{
+            function attachToEditor(editorWrap, notesMap, isContratistas) {{
                 if (!editorWrap) return;
                 const instKey = safeId + '_' + (isContratistas ? 'cont' : 'ges') + '_' + Object.keys(notesMap).length;
                 if (editorWrap.dataset.cotaPagosTooltipKey === instKey) return;
@@ -2764,16 +2921,14 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
                     const relY = (e.clientY - rect.top) + sTop;
 
                     if (relY < 36) {{
-                        tooltip.style.display = 'none';
-                        tooltip.style.opacity = '0';
+                        hideTooltip();
                         return;
                     }}
 
                     const rowIdx = Math.floor((relY - 36) / 35);
                     const rowNotes = notesMap[String(rowIdx)];
                     if (!rowNotes) {{
-                        tooltip.style.display = 'none';
-                        tooltip.style.opacity = '0';
+                        hideTooltip();
                         return;
                     }}
 
@@ -2791,55 +2946,30 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
 
                     if (matchedColName && rowNotes[matchedColName]) {{
                         const nInfo = rowNotes[matchedColName];
-                        tooltip.innerHTML = `
-                            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; border-bottom:1px solid rgba(255,255,255,0.18); padding-bottom:5px;">
-                                <span style="background:#C85A32; color:#FFFFFF; font-size:10px; font-weight:800; text-transform:uppercase; padding:2px 7px; border-radius:4px; letter-spacing:0.5px;">💬 NOTA DE PAGO</span>
-                                <span style="font-size:11.5px; font-weight:700; color:#EFECE6;">${{matchedColName}}</span>
-                            </div>
-                            <div style="font-size:13px; font-weight:700; color:#FFFFFF; margin-bottom:2px;">${{nInfo.partida}}</div>
-                            <div style="font-size:11.5px; font-weight:700; color:#78C288; background:rgba(74,124,89,0.25); display:inline-block; padding:2px 6px; border-radius:4px; margin-bottom:7px;">Monto: ${{nInfo.monto}}</div>
-                            <div style="font-size:12.5px; color:#EFECE6; line-height:1.4; font-style:italic; border-left:3px solid #C85A32; padding-left:8px; margin-top:2px;">"${{nInfo.nota}}"</div>
-                        `;
-                        tooltip.style.display = 'block';
-                        tooltip.style.opacity = '1';
-
-                        let posX = e.clientX + 16;
-                        let posY = e.clientY + 16;
-                        if (posX + 350 > window.innerWidth) {{
-                            posX = Math.max(10, e.clientX - 355);
-                        }}
-                        if (posY + 140 > window.innerHeight) {{
-                            posY = Math.max(10, e.clientY - 130);
-                        }}
-                        tooltip.style.left = posX + 'px';
-                        tooltip.style.top = posY + 'px';
+                        showTooltipContent(e, nInfo.partida, nInfo.semana || matchedColName, nInfo.monto, nInfo.nota);
                     }} else {{
-                        tooltip.style.display = 'none';
-                        tooltip.style.opacity = '0';
+                        hideTooltip();
                     }}
                 }});
 
-                editorWrap.addEventListener('pointerleave', function() {{
-                    tooltip.style.display = 'none';
-                    tooltip.style.opacity = '0';
-                }});
+                editorWrap.addEventListener('pointerleave', hideTooltip);
             }}
 
-            if (editors.length >= 1) {{
-                attachToEditor(editors[0], notasCont, true, payload.nRowsCont);
+            if (editors && editors.length >= 1) {{
+                attachToEditor(editors[0], notasCont, true);
             }}
-            if (editors.length >= 2) {{
-                attachToEditor(editors[1], notasGes, false, 2);
+            if (editors && editors.length >= 2) {{
+                attachToEditor(editors[1], notasGes, false);
             }}
 
-            return true;
+            return Boolean(fsWrap);
         }}
 
-        if (!initPagosTooltips()) {{
+        if (!initPagosUI()) {{
             let attempts = 0;
             const timer = setInterval(() => {{
                 attempts++;
-                if (initPagosTooltips() || attempts > 25) {{
+                if (initPagosUI() || attempts > 25) {{
                     clearInterval(timer);
                 }}
             }}, 200);
@@ -2853,7 +2983,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
 
 
 def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
-    """Renderiza el Cuadro de Pagos Semanales por Partida / Contratista y su exportación a Excel para el cliente."""
+    """Renderiza el Cuadro de Pagos Semanales por Partida / Contratista y su exportación a Excel y PDF para el cliente."""
     cliente_str = safe_str(proy_data.get("Cliente", "")).strip() or "Sin cliente asignado"
     data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
 
@@ -2864,14 +2994,9 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
 
     safe_proy_id = re.sub(r"[^a-zA-Z0-9_]", "_", proy_name)
     st.markdown(f"<div id='anchor_pagos_{safe_proy_id}'></div>", unsafe_allow_html=True)
-    st.markdown("#### 📊 CUADRO DE PAGOS SEMANALES POR PARTIDA / CONTRATISTA")
-    st.caption(
-        f"**Proyecto:** {proy_name}  ·  **Cliente:** {cliente_str}  ·  "
-        "Control semanal de adelantos y valorizaciones por contratista/partida, listo para exportar a Excel para el cliente."
-    )
 
-    # Barra de configuración y acciones
-    c_cfg1, c_cfg2, c_cfg3 = st.columns([1.4, 1.4, 4.2])
+    # Barra de configuración superior
+    c_cfg1, c_cfg2, c_cfg3 = st.columns([1.3, 1.3, 4.4])
     with c_cfg1:
         nuevo_num_sem = int(
             st.number_input(
@@ -2896,12 +3021,13 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             )
         )
     with c_cfg3:
-         cols_opciones = obtener_columnas_pago_semanal(nuevo_num_sem)
-         default_pp = [c for c in cols_por_pagar_actual if c in cols_opciones]
-         nuevas_por_pagar = st.multiselect(
+        cols_opciones = obtener_columnas_pago_semanal(nuevo_num_sem)
+        default_pp = [c for c in cols_por_pagar_actual if c in cols_opciones]
+        nuevas_por_pagar = st.multiselect(
             "⏳ Semanas / Columnas en estado 'Por Pagar' (no suman a PAGADO hasta desmarcarse):",
             options=cols_opciones,
             default=default_pp,
+            format_func=etiqueta_corta_columna_pago,
             key=f"por_pagar_cols_{proy_name}",
         )
 
@@ -2921,11 +3047,11 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         cols_pago = obtener_columnas_pago_semanal(nuevo_num_sem)
         cols_por_pagar_actual = list(nuevas_por_pagar)
 
-    # Botonera de sincronización, importación y exportación Excel
-    b_act1, b_act2, b_act3 = st.columns([2.6, 2.4, 3.0])
+    # Botonera de sincronización, importación y exportación (Excel + PDF con Semana 1, Semana 2...)
+    b_act1, b_act2, b_act3, b_act4 = st.columns([2.4, 2.1, 2.2, 1.8])
     with b_act1:
         if st.button(
-            "🔄 Sincronizar Partidas con 03. Presupuesto",
+            "🔄 Sincronizar con 03. Presupuesto",
             key=f"btn_sync_pagos_{proy_name}",
             use_container_width=True,
             help="Trae o actualiza las partidas y montos totales desde la pestaña 03. Presupuesto sin perder los pagos semanales registrados.",
@@ -2958,16 +3084,27 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                     else:
                         st.error("No se detectó la estructura del cuadro de pagos en el archivo.")
 
+    safe_fn = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in proy_name).strip("_") or "Proyecto"
     with b_act3:
         xlsx_bytes = exportar_cuadro_pagos_semanales_excel(proy_name, data_cuadro)
-        safe_fn = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in proy_name).strip("_") or "Proyecto"
         st.download_button(
-            label="📥 EXPORTAR EXCEL PARA CLIENTE (.XLSX)",
+            label="📥 EXPORTAR EXCEL (.XLSX)",
             data=xlsx_bytes,
             file_name=f"Control_Pagos_Semanales_{safe_fn}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"dl_xlsx_pagos_{proy_name}",
             type="primary",
+            use_container_width=True,
+        )
+
+    with b_act4:
+        pdf_bytes = exportar_cuadro_pagos_semanales_pdf(proy_name, data_cuadro)
+        st.download_button(
+            label="📄 EXPORTAR PDF (.PDF)",
+            data=pdf_bytes,
+            file_name=f"Control_Pagos_Semanales_{safe_fn}.pdf",
+            mime="application/pdf",
+            key=f"dl_pdf_pagos_{proy_name}",
             use_container_width=True,
         )
 
@@ -2994,7 +3131,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             text_color="#4A7C59",
         )
     with k3:
-        lbl_pp = ", ".join(cols_por_pagar_actual) if cols_por_pagar_actual else "Ninguna semana marcada"
+        lbl_pp = ", ".join(etiqueta_corta_columna_pago(c) for c in cols_por_pagar_actual) if cols_por_pagar_actual else "Ninguna semana marcada"
         render_metric_card(
             "Programado 'Por Pagar'",
             format_currency(tot_soles["POR_PAGAR"]),
@@ -3011,7 +3148,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             text_color="#C85A32",
         )
 
-    # Construcción de columnas del editor
+    # Construcción de opciones de Partidas y contadores de estado
     partidas_proy_list = (
         st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name]["Nombre_Partida"].dropna().astype(str).tolist()
         if "partidas" in st.session_state and not st.session_state.partidas.empty
@@ -3023,68 +3160,112 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         if p_fc and p_fc not in opciones_partida_cont:
             opciones_partida_cont.append(p_fc)
 
-    ordered_cols_cont = ["Partida", "Descripcion", "Moneda", "TOTAL"] + cols_pago + ["PAGADO", "SALDO", "Notas"]
-    ordered_cols = ["Descripcion", "Moneda", "TOTAL"] + cols_pago + ["PAGADO", "SALDO", "Notas"]
-
-    col_cfg_common = {
-        "Partida": st.column_config.SelectboxColumn(
-            "Partida",
-            options=opciones_partida_cont,
-            width="medium",
-            help="Partida del proyecto a la que pertenece este pago (puedes tener varias filas/contratistas para una misma Partida, ej. Eléctricas y Sanitarias).",
-        ),
-        "Descripcion": st.column_config.TextColumn("Contratista / Especialidad / Frente", width="medium", required=True),
-        "Moneda": st.column_config.SelectboxColumn("Moneda", options=["Soles", "Dólares"], default="Soles", width="small"),
-        "TOTAL": st.column_config.NumberColumn("TOTAL", format="%.2f", width="small"),
-    }
-    for c_sem in cols_pago:
-        is_pp = c_sem in cols_por_pagar_actual
-        header_lbl = f"⏳ {c_sem} (Por Pagar)" if is_pp else c_sem
-        col_cfg_common[c_sem] = st.column_config.NumberColumn(
-            header_lbl,
-            format="%.2f",
-            width="small",
-            help="Marcada como 'Por Pagar' (no suma a PAGADO)" if is_pp else "Columna pagada (suma a PAGADO)",
-        )
-    col_cfg_common["PAGADO"] = st.column_config.NumberColumn("PAGADO ✓", format="%.2f", width="small", disabled=True)
-    col_cfg_common["SALDO"] = st.column_config.NumberColumn("SALDO", format="%.2f", width="small", disabled=True)
-    col_cfg_common["Notas"] = st.column_config.TextColumn("Notas", width="medium")
-
     base_cont_key = f"base_df_pagos_cont_{proy_name}"
     cnt_cont_key = f"c_{base_cont_key}"
     c_cont_val = st.session_state.get(cnt_cont_key, 0)
     w_cont_key = f"ed_pagos_cont_{proy_name}_{c_cont_val}"
 
-    # 1. Editor de TRABAJOS CONTRATISTAS (permite múltiples filas por Partida)
-    col_hdr_cont, col_btn_notes, col_add_sub_cont = st.columns([4.4, 2.6, 3.0])
-    with col_hdr_cont:
-        st.markdown("##### 👷 TRABAJOS CONTRATISTAS")
-        st.caption("Puedes tener múltiples contratistas/empresas por Partida. Pasa el cursor sobre cualquier celda con nota para ver su detalle flotante.")
+    base_ges_key = f"base_df_pagos_ges_{proy_name}"
+    cnt_ges_key = f"c_{base_ges_key}"
+    c_ges_val = st.session_state.get(cnt_ges_key, 0)
+    w_ges_key = f"ed_pagos_ges_{proy_name}_{c_ges_val}"
+
+    # Barra de herramientas rápidas sobre el Cuadro de Pagos
+    opciones_filas_np = []
+    mapa_filas_np = {}
+    for i_fc, f_c_item in enumerate(data_cuadro.get("filas_contratistas", [])):
+        lbl_f = f"👷 {i_fc + 1}. {safe_str(f_c_item.get('Descripcion', '')) or safe_str(f_c_item.get('Partida', ''))}"
+        opciones_filas_np.append(lbl_f)
+        mapa_filas_np[lbl_f] = ("contratista", i_fc, f_c_item)
+
+    lbl_f_ges = "📐 Gestión y supervisión de obras"
+    opciones_filas_np.append(lbl_f_ges)
+    mapa_filas_np[lbl_f_ges] = ("gestion", 0, data_cuadro.get("fila_gestion", {}))
+
+    lbl_f_gg = "📐 Gastos Generales"
+    opciones_filas_np.append(lbl_f_gg)
+    mapa_filas_np[lbl_f_gg] = ("gg", 0, data_cuadro.get("fila_gg", {}))
 
     total_notas_reg = sum(len(f.get("Notas_Pagos", {})) for f in data_cuadro.get("filas_contratistas", []))
     total_notas_reg += len(data_cuadro.get("fila_gestion", {}).get("Notas_Pagos", {}))
     total_notas_reg += len(data_cuadro.get("fila_gg", {}).get("Notas_Pagos", {}))
     btn_lbl_notas = f"💬 Notas de Pagos ({total_notas_reg})" if total_notas_reg > 0 else "💬 Notas de Pagos"
 
-    with col_btn_notes:
+    tb_col1, tb_col2, tb_col3 = st.columns([3.4, 3.2, 3.4])
+    with tb_col1:
+        with st.popover("✏️ Registrar / Modificar Pago Rápido", use_container_width=True):
+            st.markdown("##### ✏️ Registrar o Modificar Desembolso")
+            st.caption("Ingresa rápidamente un monto de pago (y su nota opcional) para cualquier contratista o semana.")
+            fila_qp_lbl = st.selectbox(
+                "Partida / Contratista / Concepto:",
+                options=opciones_filas_np,
+                key=f"sel_fila_qp_{proy_name}",
+            )
+            tipo_qp, idx_qp, obj_qp = mapa_filas_np[fila_qp_lbl]
+            col_qp_sel = st.selectbox(
+                "Semana / Columna de Pago:",
+                options=cols_pago,
+                format_func=etiqueta_corta_columna_pago,
+                key=f"sel_col_qp_{proy_name}",
+            )
+            val_qp_actual = safe_float(obj_qp.get(col_qp_sel, 0.0), 0.0)
+            nota_qp_actual = (obj_qp.get("Notas_Pagos", {}) or {}).get(col_qp_sel, "") if isinstance(obj_qp.get("Notas_Pagos"), dict) else ""
+            nuevo_monto_qp = st.number_input(
+                f"Monto para {etiqueta_corta_columna_pago(col_qp_sel)}:",
+                min_value=0.0,
+                value=float(val_qp_actual),
+                step=100.0,
+                format="%.2f",
+                key=f"num_qp_{proy_name}_{fila_qp_lbl}_{col_qp_sel}",
+            )
+            nueva_nota_qp = st.text_input(
+                "Nota del pago (opcional, visible al pasar el mouse):",
+                value=nota_qp_actual,
+                placeholder="Ej. Adelanto 50%, valorización semana 2...",
+                key=f"txt_qp_{proy_name}_{fila_qp_lbl}_{col_qp_sel}",
+            )
+            if st.button("💾 Guardar Pago", key=f"btn_save_qp_{proy_name}", type="primary", use_container_width=True):
+                d_cur_qp = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+                if tipo_qp == "contratista":
+                    fc_list = list(d_cur_qp.get("filas_contratistas", []))
+                    if idx_qp < len(fc_list):
+                        fc_list[idx_qp][col_qp_sel] = round(float(nuevo_monto_qp), 2)
+                        np_d = dict(fc_list[idx_qp].get("Notas_Pagos", {}))
+                        if nueva_nota_qp.strip():
+                            np_d[col_qp_sel] = nueva_nota_qp.strip()
+                        else:
+                            np_d.pop(col_qp_sel, None)
+                        fc_list[idx_qp]["Notas_Pagos"] = np_d
+                        d_cur_qp["filas_contratistas"] = fc_list
+                elif tipo_qp == "gestion":
+                    fg_d = dict(d_cur_qp.get("fila_gestion", {}))
+                    fg_d[col_qp_sel] = round(float(nuevo_monto_qp), 2)
+                    np_d = dict(fg_d.get("Notas_Pagos", {}))
+                    if nueva_nota_qp.strip():
+                        np_d[col_qp_sel] = nueva_nota_qp.strip()
+                    else:
+                        np_d.pop(col_qp_sel, None)
+                    fg_d["Notas_Pagos"] = np_d
+                    d_cur_qp["fila_gestion"] = fg_d
+                elif tipo_qp == "gg":
+                    fgg_d = dict(d_cur_qp.get("fila_gg", {}))
+                    fgg_d[col_qp_sel] = round(float(nuevo_monto_qp), 2)
+                    np_d = dict(fgg_d.get("Notas_Pagos", {}))
+                    if nueva_nota_qp.strip():
+                        np_d[col_qp_sel] = nueva_nota_qp.strip()
+                    else:
+                        np_d.pop(col_qp_sel, None)
+                    fgg_d["Notas_Pagos"] = np_d
+                    d_cur_qp["fila_gg"] = fgg_d
+                guardar_cuadro_pagos_semanales_proyecto(proy_name, d_cur_qp)
+                st.session_state[cnt_cont_key] = st.session_state.get(cnt_cont_key, 0) + 1
+                st.session_state[cnt_ges_key] = st.session_state.get(cnt_ges_key, 0) + 1
+                st.rerun()
+
+    with tb_col2:
         with st.popover(btn_lbl_notas, use_container_width=True):
             st.markdown("##### 💬 Notas y Detalle de Pagos")
-            st.caption("Registra notas o motivos sobre cualquier desembolso (Adelanto o Semana). Al pasar el mouse sobre el pago en el cuadro, la nota aparecerá flotando.")
-
-            opciones_filas_np = []
-            mapa_filas_np = {}
-            for i_fc, f_c_item in enumerate(data_cuadro.get("filas_contratistas", [])):
-                lbl_f = f"👷 {i_fc + 1}. {safe_str(f_c_item.get('Descripcion', '')) or safe_str(f_c_item.get('Partida', ''))}"
-                opciones_filas_np.append(lbl_f)
-                mapa_filas_np[lbl_f] = ("contratista", i_fc, f_c_item)
-
-            lbl_f_ges = "📐 Gestión y supervisión de obras"
-            opciones_filas_np.append(lbl_f_ges)
-            mapa_filas_np[lbl_f_ges] = ("gestion", 0, data_cuadro.get("fila_gestion", {}))
-
-            lbl_f_gg = "📐 Gastos Generales"
-            opciones_filas_np.append(lbl_f_gg)
-            mapa_filas_np[lbl_f_gg] = ("gg", 0, data_cuadro.get("fila_gg", {}))
+            st.caption("Registra notas o motivos sobre cualquier desembolso (Adelanto o S1, S2...). Al pasar el mouse sobre el pago en el cuadro, la nota aparecerá flotando.")
 
             fila_sel_lbl = st.selectbox(
                 "Concepto / Fila:",
@@ -3099,7 +3280,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                 m_val = safe_float(obj_f_sel.get(c_n, 0.0), 0.0)
                 np_dict_curr = obj_f_sel.get("Notas_Pagos", {})
                 has_badge = " [✓ Tiene Nota]" if (isinstance(np_dict_curr, dict) and c_n in np_dict_curr and np_dict_curr[c_n]) else ""
-                return f"{c_n} ({pref_sel}{m_val:,.2f}){has_badge}"
+                return f"{etiqueta_corta_columna_pago(c_n)} ({pref_sel}{m_val:,.2f}){has_badge}"
 
             col_sel_pago = st.selectbox(
                 "Semana / Desembolso:",
@@ -3112,7 +3293,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             nota_existente = np_dict_f.get(col_sel_pago, "") if isinstance(np_dict_f, dict) else ""
 
             txt_nota_input = st.text_area(
-                f"Detalle / Motivo del pago ({col_sel_pago}):",
+                f"Detalle / Motivo del pago ({etiqueta_corta_columna_pago(col_sel_pago)}):",
                 value=nota_existente,
                 placeholder="Ej. Adelanto 50% para compra de tableros y cables, o pago contra entrega de desmonte...",
                 key=f"txt_nota_p_{proy_name}_{fila_sel_lbl}_{col_sel_pago}",
@@ -3186,17 +3367,16 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                         st.session_state[cnt_ges_key] = st.session_state.get(cnt_ges_key, 0) + 1
                         st.rerun()
 
-            # Resumen de notas existentes dentro del popover
             todas_np_pop = []
             for i_fc, f_c_item in enumerate(data_cuadro.get("filas_contratistas", [])):
                 desc_f = safe_str(f_c_item.get("Descripcion", "")) or safe_str(f_c_item.get("Partida", f"Fila {i_fc+1}"))
                 for col_k, txt_k in f_c_item.get("Notas_Pagos", {}).items():
                     if txt_k:
-                        todas_np_pop.append((desc_f, col_k, txt_k))
+                        todas_np_pop.append((desc_f, etiqueta_corta_columna_pago(col_k), txt_k))
             for desc_g, obj_g in [("Gestión y supervisión de obras", data_cuadro.get("fila_gestion", {})), ("Gastos Generales", data_cuadro.get("fila_gg", {}))]:
                 for col_k, txt_k in obj_g.get("Notas_Pagos", {}).items():
                     if txt_k:
-                        todas_np_pop.append((desc_g, col_k, txt_k))
+                        todas_np_pop.append((desc_g, etiqueta_corta_columna_pago(col_k), txt_k))
 
             if todas_np_pop:
                 st.divider()
@@ -3204,8 +3384,8 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                 for f_nom, sem_k, txt_k in todas_np_pop:
                     st.caption(f"• **{f_nom}** ({sem_k}): *\"{txt_k}\"*")
 
-    with col_add_sub_cont:
-        with st.popover("➕ Agregar Contratista / Sub-partida a una Partida", use_container_width=True):
+    with tb_col3:
+        with st.popover("➕ Agregar Contratista / Sub-partida", use_container_width=True):
             st.caption("Agrega otra fila asociada a una misma Partida (ej. Instalaciones → Eléctricas / Sanitarias).")
             with st.form(f"frm_add_sub_cont_{proy_name}", clear_on_submit=True):
                 part_sel_new = st.selectbox(
@@ -3246,7 +3426,6 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                     }
                     for c_s in cols_pago:
                         nueva_fila_c[c_s] = 0.0
-                    # Insertar justo debajo de la última fila de esa misma Partida si existe
                     filas_act = list(d_cur_add.get("filas_contratistas", []))
                     insert_pos = len(filas_act)
                     for idx_f, f_ex in enumerate(filas_act):
@@ -3257,6 +3436,226 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                     guardar_cuadro_pagos_semanales_proyecto(proy_name, d_cur_add)
                     st.session_state[cnt_cont_key] = c_cont_val + 1
                     st.rerun()
+
+    # =========================================================================
+    # 1. CUADRO VISUAL UNIFICADO TIPO EXCEL (Color Arcilla #C85A32 + Pagos en Rojo + Fullscreen)
+    # =========================================================================
+    border_grid = "1px solid #B8B0A4"
+    border_clay = "1px solid rgba(255,255,255,0.22)"
+
+    ths_semanas_list = []
+    for c_s in cols_pago:
+        lbl_short = html_lib.escape(etiqueta_corta_columna_pago(c_s))
+        if c_s in cols_por_pagar_actual:
+            ths_semanas_list.append(
+                f"<th style='padding:7px 9px; text-align:center; border:{border_clay}; min-width:86px;'>"
+                f"<div>{lbl_short}</div>"
+                f"<div style='font-size:10px; font-weight:800; color:#FFE066; margin-top:2px; letter-spacing:0.2px;'>Por Pagar</div>"
+                f"</th>"
+            )
+        else:
+            ths_semanas_list.append(
+                f"<th style='padding:8px 9px; text-align:center; border:{border_clay}; min-width:82px;'>{lbl_short}</th>"
+            )
+    ths_semanas_html = "".join(ths_semanas_list)
+
+    def _build_payment_cells_html(fila_d: dict, pref_m: str, part_label: str) -> str:
+        np_dict_r = fila_d.get("Notas_Pagos", {}) if isinstance(fila_d.get("Notas_Pagos"), dict) else {}
+        tds = []
+        for c_s in cols_pago:
+            v_num = safe_float(fila_d.get(c_s, 0.0), 0.0)
+            is_zero = abs(v_num) < 0.005
+            is_pp = c_s in cols_por_pagar_actual
+            # Pagos realizados de semanas pasadas en ROJO (#D92B2B); semanas "Por Pagar" en negro/carbón (#262320)
+            color_txt = "#262320" if is_pp else "#D92B2B"
+            val_str = "" if is_zero else f"{pref_m}{v_num:,.2f}"
+            nota_txt = safe_str(np_dict_r.get(c_s, "")).strip()
+
+            if nota_txt:
+                esc_part = html_lib.escape(part_label, quote=True)
+                esc_sem = html_lib.escape(etiqueta_corta_columna_pago(c_s), quote=True)
+                esc_mon = html_lib.escape(f"{pref_m}{v_num:,.2f}", quote=True)
+                esc_not = html_lib.escape(nota_txt, quote=True)
+                disp_inner = val_str if val_str else "<span style='color:#C85A32; font-size:11px;'>💬</span>"
+                tds.append(
+                    f"<td data-cota-note-partida='{esc_part}' data-cota-note-semana='{esc_sem}' "
+                    f"data-cota-note-monto='{esc_mon}' data-cota-note-text='{esc_not}' "
+                    f"title='💬 {esc_not}' "
+                    f"style='position:relative; padding:6px 9px; text-align:right; border:{border_grid}; color:{color_txt}; font-weight:600; font-variant-numeric:tabular-nums; cursor:help; background:#FFFDF9;'>"
+                    f"{disp_inner}"
+                    f"<span style='position:absolute; top:0; right:0; width:0; height:0; border-top:8px solid #C85A32; border-left:8px solid transparent;'></span>"
+                    f"</td>"
+                )
+            else:
+                tds.append(
+                    f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; color:{color_txt}; font-weight:600; font-variant-numeric:tabular-nums;'>{val_str}</td>"
+                )
+        return "".join(tds)
+
+    trs_body = []
+    # Fila de sección: TRABAJOS CONTRATISTAS
+    empty_sem_section = "".join(f"<td style='padding:6px 9px; border:{border_grid};'></td>" for _ in cols_pago)
+    trs_body.append(
+        f"<tr style='background:#FFFFFF;'>"
+        f"<td style='padding:7px 12px; text-align:left; border:{border_grid}; font-weight:800; color:#262320; text-decoration:underline; position:sticky; left:0; background:#FFFFFF; z-index:1;'>TRABAJOS CONTRATISTAS</td>"
+        f"<td style='padding:6px 8px; border:{border_grid};'></td>"
+        f"<td style='padding:6px 9px; border:{border_grid};'></td>"
+        f"{empty_sem_section}"
+        f"<td style='padding:6px 9px; border:{border_grid};'></td>"
+        f"<td style='padding:6px 9px; border:{border_grid};'></td>"
+        f"</tr>"
+    )
+
+    # Filas de Contratistas / Partidas
+    for f_c in res_calc["filas_contratistas"]:
+        part_s = safe_str(f_c.get("Partida", "")).strip()
+        desc_s = safe_str(f_c.get("Descripcion", "")).strip()
+        lbl_row = f"{part_s} — {desc_s}" if (part_s and desc_s and part_s.upper() not in desc_s.upper()) else (desc_s or part_s)
+        nota_gral = safe_str(f_c.get("Notas", "")).strip()
+        mon_c = safe_str(f_c.get("Moneda", "Soles"))
+        es_usd_c = "dólar" in mon_c.lower() or "dolar" in mon_c.lower()
+        pref_c = "$" if es_usd_c else "S/ "
+
+        sub_nota_html = (
+            f"<span style='display:block; font-size:10.5px; color:#7A7267; font-weight:500; margin-top:1px;'>{html_lib.escape(nota_gral)}</span>"
+            if nota_gral
+            else ""
+        )
+        tds_sem_c = _build_payment_cells_html(f_c, pref_c, lbl_row)
+        trs_body.append(
+            f"<tr style='background:#FFFFFF; color:#262320;'>"
+            f"<td style='padding:6px 12px; text-align:left; border:{border_grid}; font-weight:500; position:sticky; left:0; background:#FFFFFF; z-index:1;'>{html_lib.escape(lbl_row)}{sub_nota_html}</td>"
+            f"<td style='padding:6px 8px; text-align:center; border:{border_grid};'>{html_lib.escape(mon_c)}</td>"
+            f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_c}{safe_float(f_c.get('TOTAL', 0.0)):,.2f}</td>"
+            f"{tds_sem_c}"
+            f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_c}{safe_float(f_c.get('PAGADO', 0.0)):,.2f}</td>"
+            f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_c}{safe_float(f_c.get('SALDO', 0.0)):,.2f}</td>"
+            f"</tr>"
+        )
+
+    # Fila SUB TOTAL (Color Arcilla Cota #C85A32 + Texto Blanco)
+    tds_sub_sem = "".join(
+        f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:700; font-variant-numeric:tabular-nums;'>S/ {safe_float(sub_cont.get(c_s, 0.0)):,.2f}</td>"
+        for c_s in cols_pago
+    )
+    trs_body.append(
+        f"<tr style='background:#C85A32; color:#FFFFFF; font-weight:700;'>"
+        f"<td style='padding:7px 12px; text-align:center; border:{border_clay}; font-weight:800; position:sticky; left:0; background:#C85A32; z-index:1;'>SUB TOTAL</td>"
+        f"<td style='padding:7px 8px; text-align:center; border:{border_clay};'></td>"
+        f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>S/ {safe_float(sub_cont.get('TOTAL', 0.0)):,.2f}</td>"
+        f"{tds_sub_sem}"
+        f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>S/ {safe_float(sub_cont.get('PAGADO', 0.0)):,.2f}</td>"
+        f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>S/ {safe_float(sub_cont.get('SALDO', 0.0)):,.2f}</td>"
+        f"</tr>"
+    )
+
+    # Filas Gestión y supervisión de obras & Gastos Generales
+    for nom_cargo, fila_cargo in [
+        ("Gestión y supervisión de obras", res_calc["fila_gestion"]),
+        ("Gastos Generales", res_calc["fila_gg"]),
+    ]:
+        mon_g = safe_str(fila_cargo.get("Moneda", "Soles"))
+        es_usd_g = "dólar" in mon_g.lower() or "dolar" in mon_g.lower()
+        pref_g = "$" if es_usd_g else "S/ "
+        tds_sem_g = _build_payment_cells_html(fila_cargo, pref_g, nom_cargo)
+        trs_body.append(
+            f"<tr style='background:#FFFFFF; color:#262320;'>"
+            f"<td style='padding:6px 12px; text-align:left; border:{border_grid}; font-weight:500; position:sticky; left:0; background:#FFFFFF; z-index:1;'>{html_lib.escape(nom_cargo)}</td>"
+            f"<td style='padding:6px 8px; text-align:center; border:{border_grid};'>{html_lib.escape(mon_g)}</td>"
+            f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_g}{safe_float(fila_cargo.get('TOTAL', 0.0)):,.2f}</td>"
+            f"{tds_sem_g}"
+            f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_g}{safe_float(fila_cargo.get('PAGADO', 0.0)):,.2f}</td>"
+            f"<td style='padding:6px 9px; text-align:right; border:{border_grid}; font-variant-numeric:tabular-nums;'>{pref_g}{safe_float(fila_cargo.get('SALDO', 0.0)):,.2f}</td>"
+            f"</tr>"
+        )
+
+    # Filas TOTAL (Soles y Dólares) en Color Arcilla Cota #C85A32 con celda PAGADO resaltada en amarillo (#FFE066)
+    for lbl_tot, mon_tot, pref_t, d_tot in [
+        ("TOTAL", "Soles", "S/ ", tot_soles),
+        ("", "Dólares", "$", tot_usd),
+    ]:
+        tds_tot_sem = "".join(
+            f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:700; font-variant-numeric:tabular-nums;'>{pref_t}{safe_float(d_tot.get(c_s, 0.0)):,.2f}</td>"
+            for c_s in cols_pago
+        )
+        trs_body.append(
+            f"<tr style='background:#C85A32; color:#FFFFFF; font-weight:700;'>"
+            f"<td style='padding:7px 12px; text-align:center; border:{border_clay}; font-weight:800; position:sticky; left:0; background:#C85A32; z-index:1;'>{lbl_tot}</td>"
+            f"<td style='padding:7px 8px; text-align:center; border:{border_clay}; font-weight:700;'>{mon_tot}</td>"
+            f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>{pref_t}{safe_float(d_tot.get('TOTAL', 0.0)):,.2f}</td>"
+            f"{tds_tot_sem}"
+            f"<td style='padding:7px 9px; text-align:right; border:1px solid #262320; background:#FFE066; color:#262320; font-weight:800; font-variant-numeric:tabular-nums;'>{pref_t}{safe_float(d_tot.get('PAGADO', 0.0)):,.2f}</td>"
+            f"<td style='padding:7px 9px; text-align:right; border:{border_clay}; font-weight:800; font-variant-numeric:tabular-nums;'>{pref_t}{safe_float(d_tot.get('SALDO', 0.0)):,.2f}</td>"
+            f"</tr>"
+        )
+
+    esc_proy_banner = html_lib.escape(proy_name)
+    esc_cli_banner = html_lib.escape(cliente_str)
+    html_cuadro_unificado = (
+        f"<div id='cota_cuadro_pagos_fs_wrap_{safe_proy_id}' style='border:1px solid #B8B0A4; border-radius:10px; overflow:hidden; margin-top:6px; margin-bottom:14px; box-shadow:0 4px 14px rgba(38,35,32,0.08); background:#FFFFFF;'>"
+        f"<div style='background:#C85A32; color:#FFFFFF; padding:11px 16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; border-bottom:2px solid #A84622;'>"
+        f"<div>"
+        f"<div style='font-size:15.5px; font-weight:800; letter-spacing:0.2px;'>Proyecto {esc_proy_banner}</div>"
+        f"<div style='font-size:12.5px; color:#FAF8F5; opacity:0.95;'>Cliente: {esc_cli_banner} &nbsp;·&nbsp; TC: S/ {tc_actual:.2f}</div>"
+        f"</div>"
+        f"<div style='display:flex; align-items:center; gap:10px;'>"
+        f"<span style='font-size:11px; color:#FAF8F5; opacity:0.9;'>🔴 Rojo = Pagado &nbsp;|&nbsp; 💬 Pasa el mouse para ver nota</span>"
+        f"<button id='btn_fs_pagos_{safe_proy_id}' type='button' title='Ver Cuadro en Pantalla Completa (como en YouTube / Excel)' "
+        f"style='background:rgba(38,35,32,0.28); color:#FFFFFF; border:1px solid rgba(255,255,255,0.45); border-radius:6px; padding:6px 12px; font-size:12px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; transition:background 0.15s ease;'>"
+        f"<svg width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round' style='vertical-align:middle; margin-right:5px;'><path d='M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3'/></svg>"
+        f"<span>Pantalla Completa</span>"
+        f"</button>"
+        f"</div>"
+        f"</div>"
+        f"<div class='cota-pagos-scroll-area' style='overflow-x:auto; width:100%;'>"
+        f"<table style='width:100%; border-collapse:collapse; font-size:12.5px; white-space:nowrap; font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,sans-serif;'>"
+        f"<thead>"
+        f"<tr style='background:#C85A32; color:#FFFFFF; font-size:12px; font-weight:700;'>"
+        f"<th style='padding:8px 12px; text-align:left; border:{border_clay}; min-width:210px; position:sticky; left:0; background:#C85A32; z-index:2;'>Descripción</th>"
+        f"<th style='padding:8px 8px; text-align:center; border:{border_clay}; min-width:66px;'>Moneda</th>"
+        f"<th style='padding:8px 9px; text-align:center; border:{border_clay}; min-width:95px;'>TOTAL</th>"
+        f"{ths_semanas_html}"
+        f"<th style='padding:8px 9px; text-align:center; border:{border_clay}; min-width:95px;'>PAGADO</th>"
+        f"<th style='padding:8px 9px; text-align:center; border:{border_clay}; min-width:95px;'>SALDO</th>"
+        f"</tr>"
+        f"</thead>"
+        f"<tbody>{''.join(trs_body)}</tbody>"
+        f"</table>"
+        f"</div>"
+        f"</div>"
+    )
+    st.markdown(html_cuadro_unificado, unsafe_allow_html=True)
+
+    # =========================================================================
+    # 2. MODO EDICIÓN EN TABLA INTERACTIVA (Con encabezados cortos S1, S2...)
+    # =========================================================================
+    ordered_cols_cont = ["Partida", "Descripcion", "Moneda", "TOTAL"] + cols_pago + ["PAGADO", "SALDO", "Notas"]
+    ordered_cols = ["Descripcion", "Moneda", "TOTAL"] + cols_pago + ["PAGADO", "SALDO", "Notas"]
+
+    col_cfg_common = {
+        "Partida": st.column_config.SelectboxColumn(
+            "Partida",
+            options=opciones_partida_cont,
+            width="medium",
+            help="Partida del proyecto a la que pertenece este pago (puedes tener varias filas/contratistas para una misma Partida, ej. Eléctricas y Sanitarias).",
+        ),
+        "Descripcion": st.column_config.TextColumn("Contratista / Especialidad / Frente", width="medium", required=True),
+        "Moneda": st.column_config.SelectboxColumn("Moneda", options=["Soles", "Dólares"], default="Soles", width="small"),
+        "TOTAL": st.column_config.NumberColumn("TOTAL", format="%.2f", width="small"),
+    }
+    for c_sem in cols_pago:
+        is_pp = c_sem in cols_por_pagar_actual
+        short_lbl = etiqueta_corta_columna_pago(c_sem)
+        header_lbl = f"⏳ {short_lbl}" if is_pp else short_lbl
+        col_cfg_common[c_sem] = st.column_config.NumberColumn(
+            header_lbl,
+            format="%.2f",
+            width="small",
+            help=f"{c_sem} — Marcada como 'Por Pagar' (no suma a PAGADO)" if is_pp else f"{c_sem} — Columna pagada (suma a PAGADO)",
+        )
+    col_cfg_common["PAGADO"] = st.column_config.NumberColumn("PAGADO ✓", format="%.2f", width="small", disabled=True)
+    col_cfg_common["SALDO"] = st.column_config.NumberColumn("SALDO", format="%.2f", width="small", disabled=True)
+    col_cfg_common["Notas"] = st.column_config.TextColumn("Notas", width="medium")
 
     df_cont_view = pd.DataFrame(res_calc["filas_contratistas"])
     if df_cont_view.empty:
@@ -3304,27 +3703,9 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         d_cur["filas_contratistas"] = filas_nuevas
         guardar_cuadro_pagos_semanales_proyecto(p_name, d_cur)
         st.session_state[cnt_cont_key] = st.session_state.get(cnt_cont_key, 0) + 1
+        st.session_state[f"exp_ed_pagos_{p_name}"] = True
 
-    st.data_editor(
-        st.session_state[base_cont_key],
-        use_container_width=True,
-        hide_index=True,
-        num_rows="dynamic",
-        key=w_cont_key,
-        column_config=col_cfg_common,
-        on_change=_on_edit_pagos_cont,
-        args=(base_cont_key, w_cont_key, proy_name),
-    )
-
-    # 2. Editor de GESTIÓN Y GASTOS GENERALES
-    st.markdown("##### 📐 GESTIÓN, SUPERVISIÓN Y GASTOS GENERALES")
     df_ges_view = pd.DataFrame([res_calc["fila_gestion"], res_calc["fila_gg"]])[ordered_cols].copy()
-
-    base_ges_key = f"base_df_pagos_ges_{proy_name}"
-    cnt_ges_key = f"c_{base_ges_key}"
-    c_ges_val = st.session_state.get(cnt_ges_key, 0)
-    w_ges_key = f"ed_pagos_ges_{proy_name}_{c_ges_val}"
-
     st.session_state[base_ges_key] = df_ges_view.copy()
 
     col_cfg_ges = dict(col_cfg_common)
@@ -3355,91 +3736,38 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             d_cur["fila_gg"] = fgg
         guardar_cuadro_pagos_semanales_proyecto(p_name, d_cur)
         st.session_state[cnt_ges_key] = st.session_state.get(cnt_ges_key, 0) + 1
+        st.session_state[f"exp_ed_pagos_{p_name}"] = True
 
-    st.data_editor(
-        st.session_state[base_ges_key],
-        use_container_width=True,
-        hide_index=True,
-        num_rows="fixed",
-        key=w_ges_key,
-        column_config=col_cfg_ges,
-        on_change=_on_edit_pagos_ges,
-        args=(base_ges_key, w_ges_key, proy_name),
-    )
-
-    # 3. Tabla de Resumen de Cierre (SUB TOTAL, Gestión, Gastos Generales, TOTAL Soles, Dólares)
-    st.markdown("##### 📋 CUADRO DE CIERRE CONSOLIDADO (SUB TOTAL · GESTIÓN · GG · TOTAL SOLES · DÓLARES)")
-    filas_cierre = [
-        ("subtotal", res_calc["sub_total"]),
-        ("cargo", res_calc["fila_gestion"]),
-        ("cargo", res_calc["fila_gg"]),
-        ("total_soles", res_calc["total_soles"]),
-        ("total_usd", res_calc["total_dolares"]),
-    ]
-
-    ths_sem_html = "".join(
-        f"<th style='padding:9px 8px; text-align:right;'>{'⏳ ' + c_s if c_s in cols_por_pagar_actual else c_s}</th>"
-        for c_s in cols_pago
-    )
-    trs_pag_cierre = []
-    for tipo_r, fila_r in filas_cierre:
-        es_usd = (tipo_r == "total_usd") or ("dólar" in str(fila_r.get("Moneda", "")).lower())
-        pref_m = "US$ " if es_usd else "S/ "
-        if tipo_r == "subtotal":
-            r_st = "background:#EFECE6; color:#262320; font-weight:700; border-top:2px solid #262320; border-bottom:1px solid #DFD9CE;"
-        elif tipo_r == "total_soles":
-            r_st = "background:#262320; color:#FFFFFF; font-weight:700; font-size:13.5px; border-top:2px solid #262320;"
-        elif tipo_r == "total_usd":
-            r_st = "background:#FAF8F5; color:#C85A32; font-weight:700; font-size:13px; border-top:1px solid #DFD9CE;"
-        else:
-            r_st = "background:#FFFFFF; color:#262320; border-bottom:1px solid #EFECE6;"
-
-        tds_sem_list = []
-        for c_s in cols_pago:
-            v_num = safe_float(fila_r.get(c_s, 0.0))
-            np_dict_r = fila_r.get("Notas_Pagos", {})
-            n_txt = np_dict_r.get(c_s, "") if isinstance(np_dict_r, dict) else ""
-            if n_txt:
-                esc_note = html_lib.escape(n_txt)
-                tds_sem_list.append(
-                    f"<td style='padding:8px 8px; text-align:right; font-family:monospace;' title='💬 {esc_note}'>{pref_m}{v_num:,.2f} <span style='color:#C85A32; font-size:10px;' title='💬 {esc_note}'>💬</span></td>"
-                )
-            else:
-                tds_sem_list.append(
-                    f"<td style='padding:8px 8px; text-align:right; font-family:monospace;'>{pref_m}{v_num:,.2f}</td>"
-                )
-        tds_sem = "".join(tds_sem_list)
-        trs_pag_cierre.append(
-            f"<tr style='{r_st}'>"
-            f"<td style='padding:8px 12px; text-align:left;'>{safe_str(fila_r.get('Descripcion', ''))}</td>"
-            f"<td style='padding:8px 8px; text-align:center;'>{safe_str(fila_r.get('Moneda', 'Soles'))}</td>"
-            f"<td style='padding:8px 10px; text-align:right; font-family:monospace; font-weight:700;'>{pref_m}{safe_float(fila_r.get('TOTAL', 0.0)):,.2f}</td>"
-            f"{tds_sem}"
-            f"<td style='padding:8px 10px; text-align:right; font-family:monospace; font-weight:700;'>{pref_m}{safe_float(fila_r.get('PAGADO', 0.0)):,.2f}</td>"
-            f"<td style='padding:8px 10px; text-align:right; font-family:monospace; font-weight:700;'>{pref_m}{safe_float(fila_r.get('SALDO', 0.0)):,.2f}</td>"
-            f"</tr>"
+    with st.expander(
+        "✏️ Editar Celdas en Tabla Interactiva (Contratistas, Gestión y Gastos Generales)",
+        expanded=st.session_state.get(f"exp_ed_pagos_{proy_name}", False),
+    ):
+        st.markdown("##### 👷 TRABAJOS CONTRATISTAS")
+        st.caption("Edita directamente los montos totales, semanas (S1, S2...) o agrega/elimina filas. Los cambios actualizan el cuadro superior automáticamente.")
+        st.data_editor(
+            st.session_state[base_cont_key],
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key=w_cont_key,
+            column_config=col_cfg_common,
+            on_change=_on_edit_pagos_cont,
+            args=(base_cont_key, w_cont_key, proy_name),
         )
 
-    html_cierre_pagos = (
-        "<div style='border:1px solid #DFD9CE; border-radius:10px; overflow-x:auto; margin-bottom:12px; box-shadow:0 2px 6px rgba(38,35,32,0.04);'>"
-        "<table style='width:100%; border-collapse:collapse; font-size:12.5px; white-space:nowrap;'>"
-        "<thead>"
-        "<tr style='background:#F0ECE1; color:#6E665E; text-transform:uppercase; font-size:11px; border-bottom:2px solid #DFD9CE;'>"
-        "<th style='padding:9px 12px; text-align:left;'>Resumen de Cierre</th>"
-        "<th style='padding:9px 8px; text-align:center;'>Moneda</th>"
-        "<th style='padding:9px 10px; text-align:right;'>TOTAL</th>"
-        f"{ths_sem_html}"
-        "<th style='padding:9px 10px; text-align:right;'>PAGADO ✓</th>"
-        "<th style='padding:9px 10px; text-align:right;'>SALDO</th>"
-        "</tr>"
-        "</thead>"
-        f"<tbody>{''.join(trs_pag_cierre)}</tbody>"
-        "</table>"
-        "</div>"
-    )
-    st.markdown(html_cierre_pagos, unsafe_allow_html=True)
+        st.markdown("##### 📐 GESTIÓN, SUPERVISIÓN Y GASTOS GENERALES")
+        st.data_editor(
+            st.session_state[base_ges_key],
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key=w_ges_key,
+            column_config=col_cfg_ges,
+            on_change=_on_edit_pagos_ges,
+            args=(base_ges_key, w_ges_key, proy_name),
+        )
 
-    # 4. Sección de Notas Registradas (Expander visible con tarjetas para acceso directo)
+    # 3. Sección de Notas Registradas (Expander visible con tarjetas para acceso directo)
     todas_las_notas = []
     for idx_f, f_item in enumerate(data_cuadro.get("filas_contratistas", [])):
         nom = safe_str(f_item.get("Descripcion", "")) or safe_str(f_item.get("Partida", f"Partida {idx_f+1}"))
@@ -3450,7 +3778,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                 monto_val = safe_float(f_item.get(c_sem, 0.0), 0.0)
                 todas_las_notas.append({
                     "fila": nom,
-                    "semana": c_sem,
+                    "semana": etiqueta_corta_columna_pago(c_sem),
                     "monto": f"{pref}{monto_val:,.2f}",
                     "nota": txt_n,
                 })
@@ -3462,14 +3790,14 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                 monto_val = safe_float(obj_g.get(c_sem, 0.0), 0.0)
                 todas_las_notas.append({
                     "fila": nom_g,
-                    "semana": c_sem,
+                    "semana": etiqueta_corta_columna_pago(c_sem),
                     "monto": f"{pref}{monto_val:,.2f}",
                     "nota": txt_n,
                 })
 
     if todas_las_notas:
         with st.expander(f"📝 Notas Registradas en Pagos ({len(todas_las_notas)})", expanded=False):
-            st.caption("Pasa el mouse sobre cualquier celda de pago en las tablas de arriba para ver su detalle flotante. También puedes editarlas desde el botón `💬 Notas de Pagos`.")
+            st.caption("Pasa el mouse sobre cualquier celda con marca naranja en el cuadro de arriba para ver su nota flotante, o edítalas desde `💬 Notas de Pagos`.")
             n_cols_card = min(3, len(todas_las_notas))
             c_cards = st.columns(n_cols_card)
             for idx_nc, n_card in enumerate(todas_las_notas):
@@ -3487,7 +3815,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                         unsafe_allow_html=True,
                     )
 
-    # Inyectar el controlador de tooltips flotantes al pasar el mouse por las celdas
+    # Inyectar el controlador de tooltips flotantes y Pantalla Completa
     _render_pagos_tooltip_controller(proy_name, safe_proy_id, data_cuadro, cols_pago)
 
 

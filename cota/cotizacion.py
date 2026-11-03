@@ -2577,6 +2577,24 @@ def obtener_columnas_pago_semanal(num_semanas: int = 5) -> list[str]:
     return ["ADELANTO 1"] + [f"SEMANA {i}" for i in range(1, n + 1)]
 
 
+def etiqueta_corta_columna_pago(col_name: str) -> str:
+    """Convierte 'SEMANA 1' -> 'S1', 'SEMANA 2' -> 'S2', manteniendo 'ADELANTO 1' para visualización compacta en la app."""
+    s = safe_str(col_name).strip()
+    m = re.match(r"^SEMANA\s*(\d+)$", s, flags=re.IGNORECASE)
+    if m:
+        return f"S{int(m.group(1))}"
+    return s
+
+
+def etiqueta_export_columna_pago(col_name: str) -> str:
+    """Garantiza que al exportar a Excel o PDF las columnas de semanas salgan como 'Semana 1', 'Semana 2', etc."""
+    s = safe_str(col_name).strip()
+    m = re.match(r"^(?:SEMANA|SEM\.?|S)\s*(\d+)$", s, flags=re.IGNORECASE)
+    if m:
+        return f"Semana {int(m.group(1))}"
+    return s
+
+
 def _normalizar_fila_pago(fila: dict, cols_pago: list[str], desc_default: str = "", partida_default: str = "") -> dict:
     """Garantiza que una fila del cuadro de pagos tenga todas las columnas numéricas, de texto y vínculo de Partida."""
     desc_val = safe_str(fila.get("Descripcion", desc_default)).strip() or desc_default
@@ -2976,22 +2994,25 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     ws.views.sheetView[0].showGridLines = True
 
     font_family = "Calibri"
-    f_title = Font(name=font_family, size=11, bold=True, color="262320")
+    f_title = Font(name=font_family, size=11, bold=True, color="FFFFFF")
     f_header = Font(name=font_family, size=10, bold=True, color="FFFFFF")
     f_por_pagar = Font(name=font_family, size=9, bold=True, color="FFFFFF")
-    f_section = Font(name=font_family, size=10, bold=True, color="262320")
+    f_section = Font(name=font_family, size=10, bold=True, underline="single", color="262320")
     f_row = Font(name=font_family, size=10, bold=False, color="262320")
-    f_subtotal = Font(name=font_family, size=10, bold=True, color="262320")
+    f_row_paid = Font(name=font_family, size=10, bold=False, color="D92B2B")
+    f_subtotal = Font(name=font_family, size=10, bold=True, color="FFFFFF")
     f_total = Font(name=font_family, size=10, bold=True, color="FFFFFF")
-    f_usd = Font(name=font_family, size=10, bold=True, color="262320")
+    f_usd = Font(name=font_family, size=10, bold=True, color="FFFFFF")
+    f_pagado_hi = Font(name=font_family, size=10, bold=True, color="262320")
 
-    fill_header = PatternFill(start_color="262320", end_color="262320", fill_type="solid")
-    fill_por_pagar = PatternFill(start_color="D98A2B", end_color="D98A2B", fill_type="solid")
-    fill_pagado_tag = PatternFill(start_color="4A7C59", end_color="4A7C59", fill_type="solid")
-    fill_section = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
-    fill_subtotal = PatternFill(start_color="DFD9CE", end_color="DFD9CE", fill_type="solid")
-    fill_total = PatternFill(start_color="C85A32", end_color="C85A32", fill_type="solid")
-    fill_usd = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
+    fill_clay = PatternFill(start_color="C85A32", end_color="C85A32", fill_type="solid")
+    fill_header = fill_clay
+    fill_por_pagar = PatternFill(start_color="A84622", end_color="A84622", fill_type="solid")
+    fill_section = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    fill_subtotal = fill_clay
+    fill_total = fill_clay
+    fill_usd = fill_clay
+    fill_pagado_hi = PatternFill(start_color="FFE066", end_color="FFE066", fill_type="solid")
 
     thin_side = Side(border_style="thin", color="D0C9BD")
     med_bottom = Side(border_style="medium", color="262320")
@@ -3002,7 +3023,29 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     align_left = Alignment(horizontal="left", vertical="center", wrap_text=True)
     align_right = Alignment(horizontal="right", vertical="center", wrap_text=True)
 
-    # Encabezado de Proyecto y Cliente
+    # Columnas:
+    # B: Descripción (col 2)
+    # C: Moneda (col 3)
+    # D: TOTAL (col 4)
+    # E .. E+len(cols_pago)-1: ADELANTO 1, Semana 1..N (cols 5 .. 4+len(cols_pago))
+    # Col PAGADO: 5 + len(cols_pago)
+    # Col SALDO: 6 + len(cols_pago)
+    # Col Notas: 7 + len(cols_pago)
+    col_idx_pagado = 5 + len(cols_pago)
+    col_idx_saldo = 6 + len(cols_pago)
+    col_idx_notas = 7 + len(cols_pago)
+
+    let_pagado = get_column_letter(col_idx_pagado)
+    let_saldo = get_column_letter(col_idx_saldo)
+    let_notas = get_column_letter(col_idx_notas)
+
+    # Encabezado de Proyecto y Cliente en color Arcilla Cota (#C85A32)
+    for r_ban in (1, 2):
+        for c_i in range(2, col_idx_notas + 1):
+            c_l = get_column_letter(c_i)
+            ws[f"{c_l}{r_ban}"].fill = fill_clay
+            ws[f"{c_l}{r_ban}"].font = f_title
+
     ws["B1"] = "Proyecto:"
     ws["B1"].font = f_title
     ws["C1"] = proy_name
@@ -3021,30 +3064,14 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     ws["F2"].number_format = "0.00"
     ws["F2"].alignment = align_center
 
-    # Columnas:
-    # B: Descripción (col 2)
-    # C: Moneda (col 3)
-    # D: TOTAL (col 4)
-    # E .. E+len(cols_pago)-1: ADELANTO 1, SEMANA 1..N (cols 5 .. 4+len(cols_pago))
-    # Col PAGADO: 5 + len(cols_pago)
-    # Col SALDO: 6 + len(cols_pago)
-    # Col Notas: 7 + len(cols_pago)
-    col_idx_pagado = 5 + len(cols_pago)
-    col_idx_saldo = 6 + len(cols_pago)
-    col_idx_notas = 7 + len(cols_pago)
-
-    let_pagado = get_column_letter(col_idx_pagado)
-    let_saldo = get_column_letter(col_idx_saldo)
-    let_notas = get_column_letter(col_idx_notas)
-
-    # Fila 4: Cabecera de la tabla
+    # Fila 4: Cabecera de la tabla (Semana 1, Semana 2, ...)
     headers = [
         (2, "Descripción"),
         (3, "Moneda"),
         (4, "TOTAL"),
     ]
     for i_c, c_name in enumerate(cols_pago):
-        headers.append((5 + i_c, c_name))
+        headers.append((5 + i_c, etiqueta_export_columna_pago(c_name)))
     headers.append((col_idx_pagado, "PAGADO"))
     headers.append((col_idx_saldo, "SALDO"))
     headers.append((col_idx_notas, "Notas"))
@@ -3059,8 +3086,12 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
         cell.alignment = align_center
         cell.border = border_cell
 
-    # Fila 5: Indicadores "Por Pagar" sobre las semanas pendientes
+    # Fila 5: Indicadores "Por Pagar" sobre las semanas pendientes (franja arcilla continua)
     ws.row_dimensions[5].height = 18
+    for c_i in range(2, col_idx_notas + 1):
+        c_let = get_column_letter(c_i)
+        ws[f"{c_let}5"].fill = fill_header
+        ws[f"{c_let}5"].border = border_cell
     for i_c, c_name in enumerate(cols_pago):
         c_let = get_column_letter(5 + i_c)
         cell = ws[f"{c_let}5"]
@@ -3112,12 +3143,18 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
         ws[f"D{curr_r}"].number_format = "#,##0.00"
         ws[f"D{curr_r}"].alignment = align_right
 
+        for c_i in range(2, col_idx_notas + 1):
+            c_l = get_column_letter(c_i)
+            ws[f"{c_l}{curr_r}"].font = f_row
+            ws[f"{c_l}{curr_r}"].border = border_cell
+
         for i_c, c_name in enumerate(cols_pago):
             c_let = get_column_letter(5 + i_c)
             val_c = float(f_c.get(c_name, 0.0))
             ws[f"{c_let}{curr_r}"] = val_c if val_c != 0.0 else None
             ws[f"{c_let}{curr_r}"].number_format = "#,##0.00"
             ws[f"{c_let}{curr_r}"].alignment = align_right
+            ws[f"{c_let}{curr_r}"].font = f_row_paid if (c_name not in cols_por_pagar) else f_row
             np_c = f_c.get("Notas_Pagos", {})
             if isinstance(np_c, dict) and c_name in np_c and np_c[c_name]:
                 ws[f"{c_let}{curr_r}"].comment = Comment(str(np_c[c_name]).strip(), "Cota")
@@ -3133,18 +3170,14 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
         ws[f"{let_notas}{curr_r}"] = f_c.get("Notas", "")
         ws[f"{let_notas}{curr_r}"].alignment = align_left
 
-        for c_i in range(2, col_idx_notas + 1):
-            c_l = get_column_letter(c_i)
-            ws[f"{c_l}{curr_r}"].font = f_row
-            ws[f"{c_l}{curr_r}"].border = border_cell
-
         curr_r += 1
 
     last_c_row = max(first_c_row, curr_r - 1)
 
-    # Fila SUB TOTAL
+    # Fila SUB TOTAL (Color Arcilla Cota + Texto Blanco)
     row_sub = curr_r
     ws[f"B{row_sub}"] = "SUB TOTAL"
+    ws[f"B{row_sub}"].alignment = align_center
     ws[f"C{row_sub}"] = ""
     for c_i in range(4, col_idx_saldo + 1):
         c_l = get_column_letter(c_i)
@@ -3166,12 +3199,17 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     ws[f"D{row_ges}"] = float(f_ges["TOTAL"])
     ws[f"D{row_ges}"].number_format = "#,##0.00"
     ws[f"D{row_ges}"].alignment = align_right
+    for c_i in range(2, col_idx_notas + 1):
+        c_l = get_column_letter(c_i)
+        ws[f"{c_l}{row_ges}"].font = f_row
+        ws[f"{c_l}{row_ges}"].border = border_cell
     for i_c, c_name in enumerate(cols_pago):
         c_let = get_column_letter(5 + i_c)
         v_g = float(f_ges.get(c_name, 0.0))
         ws[f"{c_let}{row_ges}"] = v_g if v_g != 0.0 else None
         ws[f"{c_let}{row_ges}"].number_format = "#,##0.00"
         ws[f"{c_let}{row_ges}"].alignment = align_right
+        ws[f"{c_let}{row_ges}"].font = f_row_paid if (c_name not in cols_por_pagar) else f_row
         np_ges = f_ges.get("Notas_Pagos", {})
         if isinstance(np_ges, dict) and c_name in np_ges and np_ges[c_name]:
             ws[f"{c_let}{row_ges}"].comment = Comment(str(np_ges[c_name]).strip(), "Cota")
@@ -3182,10 +3220,6 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     ws[f"{let_saldo}{row_ges}"].number_format = "#,##0.00"
     ws[f"{let_saldo}{row_ges}"].alignment = align_right
     ws[f"{let_notas}{row_ges}"] = f_ges.get("Notas", "")
-    for c_i in range(2, col_idx_notas + 1):
-        c_l = get_column_letter(c_i)
-        ws[f"{c_l}{row_ges}"].font = f_row
-        ws[f"{c_l}{row_ges}"].border = border_cell
 
     # Fila Gastos Generales
     row_gg = row_ges + 1
@@ -3196,12 +3230,17 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     ws[f"D{row_gg}"] = float(f_gg["TOTAL"])
     ws[f"D{row_gg}"].number_format = "#,##0.00"
     ws[f"D{row_gg}"].alignment = align_right
+    for c_i in range(2, col_idx_notas + 1):
+        c_l = get_column_letter(c_i)
+        ws[f"{c_l}{row_gg}"].font = f_row
+        ws[f"{c_l}{row_gg}"].border = border_cell
     for i_c, c_name in enumerate(cols_pago):
         c_let = get_column_letter(5 + i_c)
         v_gg = float(f_gg.get(c_name, 0.0))
         ws[f"{c_let}{row_gg}"] = v_gg if v_gg != 0.0 else None
         ws[f"{c_let}{row_gg}"].number_format = "#,##0.00"
         ws[f"{c_let}{row_gg}"].alignment = align_right
+        ws[f"{c_let}{row_gg}"].font = f_row_paid if (c_name not in cols_por_pagar) else f_row
         np_gg = f_gg.get("Notas_Pagos", {})
         if isinstance(np_gg, dict) and c_name in np_gg and np_gg[c_name]:
             ws[f"{c_let}{row_gg}"].comment = Comment(str(np_gg[c_name]).strip(), "Cota")
@@ -3212,14 +3251,11 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     ws[f"{let_saldo}{row_gg}"].number_format = "#,##0.00"
     ws[f"{let_saldo}{row_gg}"].alignment = align_right
     ws[f"{let_notas}{row_gg}"] = f_gg.get("Notas", "")
-    for c_i in range(2, col_idx_notas + 1):
-        c_l = get_column_letter(c_i)
-        ws[f"{c_l}{row_gg}"].font = f_row
-        ws[f"{c_l}{row_gg}"].border = border_cell
 
-    # Fila TOTAL Soles
+    # Fila TOTAL Soles (Color Arcilla Cota + PAGADO en amarillo)
     row_tot = row_gg + 1
     ws[f"B{row_tot}"] = "TOTAL"
+    ws[f"B{row_tot}"].alignment = align_center
     ws[f"C{row_tot}"] = "Soles"
     ws[f"C{row_tot}"].alignment = align_center
     for c_i in range(4, col_idx_saldo + 1):
@@ -3232,8 +3268,10 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
         ws[f"{c_l}{row_tot}"].font = f_total
         ws[f"{c_l}{row_tot}"].fill = fill_total
         ws[f"{c_l}{row_tot}"].border = border_cell
+    ws[f"{let_pagado}{row_tot}"].fill = fill_pagado_hi
+    ws[f"{let_pagado}{row_tot}"].font = f_pagado_hi
 
-    # Fila Dólares
+    # Fila Dólares (Color Arcilla Cota + PAGADO en amarillo)
     row_usd = row_tot + 1
     ws[f"B{row_usd}"] = ""
     ws[f"C{row_usd}"] = "Dólares"
@@ -3248,6 +3286,8 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
         ws[f"{c_l}{row_usd}"].font = f_usd
         ws[f"{c_l}{row_usd}"].fill = fill_usd
         ws[f"{c_l}{row_usd}"].border = border_closing
+    ws[f"{let_pagado}{row_usd}"].fill = fill_pagado_hi
+    ws[f"{let_pagado}{row_usd}"].font = f_pagado_hi
 
     # Anchos de columna
     ws.column_dimensions["A"].width = 3
@@ -3263,6 +3303,183 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()
+
+
+def exportar_cuadro_pagos_semanales_pdf(proy_name: str, data_cuadro: dict = None) -> bytes:
+    """
+    Exporta el Cuadro de Pagos Semanales a PDF horizontal (Landscape A4) con encabezados
+    'Semana 1', 'Semana 2', etc., franjas en color Arcilla Cota (#C85A32), pagos realizados
+    en rojo (#D92B2B) y Total Pagado resaltado en amarillo.
+    """
+    from fpdf import FPDF
+    from cota.pdf import safe_pdf_str
+
+    if data_cuadro is None:
+        data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+    res = calcular_resumen_cuadro_pagos_semanales(data_cuadro)
+
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    cliente = ""
+    if not df_p.empty and "Nombre" in df_p.columns:
+        m = df_p[df_p["Nombre"] == proy_name]
+        if not m.empty:
+            cliente = safe_str(m.iloc[0].get("Cliente", ""))
+
+    cols_pago = res["cols_pago"]
+    cols_por_pagar = set(res["cols_por_pagar"])
+    tc = res["tc"]
+
+    pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=10)
+    pdf.add_page()
+    pdf.set_margins(8, 8, 8)
+    pdf.set_y(8)
+
+    usable_w = 281.0
+    w_desc = 52.0
+    w_mon = 15.0
+    w_tot = 22.0
+    w_pag = 22.0
+    w_sal = 22.0
+    rem_w = max(40.0, usable_w - (w_desc + w_mon + w_tot + w_pag + w_sal))
+    n_sem_cols = max(1, len(cols_pago))
+    w_sem = round(rem_w / n_sem_cols, 2)
+    # Ajustar w_desc para cuadrar exactamente usable_w
+    w_desc = round(usable_w - (w_mon + w_tot + w_pag + w_sal + w_sem * n_sem_cols), 2)
+
+    font_size_tbl = 7.0 if n_sem_cols <= 8 else (6.0 if n_sem_cols <= 12 else 5.2)
+
+    # 1. Banner superior en Arcilla Cota (200, 90, 50)
+    pdf.set_fill_color(200, 90, 50)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_draw_color(168, 70, 34)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(usable_w, 7, f"  Proyecto {safe_pdf_str(proy_name)}", border="LTR", fill=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 9)
+    cli_txt = safe_pdf_str(cliente) if cliente else "Sin cliente asignado"
+    pdf.cell(usable_w, 6, f"  Cliente: {cli_txt}     |     TC: {tc:.2f}", border="LBR", fill=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1.5)
+
+    # 2. Encabezado de columnas en Arcilla Cota (con Semana 1, Semana 2...)
+    pdf.set_fill_color(200, 90, 50)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_draw_color(38, 35, 32)
+    pdf.set_font("Helvetica", "B", font_size_tbl)
+
+    has_any_pp = len(cols_por_pagar) > 0
+    hdr_h = 6.5
+
+    pdf.cell(w_desc, hdr_h, safe_pdf_str("Descripción"), border=1, align="L", fill=True)
+    pdf.cell(w_mon, hdr_h, safe_pdf_str("Moneda"), border=1, align="C", fill=True)
+    pdf.cell(w_tot, hdr_h, safe_pdf_str("TOTAL"), border=1, align="C", fill=True)
+    for c_name in cols_pago:
+        lbl_exp = etiqueta_export_columna_pago(c_name).upper()
+        pdf.cell(w_sem, hdr_h, safe_pdf_str(lbl_exp), border=1, align="C", fill=True)
+    pdf.cell(w_pag, hdr_h, safe_pdf_str("PAGADO"), border=1, align="C", fill=True)
+    pdf.cell(w_sal, hdr_h, safe_pdf_str("SALDO"), border=1, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+    if has_any_pp:
+        pdf.set_font("Helvetica", "B", max(5.0, font_size_tbl - 0.5))
+        pdf.cell(w_desc, 4.5, "", border=1, align="L", fill=True)
+        pdf.cell(w_mon, 4.5, "", border=1, align="C", fill=True)
+        pdf.cell(w_tot, 4.5, "", border=1, align="C", fill=True)
+        for c_name in cols_pago:
+            txt_pp = "Por Pagar" if c_name in cols_por_pagar else ""
+            pdf.cell(w_sem, 4.5, safe_pdf_str(txt_pp), border=1, align="C", fill=True)
+        pdf.cell(w_pag, 4.5, "", border=1, align="C", fill=True)
+        pdf.cell(w_sal, 4.5, "", border=1, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+    # 3. Fila TRABAJOS CONTRATISTAS
+    pdf.set_fill_color(255, 255, 255)
+    pdf.set_text_color(38, 35, 32)
+    pdf.set_font("Helvetica", "BU", font_size_tbl)
+    pdf.cell(w_desc, 5.5, safe_pdf_str("TRABAJOS CONTRATISTAS"), border=1, align="L", fill=True)
+    pdf.set_font("Helvetica", "", font_size_tbl)
+    pdf.cell(w_mon, 5.5, "", border=1, fill=True)
+    pdf.cell(w_tot, 5.5, "", border=1, fill=True)
+    for _ in cols_pago:
+        pdf.cell(w_sem, 5.5, "", border=1, fill=True)
+    pdf.cell(w_pag, 5.5, "", border=1, fill=True)
+    pdf.cell(w_sal, 5.5, "", border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
+
+    def _fmt_pdf_money(val: float, pref: str = "S/ ", blank_zero: bool = False) -> str:
+        v = float(val or 0.0)
+        if blank_zero and abs(v) < 0.005:
+            return ""
+        return f"{pref}{v:,.2f}"
+
+    def _draw_data_row(desc_txt: str, fila_d: dict):
+        mon_s = safe_str(fila_d.get("Moneda", "Soles"))
+        es_u = "dólar" in mon_s.lower() or "dolar" in mon_s.lower()
+        pref = "$" if es_u else "S/ "
+        row_h = 5.5
+
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_text_color(38, 35, 32)
+        pdf.set_font("Helvetica", "", font_size_tbl)
+        pdf.cell(w_desc, row_h, safe_pdf_str(desc_txt)[:38], border=1, align="L", fill=True)
+        pdf.cell(w_mon, row_h, safe_pdf_str(mon_s), border=1, align="C", fill=True)
+        pdf.cell(w_tot, row_h, safe_pdf_str(_fmt_pdf_money(fila_d.get("TOTAL", 0.0), pref, False)), border=1, align="R", fill=True)
+
+        for c_name in cols_pago:
+            v_c = safe_float(fila_d.get(c_name, 0.0), 0.0)
+            txt_c = _fmt_pdf_money(v_c, pref, blank_zero=True)
+            if txt_c and c_name not in cols_por_pagar:
+                pdf.set_text_color(217, 43, 43)  # Rojo para pagos realizados de semanas pasadas
+            else:
+                pdf.set_text_color(38, 35, 32)
+            pdf.cell(w_sem, row_h, safe_pdf_str(txt_c), border=1, align="R", fill=True)
+
+        pdf.set_text_color(38, 35, 32)
+        pdf.cell(w_pag, row_h, safe_pdf_str(_fmt_pdf_money(fila_d.get("PAGADO", 0.0), pref, False)), border=1, align="R", fill=True)
+        pdf.cell(w_sal, row_h, safe_pdf_str(_fmt_pdf_money(fila_d.get("SALDO", 0.0), pref, False)), border=1, align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+    for f_c in res["filas_contratistas"]:
+        part_s = safe_str(f_c.get("Partida", "")).strip()
+        desc_s = safe_str(f_c.get("Descripcion", "")).strip()
+        lbl_r = f"{part_s} - {desc_s}" if (part_s and desc_s and part_s.upper() not in desc_s.upper()) else (desc_s or part_s)
+        _draw_data_row(lbl_r, f_c)
+
+    # 4. Fila SUB TOTAL en Arcilla Cota
+    sub_d = res["sub_total"]
+    pdf.set_fill_color(200, 90, 50)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", font_size_tbl)
+    pdf.cell(w_desc, 6.0, safe_pdf_str("SUB TOTAL"), border=1, align="C", fill=True)
+    pdf.cell(w_mon, 6.0, "", border=1, align="C", fill=True)
+    pdf.cell(w_tot, 6.0, safe_pdf_str(_fmt_pdf_money(sub_d.get("TOTAL", 0.0), "S/ ", False)), border=1, align="R", fill=True)
+    for c_name in cols_pago:
+        pdf.cell(w_sem, 6.0, safe_pdf_str(_fmt_pdf_money(sub_d.get(c_name, 0.0), "S/ ", False)), border=1, align="R", fill=True)
+    pdf.cell(w_pag, 6.0, safe_pdf_str(_fmt_pdf_money(sub_d.get("PAGADO", 0.0), "S/ ", False)), border=1, align="R", fill=True)
+    pdf.cell(w_sal, 6.0, safe_pdf_str(_fmt_pdf_money(sub_d.get("SALDO", 0.0), "S/ ", False)), border=1, align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+    # 5. Gestión y supervisión & Gastos Generales
+    _draw_data_row("Gestión y supervisión de obras", res["fila_gestion"])
+    _draw_data_row("Gastos Generales", res["fila_gg"])
+
+    # 6. Filas TOTAL (Soles y Dólares) en Arcilla Cota con PAGADO en amarillo
+    for lbl_tot, mon_tot, pref_tot, d_tot in [
+        ("TOTAL", "Soles", "S/ ", res["total_soles"]),
+        ("", "Dólares", "$", res["total_dolares"]),
+    ]:
+        pdf.set_fill_color(200, 90, 50)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", font_size_tbl)
+        pdf.cell(w_desc, 6.0, safe_pdf_str(lbl_tot), border=1, align="C", fill=True)
+        pdf.cell(w_mon, 6.0, safe_pdf_str(mon_tot), border=1, align="C", fill=True)
+        pdf.cell(w_tot, 6.0, safe_pdf_str(_fmt_pdf_money(d_tot.get("TOTAL", 0.0), pref_tot, False)), border=1, align="R", fill=True)
+        for c_name in cols_pago:
+            pdf.cell(w_sem, 6.0, safe_pdf_str(_fmt_pdf_money(d_tot.get(c_name, 0.0), pref_tot, False)), border=1, align="R", fill=True)
+        # PAGADO en amarillo
+        pdf.set_fill_color(255, 224, 102)
+        pdf.set_text_color(38, 35, 32)
+        pdf.cell(w_pag, 6.0, safe_pdf_str(_fmt_pdf_money(d_tot.get("PAGADO", 0.0), pref_tot, False)), border=1, align="R", fill=True)
+        # SALDO en Arcilla Cota
+        pdf.set_fill_color(200, 90, 50)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(w_sal, 6.0, safe_pdf_str(_fmt_pdf_money(d_tot.get("SALDO", 0.0), pref_tot, False)), border=1, align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+    return bytes(pdf.output())
 
 
 def parsear_cuadro_pagos_semanales(file_or_df, tc_default: float = 3.60) -> dict:
@@ -3285,20 +3502,29 @@ def parsear_cuadro_pagos_semanales(file_or_df, tc_default: float = 3.60) -> dict
     for r_i, row in enumerate(rows[:15]):
         row_strs = [_clean_cell_str(c) for c in row]
         row_low = [s.lower() for s in row_strs]
-        if any("descrip" in s for s in row_low) and any("adelanto" in s or "semana" in s for s in row_low):
+        if any("descrip" in s for s in row_low) and any(
+            "adelanto" in s or "semana" in s or re.match(r"^s\d+$", s.strip()) for s in row_low
+        ):
             header_idx = r_i
             for c_i, s_l in enumerate(row_low):
-                if "descrip" in s_l:
+                s_clean = s_l.strip()
+                if "descrip" in s_clean:
                     col_desc = c_i
-                elif "moneda" in s_l:
+                elif "moneda" in s_clean:
                     col_moneda = c_i
-                elif s_l == "total":
+                elif s_clean == "total":
                     col_total = c_i
-                elif "adelanto" in s_l or "semana" in s_l:
-                    cols_semanas_map[c_i] = row_strs[c_i].strip().upper()
-                elif "pagado" in s_l:
+                elif "adelanto" in s_clean:
+                    cols_semanas_map[c_i] = "ADELANTO 1"
+                elif "semana" in s_clean or re.match(r"^s(\d+)$", s_clean):
+                    m_num = re.search(r"(\d+)", s_clean)
+                    if m_num:
+                        cols_semanas_map[c_i] = f"SEMANA {int(m_num.group(1))}"
+                    else:
+                        cols_semanas_map[c_i] = row_strs[c_i].strip().upper()
+                elif "pagado" in s_clean:
                     col_pagado = c_i
-                elif "saldo" in s_l:
+                elif "saldo" in s_clean:
                     col_saldo = c_i
             break
 
