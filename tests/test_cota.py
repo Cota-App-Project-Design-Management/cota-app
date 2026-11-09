@@ -1572,7 +1572,7 @@ def test_marca_estudio_color_y_logo_por_branch():
         assert pdf_minuta[:4] == b"%PDF"
     finally:
         guardar_marca_estudio(
-            studio_name="LB Studio",
+            studio_name="",
             brand_color="#C85A32",
             reset_logo=True,
         )

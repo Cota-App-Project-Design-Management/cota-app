@@ -338,7 +338,7 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
                 df = None
 
     # 2. Si no hubo bytes de Drive, intentar conector directo de Google Sheets
-    if (df is None or df.empty) and nube_ok and sheet_url and conn is not None and not st.session_state.get("_gsheets_direct_failed", False):
+    if df is None and nube_ok and sheet_url and conn is not None and not st.session_state.get("_gsheets_direct_failed", False):
         try:
             df = conn.read(spreadsheet=sheet_url, worksheet=pestaña, ttl=300)
         except Exception:
@@ -346,7 +346,7 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
             df = None
 
     # 3. Carga desde Excel (Google Drive montado o Respaldo en Repositorio BD_COTA_APP_PRUEBAS.xlsx)
-    if df is None or df.empty:
+    if df is None:
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         candidatos_excel = list(dict.fromkeys([
             os.path.join(repo_root, "BD_COTA_APP_PRUEBAS.xlsx"),
@@ -357,12 +357,12 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
             if excel_path and os.path.exists(excel_path):
                 try:
                     df = pd.read_excel(excel_path, sheet_name=pestaña)
-                    if df is not None and not df.empty:
+                    if df is not None:
                         break
                 except Exception:
                     df = None
 
-    if df is None or df.empty:
+    if df is None:
         df = pd.DataFrame(columns=columnas)
         st.session_state.original_tables[pestaña] = df.copy()
         return df

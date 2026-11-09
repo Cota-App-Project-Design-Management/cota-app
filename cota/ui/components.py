@@ -53,7 +53,7 @@ def render_sidebar_branding(logo_path="logo/Logo Full.png", subtitle="PROJECT & 
         f"<div style='text-align:center; padding: 8px 4px 10px 4px;'>"
         f"{brand_top}"
         f"<p style='color:#6E665E; font-family:\"JetBrains Mono\", monospace; font-size:9.5px; font-weight:600; letter-spacing:0.13em; text-transform:uppercase; margin:4px 0 0 0; line-height:1.3;'>{sub_str}</p>"
-        f"<div style='display:flex; align-items:center; justify-content:center; gap:6px; margin-top:6px;'>"
+        f"<div style='display:{'flex' if marca.get('studio_name') else 'none'}; align-items:center; justify-content:center; gap:6px; margin-top:6px;'>"
         f"<span style='display:inline-block; width:9px; height:9px; border-radius:50%; background:{marca.get('brand_color', '#C85A32')}; border:1px solid rgba(38,35,32,0.2);'></span>"
         f"<span style='font-family:\"JetBrains Mono\", monospace; font-size:10px; font-weight:700; color:#262320; letter-spacing:0.05em;'>{html_lib.escape(marca.get('studio_name') or 'ESTUDIO')}</span>"
         f"</div>"
@@ -75,7 +75,7 @@ def render_configurador_marca_estudio(marca: dict = None):
 
         nuevo_nombre = st.text_input(
             "Nombre del Estudio",
-            value=marca.get("studio_name", "LB Studio"),
+            value=marca.get("studio_name", ""),
             key="cfg_brand_studio_name",
             placeholder="Ej: LB Studio",
         )
@@ -132,7 +132,7 @@ def render_configurador_marca_estudio(marca: dict = None):
 
         if c_b2.button("↺ Restaurar", use_container_width=True, key="btn_reset_studio_brand"):
             guardar_marca_estudio(
-                studio_name="LB Studio",
+                studio_name="",
                 brand_color=DEFAULT_BRAND_COLOR,
                 reset_logo=True,
             )

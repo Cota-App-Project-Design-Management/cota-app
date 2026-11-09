@@ -1074,7 +1074,7 @@ def generar_plantilla_cotizacion_venti(
     marca = obtener_marca_estudio()
     brand_hex = normalizar_hex_color(brand_color or marca.get("brand_color", "#C85A32")).lstrip("#")
     brand_dark_hex = oscurecer_hex_color(f"#{brand_hex}", 0.82).lstrip("#")
-    nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "LB Studio")).strip()
+    nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "")).strip()
 
     if logo_bytes is not None:
         logo_png, logo_dims = preparar_logo_png_bytes(logo_bytes)
@@ -3299,7 +3299,7 @@ def exportar_cuadro_pagos_semanales_excel(
     marca = obtener_marca_estudio()
     brand_hex = normalizar_hex_color(brand_color or marca.get("brand_color", "#C85A32")).lstrip("#")
     brand_dark_hex = oscurecer_hex_color(f"#{brand_hex}", 0.84).lstrip("#")
-    nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "LB Studio")).strip()
+    nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "")).strip()
 
     if logo_bytes is not None:
         logo_png, logo_dims = preparar_logo_png_bytes(logo_bytes)
@@ -3713,7 +3713,7 @@ def exportar_cuadro_pagos_semanales_pdf(
     brand_hex_full = normalizar_hex_color(brand_color or marca.get("brand_color", "#C85A32"))
     b_r, b_g, b_b = hex_a_rgb(brand_hex_full)
     d_r, d_g, d_b = hex_a_rgb(oscurecer_hex_color(brand_hex_full, 0.84))
-    nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "LB Studio")).strip()
+    nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "")).strip()
 
     if logo_bytes is not None:
         logo_png, logo_dims = preparar_logo_png_bytes(logo_bytes)

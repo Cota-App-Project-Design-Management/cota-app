@@ -766,7 +766,7 @@ def obtener_marca_estudio():
         or cfg_session.get("studio_name")
         or data_file.get("studio_name")
         or sec_studio
-        or "LB Studio"
+        or ""
     )
     raw_color = (
         mem.get("brand_color")
