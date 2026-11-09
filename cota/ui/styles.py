@@ -65,33 +65,34 @@ def get_app_css() -> str:
         .header-container {
             display: flex;
             align-items: center;
-            gap: 20px;
+            gap: 16px;
             background-color: var(--bg-white);
             border: 1px solid var(--border-sand);
             border-left: 5px solid var(--clay-primary);
             border-radius: 12px;
             padding: 10px 24px;
             min-height: 76px;
+            gap: 20px;
             margin-bottom: 22px;
             box-shadow: 0 4px 16px rgba(38, 35, 32, 0.04);
-            box-sizing: border-box;
         }
 
         .header-logo {
             height: 56px;
             max-height: 58px;
+            flex-shrink: 0;
+            display: block;
+            mix-blend-mode: multiply;
             width: auto;
             object-fit: contain;
-            display: block;
-            flex-shrink: 0;
-            mix-blend-mode: multiply;
         }
 
         .header-divider {
             width: 2px;
-            height: 46px;
-            background-color: var(--border-sand);
+            min-height: 46px;
             flex-shrink: 0;
+            height: 36px;
+            background-color: var(--border-sand);
         }
 
         .header-title-box {
@@ -107,10 +108,7 @@ def get_app_css() -> str:
             margin: 0 !important;
             padding: 0 !important;
             line-height: 1.2 !important;
-            letter-spacing: 0.01em !important;
-            display: flex;
-            align-items: center;
-            gap: 10px;
+            letter-spacing: 0.02em !important;
         }
 
         .header-subtitle {
