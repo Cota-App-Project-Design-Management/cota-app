@@ -54,7 +54,13 @@ from cota.cotizacion import (
     redondear_arriba_10,
     redondear_arriba_100,
 )
-from cota.ui.components import render_metric_card, render_metric_row
+import cota.ui.components
+try:
+    if not hasattr(cota.ui.components, "render_chat_notas_proyecto"):
+        importlib.reload(cota.ui.components)
+except Exception:
+    pass
+from cota.ui.components import render_chat_notas_proyecto, render_metric_card, render_metric_row
 from cota.utils import (
     analizar_tareas_proyecto,
     calcular_rating,
@@ -926,26 +932,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                             notas_chat_card = obtener_notas_chat_proyecto(p_nom)
                             with st.popover(f"💬 NOTAS ({len(notas_chat_card)})", use_container_width=True):
                                 st.markdown(f"##### 💬 Notas del Proyecto: {p_nom}")
-                                if notas_chat_card:
-                                    for msg in notas_chat_card[-6:]:
-                                        st.markdown(
-                                            f"<div style='background:#FAF8F5; border:1px solid #DFD9CE; border-left:3px solid #C85A32; border-radius:6px; padding:6px 10px; margin-bottom:6px; font-size:12px;'>"
-                                            f"<b style='color:#C85A32;'>{msg['socio']}</b> <span style='color:#8C8278; font-size:10.5px;'>· {msg['fecha']}</span><br>"
-                                            f"<span style='color:#262320;'>{msg['texto']}</span></div>",
-                                            unsafe_allow_html=True,
-                                        )
-                                else:
-                                    st.caption("Aún no hay notas registradas en este proyecto.")
-                                with st.form(f"f_notes_m_{ukey}", clear_on_submit=True):
-                                    socio_def = st.session_state.get("socio_activo", lista_socios[0] if lista_socios else "Alvaro")
-                                    idx_soc = lista_socios.index(socio_def) if socio_def in lista_socios else 0
-                                    soc_nota = st.selectbox("Socio", lista_socios, index=idx_soc, key=f"soc_n_card_{ukey}")
-                                    c_notas = st.text_area("Escribir nueva nota...", height=80, placeholder="Escribe un acuerdo, comentario o pendiente...")
-                                    if st.form_submit_button("ENVIAR NOTA", type="primary", use_container_width=True):
-                                        if c_notas and c_notas.strip():
-                                            agregar_nota_chat_proyecto(p_nom, soc_nota, c_notas.strip())
-                                            st.success("Nota publicada.")
-                                            st.rerun()
+                                render_chat_notas_proyecto(p_nom, lista_socios, key_prefix=f"card_{ukey}")
 
                         with c_btn4:
                             if st.button("📦 ARCHIVAR", key=f"arch_{ukey}", use_container_width=True):

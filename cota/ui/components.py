@@ -1,10 +1,18 @@
 """
-Componentes visuales reutilizables: Header corporativo, tarjetas métricas, badges y fragmentos.
+Componentes visuales reutilizables: Header corporativo, tarjetas métricas, badges, chat de notas y fragmentos.
 Estética: Warm Architectural Atelier (#F7F4EF, #C85A32, #262320).
 """
 
+import html as html_lib
+import json
+import re
 import streamlit as st
-from cota.utils import get_image_base64
+import streamlit.components.v1 as components
+from cota.db import (
+    aplicar_accion_chat_notas_proyecto,
+    obtener_notas_chat_proyecto,
+)
+from cota.utils import get_image_base64, safe_str
 
 
 def render_header(title="COTA APP", subtitle="PROJECT & DESIGN MANAGEMENT", logo_path="Logo2.png", is_beta=True):
@@ -80,4 +88,651 @@ def render_status_header(label, color="#C85A32"):
         f"</h4>"
     )
     st.markdown(html, unsafe_allow_html=True)
+
+
+def render_chat_notas_proyecto(proy_name: str, socios_disp: list[str] | None = None, key_prefix: str = "res"):
+    """
+    Renderiza el sistema de notas interactivo tipo Chat (estilo WhatsApp / Slack) para un proyecto:
+    - Cada mensaje tiene en la esquina superior derecha un botón de 3 puntos (⋮) que despliega:
+      1. ↩️ Responder (cita el mensaje original en la burbuja de respuesta)
+      2. ✏️ Editar (abre edición en línea dentro de la misma burbuja y marca '(editado)')
+      3. 🗑️ Borrar (elimina el mensaje directamente)
+    - Soporta envío rápido con Enter (y Shift+Enter para salto de línea) o clic en el botón de enviar.
+    """
+    if not socios_disp:
+        socios_disp = ["Alvaro", "Socio 1", "Socio 2"]
+
+    safe_id = re.sub(r"[^a-zA-Z0-9_]", "_", f"{key_prefix}_{proy_name}")
+    bridge_label = f"CHAT_BRIDGE_{safe_id}"
+    bridge_key = f"chat_bridge_in_{safe_id}"
+
+    def _on_chat_bridge():
+        raw_val = safe_str(st.session_state.get(bridge_key, "")).strip()
+        if not raw_val:
+            return
+        aplicar_accion_chat_notas_proyecto(proy_name, raw_val)
+        st.session_state[bridge_key] = ""
+
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stTextInput"]:has(input[aria-label^="CHAT_BRIDGE_"]) {
+            position: absolute !important;
+            width: 1px !important;
+            height: 1px !important;
+            opacity: 0 !important;
+            overflow: hidden !important;
+            pointer-events: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        .cota-chat-container {
+            background: #FFFFFF;
+            border: 1px solid #DFD9CE;
+            border-radius: 12px;
+            padding: 12px;
+            box-shadow: 0 2px 8px rgba(38, 35, 32, 0.04);
+        }
+        .cota-chat-messages {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 360px;
+            overflow-y: auto;
+            padding: 2px 4px 8px 2px;
+        }
+        .cota-chat-bubble {
+            position: relative;
+            background: #FAF8F5;
+            border: 1px solid #DFD9CE;
+            border-left: 4px solid #C85A32;
+            border-radius: 10px;
+            padding: 8px 12px 10px 12px;
+            transition: background-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        .cota-chat-bubble:hover {
+            background: #F7F3EC;
+            box-shadow: 0 2px 6px rgba(38, 35, 32, 0.06);
+        }
+        .cota-chat-bubble.cota-chat-highlight {
+            background: #FDECE6 !important;
+            box-shadow: 0 0 0 2px #C85A32 !important;
+        }
+        .cota-chat-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+            gap: 8px;
+        }
+        .cota-chat-author {
+            color: #C85A32;
+            font-weight: 700;
+            font-size: 12.5px;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .cota-chat-meta {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .cota-chat-time {
+            color: #8C8278;
+            font-family: monospace;
+            font-size: 11px;
+        }
+        .cota-chat-edited {
+            color: #8C8278;
+            font-size: 10.5px;
+            font-style: italic;
+        }
+        .cota-chat-dots-btn {
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+            color: #6E665E;
+            font-size: 16px;
+            font-weight: 800;
+            line-height: 1;
+            user-select: none;
+            transition: background 0.15s ease, color 0.15s ease;
+        }
+        .cota-chat-dots-btn:hover {
+            background: rgba(200, 90, 50, 0.14);
+            color: #C85A32;
+        }
+        .cota-chat-quote {
+            background: #EFECE6;
+            border-left: 3px solid #C85A32;
+            border-radius: 6px;
+            padding: 5px 9px;
+            margin-bottom: 6px;
+            cursor: pointer;
+            transition: background 0.15s ease;
+        }
+        .cota-chat-quote:hover {
+            background: #E6E1D8;
+        }
+        .cota-chat-quote-author {
+            color: #C85A32;
+            font-weight: 700;
+            font-size: 11px;
+            margin-bottom: 1px;
+        }
+        .cota-chat-quote-text {
+            color: #5A534A;
+            font-size: 11.5px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 100%;
+        }
+        .cota-chat-text {
+            color: #262320;
+            font-size: 13px;
+            line-height: 1.48;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.text_input(
+        bridge_label,
+        key=bridge_key,
+        label_visibility="collapsed",
+        on_change=_on_chat_bridge,
+    )
+
+    notas_chat = obtener_notas_chat_proyecto(proy_name)
+    soc_act = st.session_state.get("socio_activo", socios_disp[0])
+    if soc_act not in socios_disp:
+        soc_act = socios_disp[0]
+
+    # Construir burbujas de mensajes
+    bubbles_html = []
+    for idx_msg, msg in enumerate(notas_chat):
+        msg_id_esc = html_lib.escape(str(msg.get("id", f"msg_{idx_msg}")), quote=True)
+        socio_esc = html_lib.escape(str(msg.get("socio", "Socio")), quote=True)
+        fecha_esc = html_lib.escape(str(msg.get("fecha", "")), quote=True)
+        texto_raw = str(msg.get("texto", ""))
+        texto_esc = html_lib.escape(texto_raw, quote=True)
+        editado_html = (
+            "<span class='cota-chat-edited'>(editado)</span>"
+            if msg.get("editado")
+            else ""
+        )
+
+        quote_html = ""
+        rep = msg.get("reply_to")
+        if isinstance(rep, dict) and str(rep.get("texto", "")).strip():
+            rep_id_esc = html_lib.escape(str(rep.get("id", "")), quote=True)
+            rep_soc_esc = html_lib.escape(str(rep.get("socio", "Socio")), quote=True)
+            rep_txt_esc = html_lib.escape(str(rep.get("texto", "")), quote=True)
+            quote_html = (
+                f"<div class='cota-chat-quote' data-target-id='{rep_id_esc}' title='Ver mensaje original'>"
+                f"<div class='cota-chat-quote-author'>↩️ {rep_soc_esc}</div>"
+                f"<div class='cota-chat-quote-text'>{rep_txt_esc}</div>"
+                f"</div>"
+            )
+
+        bubbles_html.append(
+            f"<div class='cota-chat-bubble' data-msg-idx='{idx_msg}' data-msg-id='{msg_id_esc}' "
+            f"data-msg-socio='{socio_esc}' data-msg-texto='{texto_esc}'>"
+            f"<div class='cota-chat-header'>"
+            f"<span class='cota-chat-author'>👤 {socio_esc}</span>"
+            f"<span class='cota-chat-meta'>"
+            f"{editado_html}"
+            f"<span class='cota-chat-time'>{fecha_esc}</span>"
+            f"<span class='cota-chat-dots-btn' data-msg-idx='{idx_msg}' title='Opciones del mensaje (Responder, Editar, Borrar)'>⋮</span>"
+            f"</span>"
+            f"</div>"
+            f"{quote_html}"
+            f"<div class='cota-chat-text'>{texto_esc}</div>"
+            f"</div>"
+        )
+
+    empty_html = (
+        "<div class='cota-chat-empty' style='color:#8C8278; font-size:12.5px; padding:10px 6px; text-align:center;'>"
+        "💬 Aún no hay notas en este proyecto. Escribe el primer mensaje abajo."
+        "</div>"
+        if not bubbles_html
+        else ""
+    )
+
+    chat_wrap_html = (
+        f"<div id='cota_chat_wrap_{safe_id}' class='cota-chat-container'>"
+        f"<div id='cota_chat_list_{safe_id}' class='cota-chat-messages'>"
+        f"{''.join(bubbles_html)}{empty_html}"
+        f"</div>"
+        f"<div id='cota_chat_composer_{safe_id}' style='margin-top:8px; border-top:1px solid #EFECE6; padding-top:10px;'></div>"
+        f"</div>"
+    )
+    st.markdown(chat_wrap_html, unsafe_allow_html=True)
+
+    socios_json = json.dumps(socios_disp, ensure_ascii=False)
+    soc_act_json = json.dumps(soc_act, ensure_ascii=False)
+    bridge_label_json = json.dumps(bridge_label)
+    safe_id_json = json.dumps(safe_id)
+
+    js_controller = f"""
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="utf-8"></head>
+    <body style="margin:0;padding:0;overflow:hidden;background:transparent;">
+    <script>
+    (function() {{
+        const parentDoc = window.parent.document;
+        const parentWin = window.parent;
+        const safeId = {safe_id_json};
+        const bridgeLabel = {bridge_label_json};
+        const sociosList = {socios_json};
+        const defaultSocio = {soc_act_json};
+
+        if (!parentWin.__cotaChatSocio) {{
+            parentWin.__cotaChatSocio = defaultSocio;
+        }}
+
+        function sendBridgePayload(payloadObj) {{
+            try {{
+                payloadObj.ts = Date.now() + Math.floor(Math.random() * 1000);
+                const payloadStr = JSON.stringify(payloadObj);
+                const inputEl = parentDoc.querySelector('input[aria-label=' + JSON.stringify(bridgeLabel) + ']');
+                if (!inputEl) return false;
+                const proto = parentWin.HTMLInputElement.prototype;
+                const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                if (nativeSetter) {{
+                    nativeSetter.call(inputEl, payloadStr);
+                }} else {{
+                    inputEl.value = payloadStr;
+                }}
+                const tracker = inputEl._valueTracker;
+                if (tracker) {{
+                    tracker.setValue('');
+                }}
+                inputEl.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                inputEl.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                inputEl.focus({{ preventScroll: true }});
+                inputEl.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }}));
+                inputEl.blur();
+                return true;
+            }} catch (err) {{
+                console.error('Error en puente de chat:', err);
+                return false;
+            }}
+        }}
+
+        // Crear o recuperar menú flotante de 3 puntitos en parentDoc.body
+        const MENU_ID = 'cota-chat-floating-menu';
+        function getFloatingMenu() {{
+            let menu = parentDoc.getElementById(MENU_ID);
+            if (!menu) {{
+                menu = parentDoc.createElement('div');
+                menu.id = MENU_ID;
+                menu.style.cssText = [
+                    'position: fixed',
+                    'z-index: 2147483647',
+                    'display: none',
+                    'background: #FFFFFF',
+                    'border: 1px solid #DFD9CE',
+                    'border-radius: 9px',
+                    'box-shadow: 0 8px 24px rgba(38, 35, 32, 0.16)',
+                    'padding: 4px',
+                    'min-width: 155px',
+                    'font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif',
+                    'user-select: none'
+                ].join(';');
+                parentDoc.body.appendChild(menu);
+
+                parentDoc.addEventListener('click', function(ev) {{
+                    if (menu.style.display !== 'none' && !menu.contains(ev.target) && !ev.target.closest('.cota-chat-dots-btn')) {{
+                        menu.style.display = 'none';
+                    }}
+                }}, true);
+            }}
+            return menu;
+        }}
+
+        function escapeHtml(str) {{
+            return String(str || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }}
+
+        function initChatWidget() {{
+            const wrap = parentDoc.getElementById('cota_chat_wrap_' + safeId);
+            const listEl = parentDoc.getElementById('cota_chat_list_' + safeId);
+            const compEl = parentDoc.getElementById('cota_chat_composer_' + safeId);
+            if (!wrap || !listEl || !compEl) return false;
+
+            // Auto-scroll al final de la conversación
+            listEl.scrollTop = listEl.scrollHeight;
+
+            let activeReply = null;
+
+            // Construir el compositor de chat si aún no está montado
+            if (!compEl.dataset.cotaMounted) {{
+                compEl.dataset.cotaMounted = '1';
+                const currentSocio = sociosList.includes(parentWin.__cotaChatSocio) ? parentWin.__cotaChatSocio : defaultSocio;
+                const optionsHtml = sociosList.map(s =>
+                    '<option value="' + escapeHtml(s) + '"' + (s === currentSocio ? ' selected' : '') + '>' + escapeHtml(s) + '</option>'
+                ).join('');
+
+                compEl.innerHTML = [
+                    '<div class="cota-reply-banner" style="display:none; background:#F0ECE1; border-left:3px solid #C85A32; border-radius:7px; padding:6px 10px; margin-bottom:8px; align-items:center; justify-content:space-between; gap:8px;">',
+                        '<div style="overflow:hidden; flex:1;">',
+                            '<div class="cota-reply-banner-author" style="color:#C85A32; font-weight:700; font-size:11.5px;"></div>',
+                            '<div class="cota-reply-banner-text" style="color:#5A534A; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>',
+                        '</div>',
+                        '<span class="cota-reply-cancel" title="Cancelar respuesta" style="cursor:pointer; color:#6E665E; font-weight:800; font-size:14px; padding:2px 6px; border-radius:4px;">✕</span>',
+                    '</div>',
+                    '<div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">',
+                        '<div style="flex:0 0 140px;">',
+                            '<label style="display:block; font-size:11px; font-weight:600; color:#6E665E; margin-bottom:3px;">Socio:</label>',
+                            '<select class="cota-chat-socio-sel" style="width:100%; height:38px; border:1px solid #DFD9CE; border-radius:8px; background:#FAF8F5; color:#262320; font-size:13px; font-weight:600; padding:0 8px; outline:none; cursor:pointer;">',
+                                optionsHtml,
+                            '</select>',
+                        '</div>',
+                        '<div style="flex:1 1 220px; position:relative;">',
+                            '<label style="display:block; font-size:11px; font-weight:600; color:#6E665E; margin-bottom:3px;">Mensaje / Nota:</label>',
+                            '<textarea class="cota-chat-input" rows="2" placeholder="Escribe un mensaje... (Enter para enviar, Shift+Enter nueva línea)" style="width:100%; box-sizing:border-box; border:1px solid #DFD9CE; border-radius:8px; background:#FAF8F5; color:#262320; font-family:inherit; font-size:13px; padding:8px 10px; resize:vertical; min-height:38px; max-height:110px; outline:none; line-height:1.4;"></textarea>',
+                        '</div>',
+                        '<button type="button" class="cota-chat-send-btn" style="height:38px; background:#C85A32; color:#FFFFFF; border:none; border-radius:8px; padding:0 16px; font-weight:700; font-size:12.5px; cursor:pointer; display:inline-flex; align-items:center; gap:6px; box-shadow:0 2px 5px rgba(200,90,50,0.25); transition:background 0.15s ease;">',
+                            '<span>💬 ENVIAR</span>',
+                        '</button>',
+                    '</div>'
+                ].join('');
+
+                const selSocio = compEl.querySelector('.cota-chat-socio-sel');
+                const txtInput = compEl.querySelector('.cota-chat-input');
+                const btnSend = compEl.querySelector('.cota-chat-send-btn');
+                const replyBanner = compEl.querySelector('.cota-reply-banner');
+                const replyAuthor = compEl.querySelector('.cota-reply-banner-author');
+                const replyText = compEl.querySelector('.cota-reply-banner-text');
+                const replyCancel = compEl.querySelector('.cota-reply-cancel');
+
+                selSocio.addEventListener('change', function() {{
+                    parentWin.__cotaChatSocio = selSocio.value;
+                }});
+
+                txtInput.addEventListener('focus', function() {{
+                    txtInput.style.borderColor = '#C85A32';
+                    txtInput.style.background = '#FFFFFF';
+                }});
+                txtInput.addEventListener('blur', function() {{
+                    txtInput.style.borderColor = '#DFD9CE';
+                    txtInput.style.background = '#FAF8F5';
+                }});
+
+                function clearReply() {{
+                    activeReply = null;
+                    replyBanner.style.display = 'none';
+                }}
+
+                replyCancel.addEventListener('click', clearReply);
+
+                compEl._setReply = function(msgObj) {{
+                    activeReply = msgObj;
+                    replyAuthor.textContent = '↩️ Respondiendo a ' + msgObj.socio;
+                    replyText.textContent = msgObj.texto;
+                    replyBanner.style.display = 'flex';
+                    txtInput.focus();
+                }};
+
+                function triggerSend() {{
+                    const rawText = (txtInput.value || '').trim();
+                    if (!rawText) return;
+                    const chosenSocio = selSocio.value || defaultSocio;
+                    parentWin.__cotaChatSocio = chosenSocio;
+
+                    // Agregar burbuja de forma optimista en el DOM (0ms)
+                    const emptyMsg = listEl.querySelector('.cota-chat-empty');
+                    if (emptyMsg) emptyMsg.remove();
+
+                    const now = new Date();
+                    const pad = n => String(n).padStart(2, '0');
+                    const fechaStr = pad(now.getDate()) + '/' + pad(now.getMonth() + 1) + '/' + now.getFullYear() + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes());
+                    const newIdx = listEl.querySelectorAll('.cota-chat-bubble').length;
+                    const tempId = 'msg_' + Date.now();
+
+                    let quoteBlock = '';
+                    let replyPayload = null;
+                    if (activeReply) {{
+                        replyPayload = {{
+                            id: activeReply.id,
+                            socio: activeReply.socio,
+                            texto: activeReply.texto
+                        }};
+                        quoteBlock = '<div class="cota-chat-quote" data-target-id="' + escapeHtml(activeReply.id) + '">' +
+                            '<div class="cota-chat-quote-author">↩️ ' + escapeHtml(activeReply.socio) + '</div>' +
+                            '<div class="cota-chat-quote-text">' + escapeHtml(activeReply.texto) + '</div>' +
+                        '</div>';
+                    }}
+
+                    const bubble = parentDoc.createElement('div');
+                    bubble.className = 'cota-chat-bubble';
+                    bubble.setAttribute('data-msg-idx', String(newIdx));
+                    bubble.setAttribute('data-msg-id', tempId);
+                    bubble.setAttribute('data-msg-socio', chosenSocio);
+                    bubble.setAttribute('data-msg-texto', rawText);
+                    bubble.innerHTML = [
+                        '<div class="cota-chat-header">',
+                            '<span class="cota-chat-author">👤 ' + escapeHtml(chosenSocio) + '</span>',
+                            '<span class="cota-chat-meta">',
+                                '<span class="cota-chat-time">' + fechaStr + '</span>',
+                                '<span class="cota-chat-dots-btn" data-msg-idx="' + newIdx + '" title="Opciones del mensaje">⋮</span>',
+                            '</span>',
+                        '</div>',
+                        quoteBlock,
+                        '<div class="cota-chat-text">' + escapeHtml(rawText) + '</div>'
+                    ].join('');
+                    listEl.appendChild(bubble);
+                    listEl.scrollTop = listEl.scrollHeight;
+
+                    txtInput.value = '';
+                    clearReply();
+
+                    sendBridgePayload({{
+                        action: 'send',
+                        socio: chosenSocio,
+                        texto: rawText,
+                        reply_to: replyPayload
+                    }});
+                }}
+
+                btnSend.addEventListener('click', triggerSend);
+                txtInput.addEventListener('keydown', function(ke) {{
+                    if (ke.key === 'Enter' && !ke.shiftKey) {{
+                        ke.preventDefault();
+                        triggerSend();
+                    }} else if (ke.key === 'Escape' && activeReply) {{
+                        clearReply();
+                    }}
+                }});
+            }}
+
+            // Edición en línea de una burbuja de mensaje
+            function startInlineEdit(bubble) {{
+                if (!bubble || bubble.classList.contains('cota-editing')) return;
+                const textEl = bubble.querySelector('.cota-chat-text');
+                if (!textEl) return;
+                const idx = parseInt(bubble.getAttribute('data-msg-idx') || '0', 10);
+                const curText = bubble.getAttribute('data-msg-texto') || textEl.textContent || '';
+                bubble.classList.add('cota-editing');
+
+                const editWrap = parentDoc.createElement('div');
+                editWrap.style.cssText = 'margin-top:4px; display:flex; flex-direction:column; gap:6px;';
+                editWrap.innerHTML = [
+                    '<textarea class="cota-inline-edit-area" rows="2" style="width:100%; box-sizing:border-box; border:1.5px solid #C85A32; border-radius:7px; padding:6px 8px; font-family:inherit; font-size:13px; color:#262320; background:#FFFFFF; outline:none; resize:vertical;"></textarea>',
+                    '<div style="display:flex; justify-content:flex-end; gap:6px;">',
+                        '<button type="button" class="cota-edit-cancel" style="background:#EFECE6; color:#4A453F; border:1px solid #DFD9CE; border-radius:6px; padding:4px 10px; font-size:11.5px; font-weight:600; cursor:pointer;">Cancelar (Esc)</button>',
+                        '<button type="button" class="cota-edit-save" style="background:#C85A32; color:#FFFFFF; border:none; border-radius:6px; padding:4px 12px; font-size:11.5px; font-weight:700; cursor:pointer;">💾 Guardar (Enter)</button>',
+                    '</div>'
+                ].join('');
+
+                textEl.style.display = 'none';
+                bubble.appendChild(editWrap);
+
+                const area = editWrap.querySelector('.cota-inline-edit-area');
+                const btnCancel = editWrap.querySelector('.cota-edit-cancel');
+                const btnSave = editWrap.querySelector('.cota-edit-save');
+                area.value = curText;
+                area.focus();
+                area.setSelectionRange(area.value.length, area.value.length);
+
+                function closeEdit() {{
+                    bubble.classList.remove('cota-editing');
+                    editWrap.remove();
+                    textEl.style.display = '';
+                }}
+
+                function saveEdit() {{
+                    const newTxt = (area.value || '').trim();
+                    if (!newTxt || newTxt === curText) {{
+                        closeEdit();
+                        return;
+                    }}
+                    bubble.setAttribute('data-msg-texto', newTxt);
+                    textEl.textContent = newTxt;
+                    const metaEl = bubble.querySelector('.cota-chat-meta');
+                    if (metaEl && !metaEl.querySelector('.cota-chat-edited')) {{
+                        const edSpan = parentDoc.createElement('span');
+                        edSpan.className = 'cota-chat-edited';
+                        edSpan.textContent = '(editado)';
+                        metaEl.insertBefore(edSpan, metaEl.firstChild);
+                    }}
+                    closeEdit();
+                    sendBridgePayload({{
+                        action: 'edit',
+                        idx: idx,
+                        texto: newTxt
+                    }});
+                }}
+
+                btnCancel.addEventListener('click', closeEdit);
+                btnSave.addEventListener('click', saveEdit);
+                area.addEventListener('keydown', function(ke) {{
+                    if (ke.key === 'Enter' && !ke.shiftKey) {{
+                        ke.preventDefault();
+                        saveEdit();
+                    }} else if (ke.key === 'Escape') {{
+                        ke.preventDefault();
+                        closeEdit();
+                    }}
+                }});
+            }}
+
+            // Delegación de eventos en la lista de mensajes (menú de 3 puntos y clic en citas)
+            if (!listEl.dataset.cotaEventsBound) {{
+                listEl.dataset.cotaEventsBound = '1';
+
+                listEl.addEventListener('click', function(ev) {{
+                    const dotsBtn = ev.target.closest('.cota-chat-dots-btn');
+                    if (dotsBtn) {{
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        const bubble = dotsBtn.closest('.cota-chat-bubble');
+                        if (!bubble) return;
+
+                        const idx = parseInt(bubble.getAttribute('data-msg-idx') || '0', 10);
+                        const msgId = bubble.getAttribute('data-msg-id') || ('msg_' + idx);
+                        const socio = bubble.getAttribute('data-msg-socio') || 'Socio';
+                        const texto = bubble.getAttribute('data-msg-texto') || '';
+
+                        const menu = getFloatingMenu();
+                        const itemStyle = 'display:flex; align-items:center; gap:8px; padding:7px 12px; font-size:12.5px; font-weight:600; color:#262320; border-radius:6px; cursor:pointer; transition:background 0.12s ease;';
+                        menu.innerHTML = [
+                            '<div class="cota-menu-opt" data-opt="reply" style="' + itemStyle + '"><span>↩️</span><span>Responder</span></div>',
+                            '<div class="cota-menu-opt" data-opt="edit" style="' + itemStyle + '"><span>✏️</span><span>Editar</span></div>',
+                            '<div style="height:1px; background:#EFECE6; margin:3px 4px;"></div>',
+                            '<div class="cota-menu-opt" data-opt="delete" style="' + itemStyle + ' color:#C93B2B;"><span>🗑️</span><span>Borrar</span></div>'
+                        ].join('');
+
+                        menu.querySelectorAll('.cota-menu-opt').forEach(optEl => {{
+                            const isDel = optEl.getAttribute('data-opt') === 'delete';
+                            optEl.addEventListener('mouseenter', () => {{
+                                optEl.style.background = isDel ? '#FDF2F2' : '#FAF8F5';
+                            }});
+                            optEl.addEventListener('mouseleave', () => {{
+                                optEl.style.background = 'transparent';
+                            }});
+                            optEl.addEventListener('click', function(oe) {{
+                                oe.preventDefault();
+                                oe.stopPropagation();
+                                menu.style.display = 'none';
+                                const act = optEl.getAttribute('data-opt');
+                                if (act === 'reply') {{
+                                    if (typeof compEl._setReply === 'function') {{
+                                        compEl._setReply({{ id: msgId, idx: idx, socio: socio, texto: texto }});
+                                    }}
+                                }} else if (act === 'edit') {{
+                                    startInlineEdit(bubble);
+                                }} else if (act === 'delete') {{
+                                    bubble.style.opacity = '0.35';
+                                    bubble.remove();
+                                    sendBridgePayload({{
+                                        action: 'delete',
+                                        idx: idx
+                                    }});
+                                }}
+                            }});
+                        }});
+
+                        menu.style.display = 'block';
+                        const rect = dotsBtn.getBoundingClientRect();
+                        const menuRect = menu.getBoundingClientRect();
+                        let leftPos = rect.right - menuRect.width;
+                        let topPos = rect.bottom + 4;
+                        if (leftPos < 8) leftPos = 8;
+                        if (topPos + menuRect.height > parentWin.innerHeight - 8) {{
+                            topPos = rect.top - menuRect.height - 4;
+                        }}
+                        menu.style.left = leftPos + 'px';
+                        menu.style.top = topPos + 'px';
+                        return;
+                    }}
+
+                    const quoteEl = ev.target.closest('.cota-chat-quote');
+                    if (quoteEl) {{
+                        const targetId = quoteEl.getAttribute('data-target-id');
+                        if (targetId) {{
+                            const targetBubble = listEl.querySelector('.cota-chat-bubble[data-msg-id="' + targetId + '"]');
+                            if (targetBubble) {{
+                                targetBubble.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                                targetBubble.classList.add('cota-chat-highlight');
+                                setTimeout(() => targetBubble.classList.remove('cota-chat-highlight'), 1400);
+                            }}
+                        }}
+                    }}
+                }});
+            }}
+
+            return true;
+        }}
+
+        if (!initChatWidget()) {{
+            let tries = 0;
+            const t = setInterval(() => {{
+                tries++;
+                if (initChatWidget() || tries > 25) clearInterval(t);
+            }}, 120);
+        }}
+    }})();
+    </script>
+    </body>
+    </html>
+    """
+    components.html(js_controller, height=0, scrolling=False)
+
 

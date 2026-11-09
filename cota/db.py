@@ -1025,7 +1025,7 @@ def eliminar_item_catalogo_estudio(clave: str, valor: str) -> bool:
 def obtener_notas_chat_proyecto(proy_name: str) -> list[dict]:
     """
     Obtiene el historial de notas del proyecto en formato lista de mensajes:
-    [{"socio": str, "fecha": str, "texto": str}].
+    [{"id": str, "socio": str, "fecha": str, "texto": str, "editado": bool, "reply_to": dict | None}].
     Soporta notas previas en texto plano convirtiéndolas automáticamente en el primer mensaje.
     """
     df_p = st.session_state.get("proyectos", pd.DataFrame())
@@ -1042,65 +1042,169 @@ def obtener_notas_chat_proyecto(proy_name: str) -> list[dict]:
         try:
             parsed = json.loads(raw_notas)
             if isinstance(parsed, list):
-                return [
-                    {
+                res = []
+                for idx_it, it in enumerate(parsed):
+                    if not isinstance(it, dict):
+                        continue
+                    txt_it = str(it.get("texto", "")).strip()
+                    if not txt_it:
+                        continue
+                    msg_obj = {
+                        "id": str(it.get("id") or f"msg_{idx_it}").strip(),
                         "socio": str(it.get("socio", "Socio")).strip() or "Socio",
                         "fecha": str(it.get("fecha", "")).strip(),
-                        "texto": str(it.get("texto", "")).strip(),
+                        "texto": txt_it,
                     }
-                    for it in parsed
-                    if isinstance(it, dict) and str(it.get("texto", "")).strip()
-                ]
+                    if it.get("editado"):
+                        msg_obj["editado"] = True
+                    if it.get("fecha_edicion"):
+                        msg_obj["fecha_edicion"] = str(it.get("fecha_edicion")).strip()
+                    rep = it.get("reply_to")
+                    if isinstance(rep, dict) and str(rep.get("texto", "")).strip():
+                        msg_obj["reply_to"] = {
+                            "id": str(rep.get("id", "")).strip(),
+                            "socio": str(rep.get("socio", "Socio")).strip() or "Socio",
+                            "texto": str(rep.get("texto", "")).strip(),
+                        }
+                    res.append(msg_obj)
+                return res
         except Exception:
             pass
     enc = str(row.get("Encargado", "Socio") or "Socio").strip()
-    return [{"socio": enc, "fecha": "Nota inicial", "texto": raw_notas}]
+    return [{"id": "msg_0", "socio": enc, "fecha": "Nota inicial", "texto": raw_notas}]
 
 
-def agregar_nota_chat_proyecto(proy_name: str, socio: str, texto: str) -> bool:
-    """Agrega un nuevo mensaje al chat de notas del proyecto en `st.session_state.proyectos`."""
-    txt = str(texto or "").strip()
-    if not txt:
-        return False
+def _guardar_lista_notas_chat_proyecto(proy_name: str, notas_actuales: list[dict]) -> bool:
+    """Persiste la lista de mensajes del chat de notas en `st.session_state.proyectos`."""
     df_p = st.session_state.get("proyectos", pd.DataFrame())
     if df_p.empty or "Nombre" not in df_p.columns:
         return False
     mask = df_p["Nombre"] == proy_name
     if not mask.any():
         return False
-    notas_actuales = obtener_notas_chat_proyecto(proy_name)
-    ahora_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-    notas_actuales.append({
-        "socio": str(socio or "Socio").strip() or "Socio",
-        "fecha": ahora_str,
-        "texto": txt,
-    })
     idx_p = df_p[mask].index[0]
     if st.session_state.proyectos["Notas"].dtype != object:
         st.session_state.proyectos["Notas"] = st.session_state.proyectos["Notas"].astype(object)
-    st.session_state.proyectos.at[idx_p, "Notas"] = json.dumps(notas_actuales, ensure_ascii=False)
+    st.session_state.proyectos.at[idx_p, "Notas"] = (
+        json.dumps(notas_actuales, ensure_ascii=False) if notas_actuales else ""
+    )
     return True
+
+
+def agregar_nota_chat_proyecto(
+    proy_name: str,
+    socio: str,
+    texto: str,
+    reply_to: dict | None = None,
+) -> list[dict]:
+    """Agrega un nuevo mensaje (o respuesta) al chat de notas del proyecto en `st.session_state.proyectos`."""
+    txt = str(texto or "").strip()
+    if not txt:
+        return []
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if df_p.empty or "Nombre" not in df_p.columns:
+        return []
+    mask = df_p["Nombre"] == proy_name
+    if not mask.any():
+        return []
+    notas_actuales = obtener_notas_chat_proyecto(proy_name)
+    ahora_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+    nuevo_msg = {
+        "id": f"msg_{int(time.time() * 1000)}_{uuid.uuid4().hex[:4]}",
+        "socio": str(socio or "Socio").strip() or "Socio",
+        "fecha": ahora_str,
+        "texto": txt,
+    }
+    if isinstance(reply_to, dict) and str(reply_to.get("texto", "")).strip():
+        nuevo_msg["reply_to"] = {
+            "id": str(reply_to.get("id", "")).strip(),
+            "socio": str(reply_to.get("socio", "Socio")).strip() or "Socio",
+            "texto": str(reply_to.get("texto", "")).strip(),
+        }
+    notas_actuales.append(nuevo_msg)
+    _guardar_lista_notas_chat_proyecto(proy_name, notas_actuales)
+    return notas_actuales
+
+
+def editar_nota_chat_proyecto(proy_name: str, idx_nota: int, nuevo_texto: str) -> bool:
+    """Edita el texto de un mensaje existente en el chat de notas del proyecto y lo marca como editado."""
+    txt = str(nuevo_texto or "").strip()
+    if not txt:
+        return False
+    notas_actuales = obtener_notas_chat_proyecto(proy_name)
+    if 0 <= idx_nota < len(notas_actuales):
+        msg_id = str(notas_actuales[idx_nota].get("id", ""))
+        notas_actuales[idx_nota]["texto"] = txt
+        notas_actuales[idx_nota]["editado"] = True
+        notas_actuales[idx_nota]["fecha_edicion"] = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+        if msg_id:
+            for m in notas_actuales:
+                rep = m.get("reply_to")
+                if isinstance(rep, dict) and str(rep.get("id", "")) == msg_id:
+                    rep["texto"] = txt
+        return _guardar_lista_notas_chat_proyecto(proy_name, notas_actuales)
+    return False
 
 
 def eliminar_nota_chat_proyecto(proy_name: str, idx_nota: int) -> bool:
     """Elimina un mensaje específico por su índice en el chat de notas del proyecto."""
-    df_p = st.session_state.get("proyectos", pd.DataFrame())
-    if df_p.empty or "Nombre" not in df_p.columns:
-        return False
-    mask = df_p["Nombre"] == proy_name
-    if not mask.any():
-        return False
     notas_actuales = obtener_notas_chat_proyecto(proy_name)
     if 0 <= idx_nota < len(notas_actuales):
         notas_actuales.pop(idx_nota)
-        idx_p = df_p[mask].index[0]
-        if st.session_state.proyectos["Notas"].dtype != object:
-            st.session_state.proyectos["Notas"] = st.session_state.proyectos["Notas"].astype(object)
-        st.session_state.proyectos.at[idx_p, "Notas"] = (
-            json.dumps(notas_actuales, ensure_ascii=False) if notas_actuales else ""
-        )
-        return True
+        return _guardar_lista_notas_chat_proyecto(proy_name, notas_actuales)
     return False
+
+
+def aplicar_accion_chat_notas_proyecto(proy_name: str, payload_raw: str) -> bool:
+    """
+    Procesa acciones interactivas del chat de notas enviadas desde el puente JS:
+    - 'send': agregar nuevo mensaje o respuesta (con `reply_to` opcional)
+    - 'edit': editar el texto de un mensaje existente
+    - 'delete': eliminar un mensaje
+    """
+    raw = str(payload_raw or "").strip()
+    if not raw:
+        return False
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+
+    ts = payload.get("ts")
+    last_ts_key = f"_last_chat_bridge_ts_{proy_name}"
+    if ts is not None and st.session_state.get(last_ts_key) == ts:
+        return False
+    if ts is not None:
+        st.session_state[last_ts_key] = ts
+
+    action = str(payload.get("action", "")).strip()
+    if action == "send":
+        socio = str(payload.get("socio", "Socio")).strip() or "Socio"
+        texto = str(payload.get("texto", "")).strip()
+        reply_to = payload.get("reply_to")
+        st.session_state["socio_activo"] = socio
+        res = agregar_nota_chat_proyecto(proy_name, socio, texto, reply_to=reply_to if isinstance(reply_to, dict) else None)
+        return bool(res)
+
+    if action == "edit":
+        try:
+            idx = int(payload.get("idx", -1))
+        except (ValueError, TypeError):
+            return False
+        texto = str(payload.get("texto", "")).strip()
+        return editar_nota_chat_proyecto(proy_name, idx, texto)
+
+    if action == "delete":
+        try:
+            idx = int(payload.get("idx", -1))
+        except (ValueError, TypeError):
+            return False
+        return eliminar_nota_chat_proyecto(proy_name, idx)
+
+    return False
+
 
 
 def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group_vals=None,

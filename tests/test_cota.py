@@ -1338,3 +1338,58 @@ def test_aplicar_edicion_inline_cuadro_pagos():
     assert len(data_after4["filas_contratistas"]) == 1
 
 
+def test_chat_notas_responder_editar_borrar():
+    import json
+    import streamlit as st
+    from cota.db import (
+        agregar_nota_chat_proyecto,
+        aplicar_accion_chat_notas_proyecto,
+        editar_nota_chat_proyecto,
+        eliminar_nota_chat_proyecto,
+        obtener_notas_chat_proyecto,
+    )
+
+    proy = "Proy Chat Completo"
+    st.session_state["proyectos"] = pd.DataFrame([
+        {"Nombre": proy, "Encargado": "Alvaro", "Notas": ""}
+    ])
+
+    # 1. Enviar primer mensaje
+    notas = agregar_nota_chat_proyecto(proy, "Alvaro", "Cliente quiere que la isla tenga 1.20m de ancho")
+    assert len(notas) == 1
+    msg0_id = notas[0]["id"]
+
+    # 2. Responder al primer mensaje mediante aplicar_accion_chat_notas_proyecto
+    payload_reply = json.dumps({
+        "action": "send",
+        "socio": "Socio 1",
+        "texto": "Acordamos agrandarlo a 1.30m",
+        "reply_to": {"id": msg0_id, "socio": "Alvaro", "texto": "Cliente quiere que la isla tenga 1.20m de ancho"},
+        "ts": 2001,
+    })
+    assert aplicar_accion_chat_notas_proyecto(proy, payload_reply) is True
+    notas2 = obtener_notas_chat_proyecto(proy)
+    assert len(notas2) == 2
+    assert notas2[1]["reply_to"]["socio"] == "Alvaro"
+    assert notas2[1]["reply_to"]["id"] == msg0_id
+
+    # 3. Editar el primer mensaje y verificar que se marca como editado y actualiza la cita en la respuesta
+    assert editar_nota_chat_proyecto(proy, 0, "Cliente quiere que la isla tenga 1.25m de ancho") is True
+    notas3 = obtener_notas_chat_proyecto(proy)
+    assert notas3[0]["texto"] == "Cliente quiere que la isla tenga 1.25m de ancho"
+    assert notas3[0].get("editado") is True
+    assert notas3[1]["reply_to"]["texto"] == "Cliente quiere que la isla tenga 1.25m de ancho"
+
+    # 4. Borrar el primer mensaje desde el menú de 3 puntos (vía bridge)
+    payload_del = json.dumps({"action": "delete", "idx": 0, "ts": 2002})
+    assert aplicar_accion_chat_notas_proyecto(proy, payload_del) is True
+    notas4 = obtener_notas_chat_proyecto(proy)
+    assert len(notas4) == 1
+    assert notas4[0]["socio"] == "Socio 1"
+
+    # 5. Borrar el último mensaje restante
+    assert eliminar_nota_chat_proyecto(proy, 0) is True
+    assert obtener_notas_chat_proyecto(proy) == []
+
+
+

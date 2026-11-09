@@ -103,7 +103,13 @@ from cota.cotizacion import (
     reordenar_tareas_partida_por_indices,
 )
 from cota.pdf import generar_pdf_minuta
-from cota.ui.components import render_metric_card
+import cota.ui.components
+try:
+    if not hasattr(cota.ui.components, "render_chat_notas_proyecto"):
+        importlib.reload(cota.ui.components)
+except Exception:
+    pass
+from cota.ui.components import render_chat_notas_proyecto, render_metric_card
 from cota.utils import (
     analizar_tareas_proyecto,
     extraer_esp,
@@ -319,43 +325,8 @@ def _render_tab_resumen(proy_name, proy_data):
         )
 
         st.markdown("#### 💬 NOTAS")
-        notas_chat = obtener_notas_chat_proyecto(proy_name)
         socios_disp = obtener_catalogo_estudio("socios") or ["Alvaro", "Socio 2", "Socio 3"]
-        with st.container(border=True):
-            if notas_chat:
-                for idx_msg, msg in enumerate(notas_chat):
-                    c_m1, c_m2 = st.columns([9.0, 1.0])
-                    with c_m1:
-                        st.markdown(
-                            f"<div style='background:#FAF8F5; border:1px solid #DFD9CE; border-left:4px solid #C85A32; border-radius:8px; padding:8px 12px; margin-bottom:6px;'>"
-                            f"<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;'>"
-                            f"<span style='color:#C85A32; font-weight:700; font-size:12px;'>👤 {msg['socio']}</span>"
-                            f"<span style='color:#8C8278; font-family:monospace; font-size:11px;'>{msg['fecha']}</span>"
-                            f"</div>"
-                            f"<div style='color:#262320; font-size:13px; line-height:1.5; white-space:pre-wrap;'>{msg['texto']}</div>"
-                            f"</div>",
-                            unsafe_allow_html=True,
-                        )
-                    with c_m2:
-                        if st.button("🗑️", key=f"del_nota_chat_{proy_name}_{idx_msg}", help="Eliminar esta nota"):
-                            eliminar_nota_chat_proyecto(proy_name, idx_msg)
-                            st.rerun()
-            else:
-                st.caption("Aún no hay notas registradas en este proyecto. Escribe la primera nota abajo.")
-
-            with st.form(f"form_chat_notas_res_{proy_name}", clear_on_submit=True):
-                c_sn1, c_sn2 = st.columns([3.5, 6.5])
-                with c_sn1:
-                    soc_act = st.session_state.get("socio_activo", socios_disp[0])
-                    idx_s = socios_disp.index(soc_act) if soc_act in socios_disp else 0
-                    socio_autor = st.selectbox("Socio que deja la nota:", socios_disp, index=idx_s, key=f"sel_soc_nota_{proy_name}")
-                with c_sn2:
-                    texto_nueva_nota = st.text_area("Mensaje / Nota:", height=68, placeholder="Escribe aquí una nota, acuerdo con el cliente o pendiente del proyecto...")
-                if st.form_submit_button("💬 ENVIAR NOTA AL PROYECTO", type="primary", use_container_width=True):
-                    if texto_nueva_nota and texto_nueva_nota.strip():
-                        agregar_nota_chat_proyecto(proy_name, socio_autor, texto_nueva_nota.strip())
-                        st.success("Nota agregada.")
-                        st.rerun()
+        render_chat_notas_proyecto(proy_name, socios_disp, key_prefix="res")
 
     with col_d2:
         ch_f1, ch_f2 = st.columns([6.2, 3.8])
@@ -2559,12 +2530,14 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
         tc_val = 3.60
     cols_por_pagar = list(data_cuadro.get("cols_por_pagar", []))
 
+    import time
     payload_json = json.dumps({
         "safeId": safe_proy_id,
         "bridgeLabel": f"PAGOS_BRIDGE_{safe_proy_id}",
         "colsPago": cols_pago,
         "colsPorPagar": cols_por_pagar,
         "tc": tc_val,
+        "renderNonce": time.time(),
     })
 
     html_code = f"""
@@ -2583,6 +2556,13 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
         let tc = payload.tc || 3.60;
 
         parentWin.__cotaPagosFsState = parentWin.__cotaPagosFsState || {{}};
+        parentWin.__cotaPagosControllers = parentWin.__cotaPagosControllers || {{}};
+
+        if (parentWin.__cotaPagosControllers[safeId] && typeof parentWin.__cotaPagosControllers[safeId].cleanup === 'function') {{
+            try {{
+                parentWin.__cotaPagosControllers[safeId].cleanup();
+            }} catch (e) {{}}
+        }}
 
         function ensureInteractiveStyles() {{
             let stEl = parentDoc.getElementById('cota_pagos_fs_styles');
@@ -2595,21 +2575,28 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
                 .cota-pagos-fs-active {{
                     position: fixed !important;
                     inset: 0 !important;
+                    top: 0 !important;
+                    left: 0 !important;
+                    right: 0 !important;
+                    bottom: 0 !important;
                     width: 100vw !important;
                     height: 100vh !important;
                     max-width: 100vw !important;
                     max-height: 100vh !important;
-                    z-index: 999990 !important;
+                    z-index: 2147483640 !important;
                     background: #FAF8F5 !important;
-                    padding: 18px 26px !important;
+                    padding: 16px 24px !important;
                     margin: 0 !important;
                     border-radius: 0 !important;
-                    overflow: auto !important;
+                    overflow: hidden !important;
                     box-sizing: border-box !important;
                     box-shadow: none !important;
+                    display: flex !important;
+                    flex-direction: column !important;
                 }}
                 .cota-pagos-fs-active .cota-pagos-scroll-area {{
-                    max-height: calc(100vh - 95px) !important;
+                    flex: 1 1 auto !important;
+                    max-height: calc(100vh - 85px) !important;
                     overflow: auto !important;
                 }}
                 .cota-pagos-fs-active table {{
@@ -2665,26 +2652,27 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
         }}
 
         function findBridgeInput() {{
-            const inputs = parentDoc.querySelectorAll('input[aria-label="' + bridgeLabel + '"]');
-            if (inputs && inputs.length > 0) return inputs[0];
-            const labels = parentDoc.querySelectorAll('label');
-            for (let i = 0; i < labels.length; i++) {{
-                if ((labels[i].textContent || '').trim() === bridgeLabel) {{
-                    const container = labels[i].closest('div[data-testid="stTextInput"]');
-                    if (container) {{
-                        const inp = container.querySelector('input');
-                        if (inp) return inp;
-                    }}
-                }}
+            let inp = parentDoc.querySelector('input[aria-label="' + bridgeLabel + '"]');
+            if (inp) return inp;
+            const inputs = parentDoc.querySelectorAll('div[data-testid="stTextInput"] input');
+            for (let i = 0; i < inputs.length; i++) {{
+                const el = inputs[i];
+                if ((el.getAttribute('aria-label') || '').indexOf(bridgeLabel) >= 0) return el;
+                const container = el.closest('div[data-testid="stTextInput"]');
+                if (container && (container.textContent || '').indexOf(bridgeLabel) >= 0) return el;
             }}
             return null;
         }}
 
         function sendBridgePayload(obj) {{
             const inp = findBridgeInput();
-            if (!inp) return;
+            if (!inp) {{
+                console.warn('[Cota Pagos] Bridge input no encontrado para', bridgeLabel);
+                return;
+            }}
             const valStr = JSON.stringify(Object.assign({{ ts: Date.now() }}, obj));
-            const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            const winProto = (parentWin.HTMLInputElement || window.HTMLInputElement).prototype;
+            const nativeSetter = Object.getOwnPropertyDescriptor(winProto, 'value').set;
             const tracker = inp._valueTracker;
             if (tracker) tracker.setValue('');
             nativeSetter.call(inp, valStr);
@@ -2892,335 +2880,360 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
             }}
         }}
 
-        function initPagosUI() {{
-            ensureInteractiveStyles();
+        const iconExpand = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>';
+        const iconCollapse = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>';
+
+        function updateFsButtonState(btn, isFs) {{
+            if (!btn) return;
+            if (isFs) {{
+                btn.innerHTML = iconCollapse + '<span>Salir de Pantalla Completa (ESC)</span>';
+                btn.style.background = '#262320';
+            }} else {{
+                btn.innerHTML = iconExpand + '<span>Pantalla Completa</span>';
+                btn.style.background = 'rgba(38, 35, 32, 0.28)';
+            }}
+        }}
+
+        function syncFsState() {{
             const fsWrap = parentDoc.getElementById('cota_cuadro_pagos_fs_wrap_' + safeId);
             const btnFs = parentDoc.getElementById('btn_fs_pagos_' + safeId);
-            if (!fsWrap) return false;
-
-            const iconExpand = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>`;
-            const iconCollapse = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>`;
-
-            function updateFsButtonState(isFs) {{
-                if (!btnFs) return;
-                if (isFs) {{
-                    btnFs.innerHTML = iconCollapse + '<span>Salir de Pantalla Completa (ESC)</span>';
-                    btnFs.style.background = '#262320';
-                }} else {{
-                    btnFs.innerHTML = iconExpand + '<span>Pantalla Completa</span>';
-                    btnFs.style.background = 'rgba(38, 35, 32, 0.28)';
+            if (!fsWrap) return;
+            const isFs = !!parentWin.__cotaPagosFsState[safeId];
+            if (isFs) {{
+                if (!fsWrap.classList.contains('cota-pagos-fs-active')) {{
+                    fsWrap.classList.add('cota-pagos-fs-active');
                 }}
+                parentDoc.body.style.overflow = 'hidden';
+                updateFsButtonState(btnFs, true);
+            }} else {{
+                if (fsWrap.classList.contains('cota-pagos-fs-active')) {{
+                    fsWrap.classList.remove('cota-pagos-fs-active');
+                }}
+                parentDoc.body.style.overflow = '';
+                updateFsButtonState(btnFs, false);
             }}
+        }}
 
-            // Restaurar Pantalla Completa automáticamente si estaba activa antes de guardar una celda
-            if (parentWin.__cotaPagosFsState[safeId]) {{
-                fsWrap.classList.add('cota-pagos-fs-active');
-                updateFsButtonState(true);
-            }}
+        function toggleFs() {{
+            const fsWrap = parentDoc.getElementById('cota_cuadro_pagos_fs_wrap_' + safeId);
+            if (!fsWrap) return;
+            const isFsNow = !fsWrap.classList.contains('cota-pagos-fs-active');
+            parentWin.__cotaPagosFsState[safeId] = isFsNow;
+            syncFsState();
+        }}
 
-            if (btnFs && !btnFs.dataset.cotaFsBound) {{
-                btnFs.dataset.cotaFsBound = '1';
-                btnFs.addEventListener('click', function(ev) {{
-                    ev.preventDefault();
-                    ev.stopPropagation();
-                    const isCurrentlyActive = fsWrap.classList.contains('cota-pagos-fs-active') || (parentDoc.fullscreenElement === fsWrap);
-                    if (isCurrentlyActive) {{
-                        parentWin.__cotaPagosFsState[safeId] = false;
-                        fsWrap.classList.remove('cota-pagos-fs-active');
-                        if (parentDoc.fullscreenElement && parentDoc.exitFullscreen) {{
-                            parentDoc.exitFullscreen().catch(() => {{}});
-                        }}
-                        updateFsButtonState(false);
-                    }} else {{
-                        parentWin.__cotaPagosFsState[safeId] = true;
-                        fsWrap.classList.add('cota-pagos-fs-active');
-                        if (fsWrap.requestFullscreen) {{
-                            fsWrap.requestFullscreen().catch(() => {{}});
-                        }}
-                        updateFsButtonState(true);
-                    }}
-                }});
-
-                parentDoc.addEventListener('fullscreenchange', function() {{
-                    if (!parentDoc.fullscreenElement && fsWrap.classList.contains('cota-pagos-fs-active') && !parentWin.__cotaPagosFsState[safeId]) {{
-                        fsWrap.classList.remove('cota-pagos-fs-active');
-                        updateFsButtonState(false);
-                    }}
-                    getOrCreateTooltip();
-                }});
-
-                parentDoc.addEventListener('keydown', function(ev) {{
-                    if (ev.key === 'Escape') {{
-                        if (fsWrap.querySelector('.cota-cell-editing')) return;
-                        if (fsWrap.classList.contains('cota-pagos-fs-active')) {{
-                            parentWin.__cotaPagosFsState[safeId] = false;
-                            fsWrap.classList.remove('cota-pagos-fs-active');
-                            updateFsButtonState(false);
-                        }}
-                    }}
-                }});
-            }}
-
-            // Botón para agregar fila directamente desde el cuadro coloreado
-            const btnAddRow = fsWrap.querySelector('[data-cota-action="add-row"]');
-            if (btnAddRow && !btnAddRow.dataset.cotaBound) {{
-                btnAddRow.dataset.cotaBound = '1';
-                btnAddRow.addEventListener('click', function(e) {{
-                    e.preventDefault();
-                    e.stopPropagation();
-                    sendBridgePayload({{ action: 'add_row', Descripcion: 'NUEVA PARTIDA / CONTRATISTA', Moneda: 'Soles', TOTAL: 0 }});
-                }});
-            }}
-
-            // Botones para eliminar fila de contratista
-            fsWrap.querySelectorAll('[data-cota-action="del-row"]').forEach(function(btnDel) {{
-                if (btnDel.dataset.cotaBound) return;
-                btnDel.dataset.cotaBound = '1';
-                btnDel.addEventListener('click', function(e) {{
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const rIdx = parseInt(btnDel.getAttribute('data-row-idx') || '-1', 10);
-                    if (rIdx >= 0) {{
-                        sendBridgePayload({{ action: 'delete_row', row_idx: rIdx }});
-                    }}
-                }});
-            }});
-
-            // Cabeceras de semanas: clic en Por Pagar / Estado para alternar estado de la semana
-            fsWrap.querySelectorAll('th[data-cota-toggle-pp]').forEach(function(thEl) {{
-                if (thEl.dataset.cotaBound) return;
-                thEl.dataset.cotaBound = '1';
-                thEl.addEventListener('click', function(e) {{
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const colName = thEl.getAttribute('data-cota-toggle-pp');
-                    if (colName) {{
-                        sendBridgePayload({{ action: 'toggle_por_pagar', col: colName }});
-                    }}
-                }});
-            }});
-
-            // Tooltips flotantes al pasar el mouse sobre celdas con nota
-            fsWrap.addEventListener('pointermove', function(e) {{
-                const cell = e.target.closest('td[data-cota-note-text]');
-                if (cell && !cell.classList.contains('cota-cell-editing')) {{
-                    showTooltipContent(
-                        e,
-                        cell.getAttribute('data-cota-note-partida') || '',
-                        cell.getAttribute('data-cota-note-semana') || '',
-                        cell.getAttribute('data-cota-note-monto') || '',
-                        cell.getAttribute('data-cota-note-text') || ''
-                    );
-                }} else {{
-                    hideTooltip();
+        function commitAnyActiveEdit(fsWrap) {{
+            if (!fsWrap) return;
+            const editingCells = fsWrap.querySelectorAll('.cota-cell-editing');
+            editingCells.forEach(c => {{
+                if (typeof c._cotaCommit === 'function') {{
+                    c._cotaCommit();
                 }}
             }});
-            fsWrap.addEventListener('pointerleave', hideTooltip);
+        }}
 
-            // Edición directa (inline) en todas las celdas editables del cuadro coloreado
-            const editableCells = Array.from(fsWrap.querySelectorAll('td.cota-editable-cell'));
-            editableCells.forEach(function(cell, cellOrderIdx) {{
-                if (cell.dataset.cotaEditBound === '1') return;
-                cell.dataset.cotaEditBound = '1';
+        function startCellEditing(cell, fsWrap) {{
+            if (cell.classList.contains('cota-cell-editing')) return;
+            commitAnyActiveEdit(fsWrap);
+            hideTooltip();
 
-                cell.addEventListener('click', function(e) {{
-                    if (e.target.closest('[data-cota-action="del-row"]')) return;
-                    if (cell.classList.contains('cota-cell-editing')) return;
-                    hideTooltip();
+            const rType = cell.getAttribute('data-row-type');
+            const rIdx = parseInt(cell.getAttribute('data-row-idx') || '0', 10);
+            const colField = cell.getAttribute('data-col-field');
 
-                    const rType = cell.getAttribute('data-row-type');
-                    const rIdx = parseInt(cell.getAttribute('data-row-idx') || '0', 10);
-                    const colField = cell.getAttribute('data-col-field');
+            // Caso 1: Columna Moneda (alternar Soles / Dólares con selector directo)
+            if (colField === 'Moneda') {{
+                const curMon = (cell.getAttribute('data-raw-val') || 'Soles').trim();
+                const nextMon = curMon === 'Dólares' ? 'Soles' : 'Dólares';
+                cell.setAttribute('data-raw-val', nextMon);
+                cell.textContent = nextMon;
+                const tr = cell.closest('tr');
+                if (tr) {{
+                    const newPref = nextMon === 'Dólares' ? '$' : 'S/ ';
+                    tr.querySelectorAll('td[data-pref]').forEach(tdP => {{
+                        tdP.setAttribute('data-pref', newPref);
+                        const rv = parseFloat(tdP.getAttribute('data-raw-val')) || 0;
+                        renderAmountCellInner(tdP, rv, tdP.getAttribute('data-cota-note-text') || '');
+                    }});
+                }}
+                recalculateTableDOM(fsWrap);
+                sendBridgePayload({{
+                    action: 'edit_cells',
+                    edits: [{{ row_type: rType, row_idx: rIdx, field: 'Moneda', value: nextMon }}]
+                }});
+                return;
+            }}
 
-                    // Caso 1: Columna Moneda (alternar Soles / Dólares con selector directo)
-                    if (colField === 'Moneda') {{
-                        const curMon = (cell.getAttribute('data-raw-val') || 'Soles').trim();
-                        const nextMon = curMon === 'Dólares' ? 'Soles' : 'Dólares';
-                        cell.setAttribute('data-raw-val', nextMon);
-                        cell.textContent = nextMon;
-                        const tr = cell.closest('tr');
-                        if (tr) {{
-                            const newPref = nextMon === 'Dólares' ? '$' : 'S/ ';
-                            tr.querySelectorAll('td[data-pref]').forEach(tdP => {{
-                                tdP.setAttribute('data-pref', newPref);
-                                const rv = parseFloat(tdP.getAttribute('data-raw-val')) || 0;
-                                renderAmountCellInner(tdP, rv, tdP.getAttribute('data-cota-note-text') || '');
-                            }});
-                        }}
-                        recalculateTableDOM(fsWrap);
+            // Caso 2: Columna Descripción + Contratista/Nota
+            if (colField === 'Descripcion') {{
+                const curDesc = cell.getAttribute('data-raw-desc') || '';
+                const curNotas = cell.getAttribute('data-raw-notas') || '';
+                const origHtml = cell.innerHTML;
+                cell.classList.add('cota-cell-editing');
+                cell.innerHTML = '<div style="display:flex; flex-direction:column; gap:4px; padding:3px;">' +
+                    '<input type="text" class="cota-inline-input inp-desc" value="' + curDesc.replace(/"/g, '&quot;') + '" placeholder="Partida / Especialidad" style="border-bottom:1px solid #DFD9CE; font-weight:700; font-size:12px;" />' +
+                    '<input type="text" class="cota-inline-input inp-notas" value="' + curNotas.replace(/"/g, '&quot;') + '" placeholder="Contratista / Nota (ej. Contratista: Juan)" style="font-weight:500; font-size:11px; color:#5A534A;" />' +
+                '</div>';
+                const inpD = cell.querySelector('.inp-desc');
+                const inpN = cell.querySelector('.inp-notas');
+                inpD.focus();
+                inpD.select();
+
+                let committed = false;
+                function commitDesc() {{
+                    if (committed) return;
+                    committed = true;
+                    cell._cotaCommit = null;
+                    const newD = (inpD.value || '').trim() || curDesc;
+                    const newN = (inpN.value || '').trim();
+                    cell.classList.remove('cota-cell-editing');
+                    cell.setAttribute('data-raw-desc', newD);
+                    cell.setAttribute('data-raw-notas', newN);
+                    cell.innerHTML = origHtml;
+                    const titleSpan = cell.querySelector('.cota-desc-title');
+                    if (titleSpan) titleSpan.textContent = newD;
+                    const noteSpan = cell.querySelector('.cota-desc-sub');
+                    if (noteSpan) {{
+                        noteSpan.textContent = newN;
+                        noteSpan.style.display = newN ? 'block' : 'none';
+                    }}
+                    if (newD !== curDesc || newN !== curNotas) {{
                         sendBridgePayload({{
                             action: 'edit_cells',
-                            edits: [{{ row_type: rType, row_idx: rIdx, field: 'Moneda', value: nextMon }}]
+                            edits: [
+                                {{ row_type: rType, row_idx: rIdx, field: 'Descripcion', value: newD }},
+                                {{ row_type: rType, row_idx: rIdx, field: 'Notas', value: newN }}
+                            ]
                         }});
-                        return;
                     }}
+                }}
+                cell._cotaCommit = commitDesc;
 
-                    // Caso 2: Columna Descripción + Contratista/Nota
-                    if (colField === 'Descripcion') {{
-                        const curDesc = cell.getAttribute('data-raw-desc') || '';
-                        const curNotas = cell.getAttribute('data-raw-notas') || '';
-                        const origHtml = cell.innerHTML;
-                        cell.classList.add('cota-cell-editing');
-                        cell.innerHTML = `
-                            <div style="display:flex; flex-direction:column; gap:4px; padding:3px;">
-                                <input type="text" class="cota-inline-input inp-desc" value="${{curDesc.replace(/"/g, '&quot;')}}" placeholder="Partida / Especialidad" style="border-bottom:1px solid #DFD9CE; font-weight:700; font-size:12px;" />
-                                <input type="text" class="cota-inline-input inp-notas" value="${{curNotas.replace(/"/g, '&quot;')}}" placeholder="Contratista / Nota (ej. Contratista: Juan)" style="font-weight:500; font-size:11px; color:#5A534A;" />
-                            </div>
-                        `;
-                        const inpD = cell.querySelector('.inp-desc');
-                        const inpN = cell.querySelector('.inp-notas');
-                        inpD.focus();
-                        inpD.select();
+                cell.addEventListener('focusout', function onFo(ev) {{
+                    if (cell.contains(ev.relatedTarget)) return;
+                    cell.removeEventListener('focusout', onFo);
+                    commitDesc();
+                }});
 
-                        let committed = false;
-                        function commitDesc() {{
-                            if (committed) return;
-                            committed = true;
-                            const newD = (inpD.value || '').trim() || curDesc;
-                            const newN = (inpN.value || '').trim();
-                            cell.classList.remove('cota-cell-editing');
-                            cell.setAttribute('data-raw-desc', newD);
-                            cell.setAttribute('data-raw-notas', newN);
-                            cell.innerHTML = origHtml;
-                            const titleSpan = cell.querySelector('.cota-desc-title');
-                            if (titleSpan) titleSpan.textContent = newD;
-                            const noteSpan = cell.querySelector('.cota-desc-sub');
-                            if (noteSpan) {{
-                                noteSpan.textContent = newN;
-                                noteSpan.style.display = newN ? 'block' : 'none';
-                            }}
-                            if (newD !== curDesc || newN !== curNotas) {{
-                                sendBridgePayload({{
-                                    action: 'edit_cells',
-                                    edits: [
-                                        {{ row_type: rType, row_idx: rIdx, field: 'Descripcion', value: newD }},
-                                        {{ row_type: rType, row_idx: rIdx, field: 'Notas', value: newN }}
-                                    ]
-                                }});
-                            }}
-                        }}
-
-                        cell.addEventListener('focusout', function onFo(ev) {{
-                            if (cell.contains(ev.relatedTarget)) return;
-                            cell.removeEventListener('focusout', onFo);
+                [inpD, inpN].forEach(inpEl => {{
+                    inpEl.addEventListener('keydown', function(ke) {{
+                        if (ke.key === 'Enter') {{
+                            ke.preventDefault();
                             commitDesc();
-                        }});
-                        [inpD, inpN].forEach(inpEl => {{
-                            inpEl.addEventListener('keydown', function(ke) {{
-                                if (ke.key === 'Enter') {{
-                                    ke.preventDefault();
-                                    commitDesc();
-                                }} else if (ke.key === 'Escape') {{
-                                    ke.preventDefault();
-                                    committed = true;
-                                    cell.classList.remove('cota-cell-editing');
-                                    cell.innerHTML = origHtml;
-                                }}
-                            }});
-                        }});
-                        return;
-                    }}
-
-                    // Caso 3: Celda de Monto (TOTAL o Semana de Pago ADELANTO 1, S1, S2...)
-                    const curVal = parseFloat(cell.getAttribute('data-raw-val')) || 0;
-                    const curNote = cell.getAttribute('data-cota-note-text') || '';
-                    const isPaymentCol = colField !== 'TOTAL';
-
-                    cell.classList.add('cota-cell-editing');
-                    const initStr = curVal !== 0 ? String(curVal) : '';
-
-                    if (isPaymentCol) {{
-                        cell.innerHTML = `
-                            <div style="display:flex; flex-direction:column; gap:3px; min-width:110px;">
-                                <input type="text" inputmode="decimal" class="cota-inline-input inp-monto" value="${{initStr}}" placeholder="0.00" style="text-align:right;" />
-                                <input type="text" class="cota-inline-input inp-nota-pago" value="${{curNote.replace(/"/g, '&quot;')}}" placeholder="💬 Nota opcional..." style="font-size:10.5px; font-weight:500; color:#6E665E; border-top:1px dashed #DFD9CE; padding-top:2px; text-align:left;" />
-                            </div>
-                        `;
-                    }} else {{
-                        cell.innerHTML = `<input type="text" inputmode="decimal" class="cota-inline-input inp-monto" value="${{initStr}}" placeholder="0.00" style="text-align:right;" />`;
-                    }}
-
-                    const inpM = cell.querySelector('.inp-monto');
-                    const inpNP = cell.querySelector('.inp-nota-pago');
-                    inpM.focus();
-                    inpM.select();
-
-                    let committedM = false;
-                    function commitMonto(moveDir) {{
-                        if (committedM) return;
-                        committedM = true;
-                        const rawTyped = (inpM.value || '').replace(/,/g, '').replace(/[^0-9.\\-]/g, '');
-                        const newNum = Math.max(0, Math.round((parseFloat(rawTyped) || 0) * 100) / 100);
-                        const newNota = inpNP ? (inpNP.value || '').trim() : curNote;
-
-                        cell.classList.remove('cota-cell-editing');
-                        renderAmountCellInner(cell, newNum, newNota);
-                        recalculateTableDOM(fsWrap);
-
-                        if (Math.abs(newNum - curVal) > 0.001 || newNota !== curNote) {{
-                            const edPayload = {{
-                                row_type: rType,
-                                row_idx: rIdx,
-                                field: colField,
-                                value: newNum
-                            }};
-                            if (isPaymentCol) {{
-                                edPayload.nota_pago = newNota;
-                            }}
-                            sendBridgePayload({{
-                                action: 'edit_cells',
-                                edits: [edPayload]
-                            }});
+                        }} else if (ke.key === 'Escape') {{
+                            ke.preventDefault();
+                            committed = true;
+                            cell._cotaCommit = null;
+                            cell.classList.remove('cota-cell-editing');
+                            cell.innerHTML = origHtml;
                         }}
-
-                        if (moveDir !== 0) {{
-                            const nextCell = editableCells[cellOrderIdx + moveDir];
-                            if (nextCell && nextCell.getAttribute('data-col-field') !== 'Moneda') {{
-                                setTimeout(() => nextCell.click(), 20);
-                            }}
-                        }}
-                    }}
-
-                    cell.addEventListener('focusout', function onFoM(ev) {{
-                        if (cell.contains(ev.relatedTarget)) return;
-                        cell.removeEventListener('focusout', onFoM);
-                        commitMonto(0);
-                    }});
-
-                    [inpM, inpNP].filter(Boolean).forEach(elInp => {{
-                        elInp.addEventListener('keydown', function(ke) {{
-                            if (ke.key === 'Enter') {{
-                                ke.preventDefault();
-                                commitMonto(0);
-                            }} else if (ke.key === 'Tab') {{
-                                if (elInp === inpM && inpNP && !ke.shiftKey && ke.altKey) {{
-                                    return;
-                                }}
-                                ke.preventDefault();
-                                commitMonto(ke.shiftKey ? -1 : 1);
-                            }} else if (ke.key === 'Escape') {{
-                                ke.preventDefault();
-                                committedM = true;
-                                cell.classList.remove('cota-cell-editing');
-                                renderAmountCellInner(cell, curVal, curNote);
-                            }}
-                        }});
                     }});
                 }});
+                return;
+            }}
+
+            // Caso 3: Celda de Monto (TOTAL o Semana de Pago ADELANTO 1, S1, S2...)
+            const curVal = parseFloat(cell.getAttribute('data-raw-val')) || 0;
+            const curNote = cell.getAttribute('data-cota-note-text') || '';
+            const isPaymentCol = colField !== 'TOTAL';
+
+            cell.classList.add('cota-cell-editing');
+            const initStr = curVal !== 0 ? String(curVal) : '';
+
+            if (isPaymentCol) {{
+                cell.innerHTML = '<div style="display:flex; flex-direction:column; gap:3px; min-width:110px;">' +
+                    '<input type="text" inputmode="decimal" class="cota-inline-input inp-monto" value="' + initStr + '" placeholder="0.00" style="text-align:right;" />' +
+                    '<input type="text" class="cota-inline-input inp-nota-pago" value="' + curNote.replace(/"/g, '&quot;') + '" placeholder="💬 Nota opcional..." style="font-size:10.5px; font-weight:500; color:#6E665E; border-top:1px dashed #DFD9CE; padding-top:2px; text-align:left;" />' +
+                '</div>';
+            }} else {{
+                cell.innerHTML = '<input type="text" inputmode="decimal" class="cota-inline-input inp-monto" value="' + initStr + '" placeholder="0.00" style="text-align:right;" />';
+            }}
+
+            const inpM = cell.querySelector('.inp-monto');
+            const inpNP = cell.querySelector('.inp-nota-pago');
+            inpM.focus();
+            inpM.select();
+
+            let committedM = false;
+            function commitMonto(moveDir) {{
+                if (committedM) return;
+                committedM = true;
+                cell._cotaCommit = null;
+                const rawTyped = (inpM.value || '').replace(/,/g, '').replace(/[^0-9.\\-]/g, '');
+                const newNum = Math.max(0, Math.round((parseFloat(rawTyped) || 0) * 100) / 100);
+                const newNota = inpNP ? (inpNP.value || '').trim() : curNote;
+
+                cell.classList.remove('cota-cell-editing');
+                renderAmountCellInner(cell, newNum, newNota);
+                recalculateTableDOM(fsWrap);
+
+                if (Math.abs(newNum - curVal) > 0.001 || newNota !== curNote) {{
+                    const edPayload = {{
+                        row_type: rType,
+                        row_idx: rIdx,
+                        field: colField,
+                        value: newNum
+                    }};
+                    if (isPaymentCol) {{
+                        edPayload.nota_pago = newNota;
+                    }}
+                    sendBridgePayload({{
+                        action: 'edit_cells',
+                        edits: [edPayload]
+                    }});
+                }}
+
+                if (moveDir !== 0) {{
+                    const editableCells = Array.from(fsWrap.querySelectorAll('td.cota-editable-cell'));
+                    const curIndex = editableCells.indexOf(cell);
+                    const nextCell = editableCells[curIndex + moveDir];
+                    if (nextCell && nextCell.getAttribute('data-col-field') !== 'Moneda') {{
+                        setTimeout(() => startCellEditing(nextCell, fsWrap), 30);
+                    }}
+                }}
+            }}
+            cell._cotaCommit = () => commitMonto(0);
+
+            cell.addEventListener('focusout', function onFoM(ev) {{
+                if (cell.contains(ev.relatedTarget)) return;
+                cell.removeEventListener('focusout', onFoM);
+                commitMonto(0);
             }});
 
-            return true;
+            [inpM, inpNP].filter(Boolean).forEach(elInp => {{
+                elInp.addEventListener('keydown', function(ke) {{
+                    if (ke.key === 'Enter') {{
+                        ke.preventDefault();
+                        commitMonto(0);
+                    }} else if (ke.key === 'Tab') {{
+                        if (elInp === inpM && inpNP && !ke.shiftKey && ke.altKey) {{
+                            return;
+                        }}
+                        ke.preventDefault();
+                        commitMonto(ke.shiftKey ? -1 : 1);
+                    }} else if (ke.key === 'Escape') {{
+                        ke.preventDefault();
+                        committedM = true;
+                        cell._cotaCommit = null;
+                        cell.classList.remove('cota-cell-editing');
+                        renderAmountCellInner(cell, curVal, curNote);
+                    }}
+                }});
+            }});
         }}
 
-        if (!initPagosUI()) {{
-            let attempts = 0;
-            const timer = setInterval(() => {{
-                attempts++;
-                if (initPagosUI() || attempts > 25) {{
-                    clearInterval(timer);
+        // Manejador Delegado en parentDoc: captura clicks incluso tras cualquier re-render de Streamlit
+        function onDocClick(ev) {{
+            const wrapId = 'cota_cuadro_pagos_fs_wrap_' + safeId;
+            const fsWrap = parentDoc.getElementById(wrapId);
+            if (!fsWrap) return;
+
+            // 1. Botón de Pantalla Completa
+            const btnFs = ev.target.closest('#btn_fs_pagos_' + safeId);
+            if (btnFs) {{
+                ev.preventDefault();
+                ev.stopPropagation();
+                toggleFs();
+                return;
+            }}
+
+            if (!fsWrap.contains(ev.target)) return;
+
+            // 2. Botón para agregar fila
+            const btnAdd = ev.target.closest('[data-cota-action="add-row"]');
+            if (btnAdd) {{
+                ev.preventDefault();
+                ev.stopPropagation();
+                sendBridgePayload({{ action: 'add_row', Descripcion: 'NUEVA PARTIDA / CONTRATISTA', Moneda: 'Soles', TOTAL: 0 }});
+                return;
+            }}
+
+            // 3. Botón para eliminar fila
+            const btnDel = ev.target.closest('[data-cota-action="del-row"]');
+            if (btnDel) {{
+                ev.preventDefault();
+                ev.stopPropagation();
+                const rIdx = parseInt(btnDel.getAttribute('data-row-idx') || '-1', 10);
+                if (rIdx >= 0) {{
+                    sendBridgePayload({{ action: 'delete_row', row_idx: rIdx }});
                 }}
-            }}, 150);
+                return;
+            }}
+
+            // 4. Cabeceras de semanas: Por Pagar
+            const thPp = ev.target.closest('th[data-cota-toggle-pp]');
+            if (thPp) {{
+                ev.preventDefault();
+                ev.stopPropagation();
+                const colName = thPp.getAttribute('data-cota-toggle-pp');
+                if (colName) {{
+                    sendBridgePayload({{ action: 'toggle_por_pagar', col: colName }});
+                }}
+                return;
+            }}
+
+            // 5. Celdas editables
+            const cell = ev.target.closest('td.cota-editable-cell');
+            if (cell && !cell.classList.contains('cota-cell-editing')) {{
+                startCellEditing(cell, fsWrap);
+                return;
+            }}
         }}
+
+        function onDocKeyDown(ev) {{
+            if (ev.key === 'Escape') {{
+                const fsWrap = parentDoc.getElementById('cota_cuadro_pagos_fs_wrap_' + safeId);
+                if (!fsWrap) return;
+                if (fsWrap.querySelector('.cota-cell-editing')) return;
+                if (fsWrap.classList.contains('cota-pagos-fs-active')) {{
+                    parentWin.__cotaPagosFsState[safeId] = false;
+                    syncFsState();
+                }}
+            }}
+        }}
+
+        function onDocPointerMove(e) {{
+            const wrapId = 'cota_cuadro_pagos_fs_wrap_' + safeId;
+            const fsWrap = parentDoc.getElementById(wrapId);
+            if (!fsWrap) return;
+            const cell = e.target.closest('td[data-cota-note-text]');
+            if (cell && fsWrap.contains(cell) && !cell.classList.contains('cota-cell-editing')) {{
+                showTooltipContent(
+                    e,
+                    cell.getAttribute('data-cota-note-partida') || '',
+                    cell.getAttribute('data-cota-note-semana') || '',
+                    cell.getAttribute('data-cota-note-monto') || '',
+                    cell.getAttribute('data-cota-note-text') || ''
+                );
+            }} else {{
+                hideTooltip();
+            }}
+        }}
+
+        parentDoc.addEventListener('click', onDocClick, true);
+        parentDoc.addEventListener('keydown', onDocKeyDown, true);
+        parentDoc.addEventListener('pointermove', onDocPointerMove, true);
+
+        const observer = new (parentWin.MutationObserver || window.MutationObserver)(function() {{
+            syncFsState();
+        }});
+        try {{
+            observer.observe(parentDoc.body, {{ childList: true, subtree: true }});
+        }} catch (e) {{}}
+
+        parentWin.__cotaPagosControllers[safeId] = {{
+            cleanup: function() {{
+                try {{
+                    parentDoc.removeEventListener('click', onDocClick, true);
+                    parentDoc.removeEventListener('keydown', onDocKeyDown, true);
+                    parentDoc.removeEventListener('pointermove', onDocPointerMove, true);
+                    observer.disconnect();
+                }} catch (e) {{}}
+            }}
+        }};
+
+        ensureInteractiveStyles();
+        syncFsState();
     }})();
     </script>
     </body>
@@ -3241,6 +3254,12 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
 
     safe_proy_id = re.sub(r"[^a-zA-Z0-9_]", "_", proy_name)
     st.markdown(f"<div id='anchor_pagos_{safe_proy_id}'></div>", unsafe_allow_html=True)
+
+    bridge_key = f"pagos_inline_bridge_{proy_name}"
+    if bridge_key in st.session_state and st.session_state[bridge_key]:
+        aplicar_edicion_inline_cuadro_pagos(proy_name, st.session_state[bridge_key])
+        st.session_state[bridge_key] = ""
+        data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
 
     # Barra de configuración superior
     c_cfg1, c_cfg2, c_cfg3 = st.columns([1.3, 1.3, 4.4])
