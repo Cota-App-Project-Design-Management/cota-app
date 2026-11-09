@@ -79,7 +79,7 @@ from cota.db import (
     inicializar_conexion_gsheets,
     obtener_catalogo_estudio,
 )
-from cota.ui.components import render_header
+from cota.ui.components import render_header, render_sidebar_branding
 from cota.ui.styles import get_app_css
 from cota.ui.views_main import render_main_view
 from cota.ui.views_project import render_proyecto_view
@@ -99,7 +99,8 @@ APP_TITLE = (
     else raw_title
 )
 APP_SUBTITLE = get_secret("APP_SUBTITLE", DEFAULT_SUBTITLE)
-PAGE_ICON = get_secret("PAGE_ICON", DEFAULT_ICON_PATH)
+raw_icon = get_secret("PAGE_ICON", DEFAULT_ICON_PATH)
+PAGE_ICON = raw_icon if (raw_icon and os.path.exists(str(raw_icon))) else (DEFAULT_LOGO_PATH if os.path.exists(DEFAULT_LOGO_PATH) else "🏛️")
 LOGO_PATH = get_secret("LOGO_IMAGE", DEFAULT_LOGO_PATH)
 
 st.set_page_config(
@@ -337,16 +338,7 @@ if "proy_activo" not in st.session_state:
 # 4. SIDEBAR Y CONTROLES DEL ESTUDIO
 # ==========================================
 with st.sidebar:
-    st.markdown(
-        f"<div style='text-align:center; padding: 10px 0 6px 0;'>"
-        f"<span style='color:{CHARCOAL_COLOR}; font-size:22px; font-weight:700; letter-spacing:0.04em;'>{APP_TITLE}</span> "
-        f"<span style='font-size:10px; color:{CLAY_COLOR}; background-color:rgba(200, 90, 50, 0.12); "
-        f"border:1px solid {CLAY_COLOR}; border-radius:4px; padding:2px 6px; vertical-align:middle; "
-        f"font-family:monospace; font-weight:600;'>v2.0</span>"
-        f"<p style='color:#6E665E; font-size:10px; letter-spacing:0.12em; text-transform:uppercase; margin-top:4px;'>Architecture & Interior</p>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    render_sidebar_branding(logo_path=LOGO_PATH, subtitle="PROJECT & DESIGN MANAGEMENT")
 
     if st.session_state.vista_actual in ["proyecto", "dashboard"] and st.session_state.proy_activo:
         if st.button("⬅ VOLVER AL PORTAFOLIO", use_container_width=True):

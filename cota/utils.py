@@ -5,6 +5,7 @@ Utilidades auxiliares, formateo de datos, motor de fechas, parsing y sugerencias
 import base64
 import datetime
 import io
+import os
 import re
 import unicodedata
 from zoneinfo import ZoneInfo
@@ -154,15 +155,30 @@ def get_image_base64(path):
     """Convierte una imagen local a Data URL base64 o retorna URLs externas intactas."""
     if not path:
         return None
-    if path.startswith("http://") or path.startswith("https://"):
-        return path
-    try:
-        with open(path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
-            mime = "image/png" if path.lower().endswith(".png") else "image/jpeg"
-            return f"data:{mime};base64,{b64}"
-    except Exception:
-        return None
+    s_path = str(path).strip()
+    if s_path.startswith("http://") or s_path.startswith("https://"):
+        return s_path
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    fallback_rel = os.path.join("logo", "Logo Full.png")
+    candidates = [
+        s_path,
+        os.path.join(repo_root, s_path),
+        os.path.join(r"D:\cota-app", s_path),
+        os.path.join(repo_root, fallback_rel),
+        os.path.join(r"D:\cota-app", fallback_rel),
+    ]
+
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            try:
+                with open(cand, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode()
+                    mime = "image/png" if cand.lower().endswith(".png") else "image/jpeg"
+                    return f"data:{mime};base64,{b64}"
+            except Exception:
+                continue
+    return None
 
 
 def calcular_rating(nombre, df_historial=None, df_tasks=None, df_maestro=None):

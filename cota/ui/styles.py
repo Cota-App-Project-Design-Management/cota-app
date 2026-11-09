@@ -65,26 +65,33 @@ def get_app_css() -> str:
         .header-container {
             display: flex;
             align-items: center;
-            gap: 16px;
+            gap: 20px;
             background-color: var(--bg-white);
             border: 1px solid var(--border-sand);
             border-left: 5px solid var(--clay-primary);
             border-radius: 12px;
-            padding: 16px 24px;
+            padding: 10px 24px;
+            min-height: 76px;
             margin-bottom: 22px;
             box-shadow: 0 4px 16px rgba(38, 35, 32, 0.04);
+            box-sizing: border-box;
         }
 
         .header-logo {
-            max-height: 46px;
+            height: 56px;
+            max-height: 58px;
             width: auto;
             object-fit: contain;
+            display: block;
+            flex-shrink: 0;
+            mix-blend-mode: multiply;
         }
 
         .header-divider {
-            width: 1px;
-            height: 36px;
+            width: 2px;
+            height: 46px;
             background-color: var(--border-sand);
+            flex-shrink: 0;
         }
 
         .header-title-box {
@@ -94,13 +101,16 @@ def get_app_css() -> str:
         }
 
         .header-title {
-            font-size: 21px !important;
+            font-size: 24px !important;
             font-weight: 700 !important;
             color: var(--text-charcoal) !important;
             margin: 0 !important;
             padding: 0 !important;
             line-height: 1.2 !important;
-            letter-spacing: 0.02em !important;
+            letter-spacing: 0.01em !important;
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
 
         .header-subtitle {
