@@ -362,7 +362,7 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
                 except Exception:
                     df = None
 
-    if df is None or df.empty:
+    if df is None:
         df = pd.DataFrame(columns=columnas)
         st.session_state.original_tables[pestaña] = df.copy()
         return df
