@@ -5,6 +5,8 @@ Utilidades auxiliares, formateo de datos, motor de fechas, parsing y sugerencias
 import base64
 import datetime
 import io
+import io
+import os
 import re
 import unicodedata
 from zoneinfo import ZoneInfo
@@ -150,7 +152,59 @@ def extraer_esp(df_maestro=None):
     return res
 
 
+COTA_LOGO_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 360" width="1000" height="360">'
+    '<path fill="#1F1B18" d="M 223.45 101.58 A 122 122 0 1 0 223.45 258.42 L 186.68 227.57 A 74 74 0 1 1 186.68 132.43 Z"/>'
+    '<path fill="#BD4B28" fill-rule="evenodd" d="M 382 58 A 122 122 0 1 0 382 302 A 122 122 0 1 0 382 58 Z M 382 106 A 74 74 0 1 1 382 254 A 74 74 0 1 1 382 106 Z"/>'
+    '<line x1="382" y1="2" x2="382" y2="358" stroke="#BD4B28" stroke-width="6.5"/>'
+    '<line x1="216" y1="180" x2="548" y2="180" stroke="#BD4B28" stroke-width="6.5"/>'
+    '<path fill="#1F1B18" d="M 530 63 H 730 V 109 H 654 V 297 H 606 V 109 H 530 Z"/>'
+    '<path fill="#1F1B18" fill-rule="evenodd" d="M 838 63 H 884 L 988 297 H 936 L 914 244 H 808 L 786 297 H 734 Z M 861 120 L 824 204 H 898 Z"/>'
+    '</svg>'
+)
+
+
 def get_image_base64(path):
+    """Convierte una imagen local a Data URL base64 o retorna el logo oficial de COTA embebido."""
+    if not path:
+        b64_svg = base64.b64encode(COTA_LOGO_SVG.encode("utf-8")).decode("ascii")
+        return f"data:image/svg+xml;base64,{b64_svg}"
+    s_path = str(path).strip()
+    if s_path.startswith("http://") or s_path.startswith("https://") or s_path.startswith("data:image/"):
+        return s_path
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [
+        s_path,
+        os.path.join(repo_root, s_path),
+        os.path.join(r"D:\cota-app", s_path),
+        os.path.join(repo_root, "logo", "Logo Full.png"),
+        os.path.join(repo_root, "logo", "Logo Full.jpg"),
+        os.path.join(repo_root, "logo", "Logo Full.svg"),
+        os.path.join(r"D:\cota-app", "logo", "Logo Full.png"),
+        os.path.join(r"D:\cota-app", "logo", "Logo Full.jpg"),
+    ]
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            try:
+                with open(cand, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("ascii")
+                    low = cand.lower()
+                    if low.endswith(".svg"):
+                        mime = "image/svg+xml"
+                    elif low.endswith(".png"):
+                        mime = "image/png"
+                    else:
+                        mime = "image/jpeg"
+                    return f"data:{mime};base64,{b64}"
+            except Exception:
+                continue
+
+    b64_svg = base64.b64encode(COTA_LOGO_SVG.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{b64_svg}"
+
+
+def _unused_old_get_image(path):
     """Convierte una imagen local a Data URL base64 o retorna URLs externas intactas."""
     if not path:
         return None

@@ -70,19 +70,27 @@ def get_app_css() -> str:
             border: 1px solid var(--border-sand);
             border-left: 5px solid var(--clay-primary);
             border-radius: 12px;
-            padding: 16px 24px;
+            padding: 10px 24px;
+            min-height: 76px;
+            gap: 20px;
             margin-bottom: 22px;
             box-shadow: 0 4px 16px rgba(38, 35, 32, 0.04);
         }
 
         .header-logo {
-            max-height: 46px;
+            height: 56px;
+            max-height: 58px;
+            flex-shrink: 0;
+            display: block;
+            mix-blend-mode: multiply;
             width: auto;
             object-fit: contain;
         }
 
         .header-divider {
-            width: 1px;
+            width: 2px;
+            min-height: 46px;
+            flex-shrink: 0;
             height: 36px;
             background-color: var(--border-sand);
         }
@@ -94,7 +102,7 @@ def get_app_css() -> str:
         }
 
         .header-title {
-            font-size: 21px !important;
+            font-size: 24px !important;
             font-weight: 700 !important;
             color: var(--text-charcoal) !important;
             margin: 0 !important;

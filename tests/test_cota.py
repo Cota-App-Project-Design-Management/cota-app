@@ -1392,4 +1392,20 @@ def test_chat_notas_responder_editar_borrar():
     assert obtener_notas_chat_proyecto(proy) == []
 
 
+def test_logo_y_extraer_nombre_studio():
+    from cota.ui.components import extraer_nombre_studio
+    from cota.utils import get_image_base64
+
+    assert extraer_nombre_studio("COTA // LB Studio") == "LB Studio"
+    assert extraer_nombre_studio("COTA APP") == "LB Studio"
+    assert extraer_nombre_studio("COTA") == "LB Studio"
+    assert extraer_nombre_studio("COTA // Estudio Venti") == "Estudio Venti"
+
+    b64_logo = get_image_base64("logo/Logo Full.png")
+    assert b64_logo is not None
+    assert b64_logo.startswith("data:image/")
+    assert get_image_base64("Logo2.png") == b64_logo
+
+
+
 

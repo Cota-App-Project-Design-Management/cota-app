@@ -15,7 +15,43 @@ from cota.db import (
 from cota.utils import get_image_base64, safe_str
 
 
-def render_header(title="COTA APP", subtitle="PROJECT & DESIGN MANAGEMENT", logo_path="Logo2.png", is_beta=True):
+def extraer_nombre_studio(raw_title: str = "", default_studio: str = "LB Studio") -> str:
+    """Extrae el nombre del Studio desde APP_TITLE (ej. 'COTA // LB Studio' -> 'LB Studio')."""
+    s = str(raw_title or "").strip()
+    if "//" in s:
+        right = s.split("//", 1)[1].strip()
+        if right:
+            return right
+    for sep in (" - ", " | ", " — ", ":"):
+        if sep in s and s.upper().startswith("COTA"):
+            right = s.split(sep, 1)[1].strip()
+            if right:
+                return right
+    if s.upper() in ("", "COTA", "COTA APP"):
+        return default_studio
+    return s
+
+
+def render_sidebar_branding(logo_path="logo/Logo Full.png", subtitle="PROJECT & DESIGN MANAGEMENT"):
+    """Renderiza en la parte superior izquierda (sidebar) el Logo de Cota y debajo 'PROJECT & DESIGN MANAGEMENT'."""
+    logo_src = get_image_base64(logo_path or "logo/Logo Full.png")
+    brand_top = (
+        f'<img src="{logo_src}" alt="COTA" '
+        f'style="width:100%; max-width:170px; height:auto; display:block; margin:0 auto 8px auto; object-fit:contain; mix-blend-mode:multiply;">'
+        if logo_src
+        else "<span style='color:#262320; font-size:22px; font-weight:700; letter-spacing:0.04em;'>COTA</span>"
+    )
+    sub_str = str(subtitle or "PROJECT & DESIGN MANAGEMENT").strip()
+    st.markdown(
+        f"<div style='text-align:center; padding: 8px 4px 10px 4px;'>"
+        f"{brand_top}"
+        f"<p style='color:#6E665E; font-family:\"JetBrains Mono\", monospace; font-size:9.5px; font-weight:600; letter-spacing:0.13em; text-transform:uppercase; margin:4px 0 0 0; line-height:1.3;'>{sub_str}</p>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_header(title="LB Studio", subtitle="PROJECT & DESIGN MANAGEMENT", logo_path="logo/Logo Full.png", is_beta=True):
     """Renderiza el header principal corporativo del estudio."""
     logo_src = get_image_base64(logo_path)
     logo_html = f'<img src="{logo_src}" class="header-logo">' if logo_src else ""
@@ -31,8 +67,8 @@ def render_header(title="COTA APP", subtitle="PROJECT & DESIGN MANAGEMENT", logo
         f'{logo_html}'
         f'{divider_html}'
         f'<div class="header-title-box">'
-        f'<h1 class="header-title">{title} {beta_badge}</h1>'
-        f'<div class="header-subtitle">{subtitle}</div>'
+        f'<h1 class="header-title">{extraer_nombre_studio(title)} {beta_badge}</h1>'
+        f'{f"<div class=header-subtitle>{subtitle}</div>" if str(subtitle or "").strip() and str(subtitle or "").strip().upper() != "PROJECT & DESIGN MANAGEMENT" else ""}'
         f'</div>'
         f'</div>'
     )
