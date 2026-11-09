@@ -12,11 +12,12 @@ from cota.db import (
     aplicar_accion_chat_notas_proyecto,
     obtener_notas_chat_proyecto,
 )
+from cota.config import get_secret
 from cota.utils import get_image_base64, safe_str
 
 
-def extraer_nombre_studio(raw_title: str = "", default_studio: str = "LB Studio") -> str:
-    """Extrae el nombre del Studio desde APP_TITLE (ej. 'COTA // LB Studio' -> 'LB Studio')."""
+def extraer_nombre_studio(raw_title: str = "", default_studio: str = "") -> str:
+    """Extrae el nombre del Studio desde Secrets ('Studio Name' / 'STUDIO_NAME') o APP_TITLE. Si no hay ninguno, retorna vacío."""
     s = str(raw_title or "").strip()
     if "//" in s:
         right = s.split("//", 1)[1].strip()
@@ -28,6 +29,10 @@ def extraer_nombre_studio(raw_title: str = "", default_studio: str = "LB Studio"
             if right:
                 return right
     if s.upper() in ("", "COTA", "COTA APP"):
+        for key in ("Studio Name", "STUDIO_NAME", "Studio_Name", "studio_name"):
+            sec_val = str(get_secret(key, "") or "").strip()
+            if sec_val:
+                return sec_val
         return default_studio
     return s
 
@@ -51,11 +56,12 @@ def render_sidebar_branding(logo_path="logo/Logo Full.png", subtitle="PROJECT & 
     )
 
 
-def render_header(title="LB Studio", subtitle="PROJECT & DESIGN MANAGEMENT", logo_path="logo/Logo Full.png", is_beta=True):
+def render_header(title="", subtitle="PROJECT & DESIGN MANAGEMENT", logo_path="logo/Logo Full.png", is_beta=False):
+    studio_name = extraer_nombre_studio(title)
     """Renderiza el header principal corporativo del estudio."""
     logo_src = get_image_base64(logo_path)
     logo_html = f'<img src="{logo_src}" class="header-logo">' if logo_src else ""
-    divider_html = '<div class="header-divider"></div>' if logo_src else ""
+    divider_html = '<div class="header-divider"></div>' if (logo_src and studio_name) else ""
     beta_badge = (
         "<span style='font-size: 10px; color: #C85A32; background-color: rgba(200, 90, 50, 0.12); "
         "border: 1px solid rgba(200, 90, 50, 0.35); border-radius: 4px; padding: 2px 7px; margin-left: 8px; "
@@ -66,9 +72,9 @@ def render_header(title="LB Studio", subtitle="PROJECT & DESIGN MANAGEMENT", log
         f'<div class="header-container">'
         f'{logo_html}'
         f'{divider_html}'
-        f'<div class="header-title-box">'
-        f'<h1 class="header-title">{extraer_nombre_studio(title)} {beta_badge}</h1>'
-        f'{f"<div class=header-subtitle>{subtitle}</div>" if str(subtitle or "").strip() and str(subtitle or "").strip().upper() != "PROJECT & DESIGN MANAGEMENT" else ""}'
+        f'<div class="header-title-box" style="{"display:none;" if not studio_name else ""}">'
+        f'{f"<h1 class=header-title>{studio_name}</h1>" if studio_name else ""}'
+        f'{f"<div class=header-subtitle>{subtitle}</div>" if studio_name and str(subtitle or "").strip() and str(subtitle or "").strip().upper() != "PROJECT & DESIGN MANAGEMENT" else ""}'
         f'</div>'
         f'</div>'
     )

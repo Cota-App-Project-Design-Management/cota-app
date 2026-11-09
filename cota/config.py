@@ -11,8 +11,8 @@ def get_secret(key, default=None):
 
 
 # Identidad y Branding
-DEFAULT_APP_TITLE = "COTA // LB Studio"
-DEFAULT_STUDIO_NAME = "LB Studio"
+DEFAULT_APP_TITLE = "COTA APP"
+DEFAULT_STUDIO_NAME = ""
 DEFAULT_SUBTITLE = "PROJECT & DESIGN MANAGEMENT"
 DEFAULT_LOGO_PATH = "logo/Logo Full.png"
 DEFAULT_ICON_PATH = "logo/Logo Full.png"

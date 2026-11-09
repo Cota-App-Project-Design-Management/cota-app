@@ -93,6 +93,13 @@ CLAY_COLOR = "#C85A32"      # Rojo Arcilla / Terracota Arquitectónico
 CHARCOAL_COLOR = "#262320"  # Carbón Cálido
 
 raw_title = get_secret("APP_TITLE", DEFAULT_APP_TITLE)
+STUDIO_NAME = str(
+    get_secret("Studio Name", "")
+    or get_secret("STUDIO_NAME", "")
+    or get_secret("Studio_Name", "")
+    or get_secret("studio_name", "")
+    or ""
+).strip()
 APP_TITLE = (
     DEFAULT_APP_TITLE
     if raw_title in ["Binda Constructores", "Found Operating Systems", "Found OS"]
@@ -412,7 +419,7 @@ with st.sidebar:
 # ==========================================
 # 5. ENCABEZADO Y ENRUTAMIENTO
 # ==========================================
-render_header(title=APP_TITLE, subtitle=APP_SUBTITLE, logo_path=LOGO_PATH)
+render_header(title=STUDIO_NAME or APP_TITLE, subtitle=APP_SUBTITLE, logo_path=LOGO_PATH)
 
 if st.session_state.vista_actual in ["proyecto", "dashboard"] and st.session_state.proy_activo:
     render_proyecto_view(st.session_state.proy_activo)

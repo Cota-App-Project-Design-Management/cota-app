@@ -1397,8 +1397,10 @@ def test_logo_y_extraer_nombre_studio():
     from cota.utils import get_image_base64
 
     assert extraer_nombre_studio("COTA // LB Studio") == "LB Studio"
-    assert extraer_nombre_studio("COTA APP") == "LB Studio"
-    assert extraer_nombre_studio("COTA") == "LB Studio"
+    assert extraer_nombre_studio("LB Studio") == "LB Studio"
+    assert extraer_nombre_studio("COTA APP") == ""
+    assert extraer_nombre_studio("COTA") == ""
+    assert extraer_nombre_studio("") == ""
     assert extraer_nombre_studio("COTA // Estudio Venti") == "Estudio Venti"
 
     b64_logo = get_image_base64("logo/Logo Full.png")
