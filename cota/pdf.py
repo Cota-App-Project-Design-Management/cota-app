@@ -19,17 +19,32 @@ def safe_pdf_str(text):
     return s.encode('latin-1', 'replace').decode('latin-1')
 
 
-def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", studio_title="COTA APP"):
+def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", studio_title="COTA APP", brand_color=None):
     """
     Genera un archivo PDF con la minuta formal de reunión / acta de coordinación.
     Retorna bytes del documento PDF.
     """
+    import io
+    from cota.utils import obtener_marca_estudio, hex_a_rgb, preparar_logo_png_bytes
+
+    marca = obtener_marca_estudio()
+    brand_rgb = hex_a_rgb(brand_color) if brand_color else marca["brand_rgb"]
+    active_studio_title = (
+        marca["studio_name"]
+        if (not studio_title or studio_title == "COTA APP") and marca.get("studio_name")
+        else (studio_title or "COTA APP")
+    )
+    logo_bytes = marca.get("logo_png_bytes")
+    if logo_path and logo_path != "Logo2.png" and os.path.exists(str(logo_path)):
+        custom_bytes, _ = preparar_logo_png_bytes(logo_path, max_height=85)
+        if custom_bytes:
+            logo_bytes = custom_bytes
     class MinutaPDF(FPDF):
         def header(self):
             # Barra superior estética Warm Atelier (Carbón Cálido + acento Terracota)
             self.set_fill_color(38, 35, 32)
             self.rect(0, 0, 210, 26, 'F')
-            self.set_fill_color(200, 90, 50)
+            self.set_fill_color(*brand_rgb)
             self.rect(0, 25, 210, 1.5, 'F')
 
             # Título del estudio y documento
@@ -38,13 +53,18 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
             self.set_xy(12, 8)
             self.cell(140, 6, safe_pdf_str(self.pdf_title).upper(), border=0, align='L')
 
-            self.set_text_color(200, 90, 50)
+            self.set_text_color(*brand_rgb)
             self.set_font('Helvetica', 'B', 8)
             self.set_xy(12, 16)
-            self.cell(140, 5, f"{safe_pdf_str(studio_title)} // ACTA DE COORDINACION", border=0, align='L')
+            self.cell(140, 5, f"{safe_pdf_str(active_studio_title)} // ACTA DE COORDINACION", border=0, align='L')
 
-            # Logotipo si existe
-            if logo_path and os.path.exists(logo_path):
+            # Logotipo del Estudio si existe
+            if logo_bytes:
+                try:
+                    self.image(io.BytesIO(logo_bytes), x=170, y=5, h=15)
+                except Exception:
+                    pass
+            elif logo_path and os.path.exists(logo_path):
                 try:
                     self.image(logo_path, x=175, y=5, w=22)
                 except Exception:
@@ -56,7 +76,7 @@ def generar_pdf_minuta(r_ses, invitados_df, acuerdos_df, logo_path="Logo2.png", 
             self.set_y(-15)
             self.set_font('Helvetica', 'I', 8)
             self.set_text_color(110, 102, 94)
-            self.cell(0, 10, f'Pagina {self.page_no()}/{{nb}}  -  Generado por {safe_pdf_str(studio_title)}', align='C')
+            self.cell(0, 10, f'Pagina {self.page_no()}/{{nb}}  -  Generado por {safe_pdf_str(active_studio_title)}', align='C')
 
     pdf = MinutaPDF()
     pdf.pdf_title = r_ses.get('Nombre_Sesion', r_ses.get('Titulo', 'Acta de Reunión'))

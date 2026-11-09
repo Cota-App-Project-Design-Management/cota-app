@@ -1411,3 +1411,168 @@ def test_logo_y_extraer_nombre_studio():
 
 
 
+
+
+def test_exportacion_formato_monedas_y_encabezado_ordenado():
+    import io
+    import openpyxl
+    import streamlit as st
+    from cota.cotizacion import (
+        asegurar_estructura_presupuesto_proyecto,
+        exportar_proyecto_a_formato_venti,
+        parsear_cotizacion_venti,
+        recalcular_totales_presupuesto_proyecto,
+    )
+    from cota.db import COLS_P_INFO, COLS_TASKS
+
+    proy = "Santa María 139 - Terraza"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": proy,
+        "Cliente": "Maruja Morín",
+        "Inicio": "2026-11-09",
+        "Presupuesto": 0.0,
+        "Utilidades": 0.0,
+        "GG_Presupuesto": 0.0,
+        "TC_Presupuesto": 3.42,
+        "GG_Pct": 5.0,
+        "Utilidades_Pct": 15.0,
+        "Incluir_IGV": False,
+        "Archivado": False,
+    }])
+    st.session_state["partidas"] = pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
+    st.session_state["p_info"] = pd.DataFrame(columns=COLS_P_INFO)
+    st.session_state["tasks"] = pd.DataFrame(columns=COLS_TASKS)
+
+    asegurar_estructura_presupuesto_proyecto(proy, n_partidas_default=1, n_tareas_default=2)
+    # Tarea 1 en Soles
+    st.session_state["tasks"].loc[0, "Tarea"] = "1.01 Eliminación de desmonte"
+    st.session_state["tasks"].loc[0, "Moneda"] = "Soles"
+    st.session_state["tasks"].loc[0, "Unidad"] = "glb"
+    st.session_state["tasks"].loc[0, "Metrado"] = 1.0
+    st.session_state["tasks"].loc[0, "Valor_Unitario"] = 100.0
+    st.session_state["tasks"].loc[0, "Presupuesto"] = 100.0
+    # Tarea 2 en Dólares
+    st.session_state["tasks"].loc[1, "Tarea"] = "1.02 Luminaria importada"
+    st.session_state["tasks"].loc[1, "Moneda"] = "Dólares"
+    st.session_state["tasks"].loc[1, "Unidad"] = "und"
+    st.session_state["tasks"].loc[1, "Metrado"] = 2.0
+    st.session_state["tasks"].loc[1, "Valor_Unitario"] = 250.0
+    st.session_state["tasks"].loc[1, "Presupuesto"] = round(2.0 * 250.0 * 3.42, 2)
+
+    recalcular_totales_presupuesto_proyecto(proy, sincronizar_pactado=True)
+    xlsx_bytes = exportar_proyecto_a_formato_venti(proy)
+
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=False)
+    ws1 = wb["Presupuesto"]
+
+    # 1. Verificar encabezado integrado y ordenado (Filas 2, 3 y 4 pegadas a la cabecera en Fila 5)
+    assert "PRESUPUESTO DE OBRA" in str(ws1["B2"].value)
+    assert ws1["B3"].value == "Proyecto:"
+    assert ws1["C3"].value == proy
+    assert ws1["I3"].value == "Fecha:"
+    assert ws1["J3"].value == "2026-11-09"
+    assert ws1["B4"].value == "Cliente:"
+    assert ws1["C4"].value == "Maruja Morín"
+    assert ws1["I4"].value == "TC:"
+    assert float(ws1["J4"].value) == 3.42
+    assert ws1["B5"].value == "Ítem"
+    assert len(ws1._images) >= 1
+
+    # 2. Verificar formatos de moneda en Soles y Dólares
+    FMT_SOLES = '"S/ "#,##0.00'
+    FMT_USD = '"$ "#,##0.00'
+
+    # Fila 6 es la Partida 1 -> Sub Total (S/.) en I6
+    assert ws1["I6"].number_format == FMT_SOLES
+    assert "*$J$4" in str(ws1["I6"].value)
+
+    # Fila 7 es Tarea 1.01 (Soles)
+    assert ws1["D7"].value == "Soles"
+    assert ws1["G7"].number_format == FMT_SOLES
+    assert ws1["H7"].number_format == FMT_SOLES
+
+    # Fila 8 es Tarea 1.02 (Dólares)
+    assert ws1["D8"].value == "Dólares"
+    assert ws1["G8"].number_format == FMT_USD
+    assert ws1["H8"].number_format == FMT_USD
+
+    # Filas de cierre (SUB TOTAL Casco = 9, GG = 10, Gestión = 11, IGV = 12, TOTAL = 13, TOTAL USD = 14)
+    assert ws1["I9"].number_format == FMT_SOLES
+    assert ws1["H10"].number_format == FMT_SOLES
+    assert ws1["H11"].number_format == FMT_SOLES
+    assert ws1["H12"].number_format == FMT_SOLES
+    assert ws1["I13"].number_format == FMT_SOLES
+    assert ws1["I14"].number_format == FMT_USD
+
+    # 3. Verificar round-trip con parsear_cotizacion_venti
+    parsed = parsear_cotizacion_venti(xlsx_bytes)
+    assert parsed["proyecto"] == proy
+    assert parsed["cliente"] == "Maruja Morín"
+    assert parsed["fecha"] == "2026-11-09"
+    assert parsed["tc"] == 3.42
+
+
+def test_marca_estudio_color_y_logo_por_branch():
+    import io
+    import openpyxl
+    from PIL import Image
+    from cota.cotizacion import (
+        exportar_cuadro_pagos_semanales_excel,
+        exportar_cuadro_pagos_semanales_pdf,
+        generar_plantilla_cotizacion_venti,
+    )
+    from cota.pdf import generar_pdf_minuta
+    from cota.ui.styles import get_app_css
+    from cota.utils import guardar_marca_estudio, obtener_marca_estudio
+
+    # Crear un logo PNG sintético en memoria
+    img = Image.new("RGBA", (120, 40), (30, 58, 95, 255))
+    buf_logo = io.BytesIO()
+    img.save(buf_logo, format="PNG")
+    custom_logo_bytes = buf_logo.getvalue()
+
+    try:
+        marca = guardar_marca_estudio(
+            studio_name="Atelier Azul",
+            brand_color="#1E3A5F",
+            uploaded_logo_bytes=custom_logo_bytes,
+            uploaded_logo_name="logo_azul.png",
+        )
+        assert marca["studio_name"] == "Atelier Azul"
+        assert marca["brand_color"] == "#1E3A5F"
+        assert marca["brand_hex"] == "1E3A5F"
+        assert marca["logo_png_bytes"] is not None
+
+        # CSS dinámico refleja el color del estudio
+        css_str = get_app_css()
+        assert "--clay-primary: #1E3A5F !important;" in css_str
+
+        # Excel de Presupuesto usa el color del estudio, nombre y logo
+        xlsx_ppto = generar_plantilla_cotizacion_venti(proyecto="Proy Marca", cliente="Cliente Marca")
+        wb_ppto = openpyxl.load_workbook(io.BytesIO(xlsx_ppto))
+        ws_ppto = wb_ppto["Presupuesto"]
+        assert "ATELIER AZUL" in str(ws_ppto["B2"].value)
+        assert ws_ppto["B2"].fill.start_color.rgb.endswith("1E3A5F")
+        assert len(ws_ppto._images) >= 1
+
+        # Excel y PDF de Control de Pagos usan el color del estudio, formato de moneda y logo
+        xlsx_pagos = exportar_cuadro_pagos_semanales_excel("Proy Marca")
+        wb_pagos = openpyxl.load_workbook(io.BytesIO(xlsx_pagos))
+        ws_pagos = wb_pagos["Control de Pagos"]
+        assert ws_pagos["B1"].value == "Proyecto:"
+        assert ws_pagos["C1"].value == "Proy Marca"
+        assert ws_pagos["B1"].fill.start_color.rgb.endswith("1E3A5F")
+        assert len(ws_pagos._images) >= 1
+        assert ws_pagos["D7"].number_format == '"S/ "#,##0.00'
+
+        pdf_pagos = exportar_cuadro_pagos_semanales_pdf("Proy Marca")
+        assert pdf_pagos[:4] == b"%PDF"
+
+        pdf_minuta = generar_pdf_minuta({"Titulo": "Acta 1", "Proyecto": "Proy Marca"}, pd.DataFrame(), pd.DataFrame())
+        assert pdf_minuta[:4] == b"%PDF"
+    finally:
+        guardar_marca_estudio(
+            studio_name="LB Studio",
+            brand_color="#C85A32",
+            reset_logo=True,
+        )

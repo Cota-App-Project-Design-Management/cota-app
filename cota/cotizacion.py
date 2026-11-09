@@ -1049,17 +1049,41 @@ def generar_plantilla_cotizacion_venti(
     gg_pct: float = 0.02,
     gestion_pct: float = 0.15,
     incluir_igv: bool = False,
+    brand_color: str = None,
+    studio_name: str = None,
+    logo_bytes: bytes = None,
+    gg_monto_fijo: float = None,
+    gestion_monto_fijo: float = None,
 ) -> bytes:
     """
     Construye un archivo Excel (.xlsx) con el Formato Oficial de Cotización COTA.
     Incluye:
+    - Encabezado ordenado e integrado (Marca + Logo del Estudio, Proyecto, Cliente, Fecha y TC).
+    - Formato de moneda explícito ("S/ "#,##0.00 o "$ "#,##0.00) en cada valor según su moneda.
     - Hoja 1 ('Presupuesto'): Partidas (1, 2, 3...), Tareas (1.01, 1.02...), fórmulas de Valor Parcial,
       Sub Total (S/.), Mix (%), SUB TOTAL (Casco), Gastos generales, Gestión y supervisión de obras,
       IGV (18% si incluir_igv=True o 0% si False) y TOTAL integrado en Soles y Dólares.
     - Hoja 2 ('Control de Pagos'): Cronograma de desembolsos por semanas integrado simétricamente.
     """
+    from openpyxl.drawing.image import Image as XLImage
+    from cota.utils import normalizar_hex_color, obtener_marca_estudio, oscurecer_hex_color, preparar_logo_png_bytes
+
     if not fecha:
         fecha = datetime.date.today().strftime("%Y-%m-%d")
+
+    marca = obtener_marca_estudio()
+    brand_hex = normalizar_hex_color(brand_color or marca.get("brand_color", "#C85A32")).lstrip("#")
+    brand_dark_hex = oscurecer_hex_color(f"#{brand_hex}", 0.82).lstrip("#")
+    nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "LB Studio")).strip()
+
+    if logo_bytes is not None:
+        logo_png, logo_dims = preparar_logo_png_bytes(logo_bytes)
+    else:
+        logo_png = marca.get("logo_png_bytes")
+        logo_dims = marca.get("logo_size")
+
+    FMT_SOLES = '"S/ "#,##0.00'
+    FMT_USD = '"$ "#,##0.00'
 
     gg_dec = float(gg_pct) / 100.0 if float(gg_pct) > 1.0 else float(gg_pct)
     ges_dec = float(gestion_pct) / 100.0 if float(gestion_pct) > 1.0 else float(gestion_pct)
@@ -1067,6 +1091,9 @@ def generar_plantilla_cotizacion_venti(
     wb = openpyxl.Workbook()
 
     font_family = "Calibri"
+    f_banner = Font(name=font_family, size=11, bold=True, color="FFFFFF")
+    f_banner_sub = Font(name=font_family, size=9, bold=True, color="EFECE6")
+    f_meta_lbl = Font(name=font_family, size=10, bold=True, color="262320")
     f_title = Font(name=font_family, size=11, bold=True, color="262320")
     f_header = Font(name=font_family, size=10, bold=True, color="FFFFFF")
     f_partida = Font(name=font_family, size=10, bold=True, color="262320")
@@ -1075,16 +1102,22 @@ def generar_plantilla_cotizacion_venti(
     f_total = Font(name=font_family, size=10, bold=True, color="FFFFFF")
     f_usd = Font(name=font_family, size=10, bold=True, color="262320")
 
+    fill_brand = PatternFill(start_color=brand_hex, end_color=brand_hex, fill_type="solid")
+    fill_logo_box = PatternFill(start_color="262320", end_color="262320", fill_type="solid")
     fill_header = PatternFill(start_color="262320", end_color="262320", fill_type="solid")
+    fill_meta_lbl = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
+    fill_meta_val = PatternFill(start_color="FAF8F5", end_color="FAF8F5", fill_type="solid")
     fill_partida = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
     fill_subtotal = PatternFill(start_color="DFD9CE", end_color="DFD9CE", fill_type="solid")
-    fill_total = PatternFill(start_color="C85A32", end_color="C85A32", fill_type="solid")
+    fill_total = PatternFill(start_color=brand_hex, end_color=brand_hex, fill_type="solid")
     fill_usd = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
     fill_input = PatternFill(start_color="FAF8F5", end_color="FAF8F5", fill_type="solid")
 
     thin_side = Side(border_style="thin", color="D0C9BD")
+    brand_med_side = Side(border_style="medium", color=brand_hex)
     med_bottom = Side(border_style="medium", color="262320")
     border_cell = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    border_header_col = Border(left=thin_side, right=thin_side, top=thin_side, bottom=brand_med_side)
     border_partida = Border(left=thin_side, right=thin_side, top=thin_side, bottom=med_bottom)
     border_closing = Border(left=thin_side, right=thin_side, top=thin_side, bottom=med_bottom)
 
@@ -1098,26 +1131,106 @@ def generar_plantilla_cotizacion_venti(
     ws1 = wb.active
     ws1.title = "Presupuesto"
     ws1.views.sheetView[0].showGridLines = True
+    ws1.page_setup.orientation = ws1.ORIENTATION_LANDSCAPE
+    ws1.page_setup.paperSize = ws1.PAPERSIZE_A4
+    ws1.sheet_properties.pageSetUpPr.fitToPage = True
+    ws1.page_setup.fitToWidth = 1
+    ws1.page_setup.fitToHeight = 0
 
-    ws1["B2"] = "Proyecto"
-    ws1["B2"].font = f_title
-    ws1["C2"] = proyecto
-    ws1["C2"].font = f_title
-    ws1["I2"] = fecha
-    ws1["I2"].font = f_task
+    # --- ENCABEZADO ORDENADO E INTEGRADO DEL PRESUPUESTO (Filas 2, 3 y 4) ---
+    ws1.row_dimensions[1].height = 8
+    ws1.row_dimensions[2].height = 34
+    ws1.row_dimensions[3].height = 22
+    ws1.row_dimensions[4].height = 22
+
+    # Fila 2: Banner Superior de Marca del Estudio + Logo
+    banner_txt = f"  {nom_estudio.upper()}  —  PRESUPUESTO DE OBRA" if nom_estudio else "  PRESUPUESTO DE OBRA"
+    ws1.merge_cells("B2:H2")
+    ws1["B2"] = banner_txt
+    ws1["B2"].font = f_banner
+    ws1["B2"].alignment = align_left
+
+    ws1.merge_cells("I2:J2")
+    ws1["I2"] = nom_estudio.upper() if nom_estudio else "COTA"
+    ws1["I2"].font = f_banner_sub
     ws1["I2"].alignment = align_center
 
+    for c_idx in range(2, 9):
+        c_let = get_column_letter(c_idx)
+        ws1[f"{c_let}2"].fill = fill_brand
+        ws1[f"{c_let}2"].border = border_cell
+    for c_idx in (9, 10):
+        c_let = get_column_letter(c_idx)
+        ws1[f"{c_let}2"].fill = fill_logo_box
+        ws1[f"{c_let}2"].border = border_cell
+
+    if logo_png:
+        try:
+            xl_img1 = XLImage(io.BytesIO(logo_png))
+            if logo_dims and logo_dims[1] > 0:
+                target_h = 30
+                target_w = min(145, max(28, int(round(logo_dims[0] * (target_h / float(logo_dims[1]))))))
+                xl_img1.width = target_w
+                xl_img1.height = target_h
+            ws1.add_image(xl_img1, "I2")
+            ws1["I2"] = ""
+        except Exception:
+            pass
+
+    # Fila 3: Proyecto (B3:H3) y Fecha (I3:J3)
+    ws1.merge_cells("C3:H3")
+    ws1["B3"] = "Proyecto:"
+    ws1["B3"].font = f_meta_lbl
+    ws1["B3"].fill = fill_meta_lbl
+    ws1["B3"].alignment = align_right
+
+    ws1["C3"] = proyecto
+    ws1["C3"].font = f_title
+    ws1["C3"].alignment = align_left
+
+    ws1["I3"] = "Fecha:"
+    ws1["I3"].font = f_meta_lbl
+    ws1["I3"].fill = fill_meta_lbl
+    ws1["I3"].alignment = align_right
+
+    ws1["J3"] = fecha
+    ws1["J3"].font = f_meta_lbl
+    ws1["J3"].fill = fill_meta_val
+    ws1["J3"].alignment = align_center
+
+    for c_idx in range(2, 11):
+        c_let = get_column_letter(c_idx)
+        if c_idx in range(3, 9):
+            ws1[f"{c_let}3"].fill = fill_meta_val
+        ws1[f"{c_let}3"].border = border_cell
+
+    # Fila 4: Cliente (B4:H4) y TC (I4:J4)
+    ws1.merge_cells("C4:H4")
     ws1["B4"] = "Cliente:"
-    ws1["B4"].font = f_title
+    ws1["B4"].font = f_meta_lbl
+    ws1["B4"].fill = fill_meta_lbl
+    ws1["B4"].alignment = align_right
+
     ws1["C4"] = cliente
     ws1["C4"].font = f_title
+    ws1["C4"].alignment = align_left
+
     ws1["I4"] = "TC:"
-    ws1["I4"].font = f_title
+    ws1["I4"].font = f_meta_lbl
+    ws1["I4"].fill = fill_meta_lbl
     ws1["I4"].alignment = align_right
+
     ws1["J4"] = float(tc)
     ws1["J4"].font = f_title
-    ws1["J4"].number_format = "0.00"
+    ws1["J4"].fill = fill_meta_val
+    ws1["J4"].number_format = '"S/ "0.00'
     ws1["J4"].alignment = align_center
+
+    for c_idx in range(2, 11):
+        c_let = get_column_letter(c_idx)
+        if c_idx in range(3, 9):
+            ws1[f"{c_let}4"].fill = fill_meta_val
+        ws1[f"{c_let}4"].border = border_cell
 
     headers_h1 = [
         ("B", "Ítem"),
@@ -1137,7 +1250,7 @@ def generar_plantilla_cotizacion_venti(
         cell.font = f_header
         cell.fill = fill_header
         cell.alignment = align_center
-        cell.border = border_cell
+        cell.border = border_header_col
 
     estructura = partidas_precargadas if partidas_precargadas else ESTRUCTURA_COTIZACION_DEFAULT
 
@@ -1160,11 +1273,14 @@ def generar_plantilla_cotizacion_venti(
         ws1[f"C{p_row}"].alignment = align_left
 
         if last_task_row >= first_task_row:
-            ws1[f"I{p_row}"] = f"=SUM(H{first_task_row}:H{last_task_row})"
+            ws1[f"I{p_row}"] = (
+                f'=SUMIF(D{first_task_row}:D{last_task_row},"<>Dólares",H{first_task_row}:H{last_task_row})'
+                f'+SUMIF(D{first_task_row}:D{last_task_row},"Dólares",H{first_task_row}:H{last_task_row})*$J$4'
+            )
         else:
             ws1[f"I{p_row}"] = float(part.get("monto_pactado", 0.0))
 
-        ws1[f"I{p_row}"].number_format = "#,##0.00"
+        ws1[f"I{p_row}"].number_format = FMT_SOLES
         ws1[f"I{p_row}"].alignment = align_right
         ws1[f"J{p_row}"].number_format = "0.0%"
         ws1[f"J{p_row}"].alignment = align_center
@@ -1194,6 +1310,9 @@ def generar_plantilla_cotizacion_venti(
                 t_met = 1
                 t_vu = None
 
+            es_usd_t = any(d in str(t_mon).lower() for d in ["dolar", "dólar", "usd", "$"])
+            fmt_mon_t = FMT_USD if es_usd_t else FMT_SOLES
+
             try:
                 ws1[f"B{t_row}"] = float(t_cod)
                 ws1[f"B{t_row}"].number_format = "0.00"
@@ -1219,12 +1338,12 @@ def generar_plantilla_cotizacion_venti(
             if t_vu is not None and safe_float(t_vu, 0.0) > 0:
                 ws1[f"G{t_row}"] = safe_float(t_vu, 0.0)
             ws1[f"G{t_row}"].alignment = align_right
-            ws1[f"G{t_row}"].number_format = "#,##0.00"
+            ws1[f"G{t_row}"].number_format = fmt_mon_t
             ws1[f"G{t_row}"].fill = fill_input
 
-            ws1[f"H{t_row}"] = f'=IF(OR(UPPER(TRIM(D{t_row}))="DÓLARES",UPPER(TRIM(D{t_row}))="DOLARES",UPPER(TRIM(D{t_row}))="USD"),F{t_row}*G{t_row}*$J$4,F{t_row}*G{t_row})'
+            ws1[f"H{t_row}"] = f"=F{t_row}*G{t_row}"
             ws1[f"H{t_row}"].alignment = align_right
-            ws1[f"H{t_row}"].number_format = "#,##0.00"
+            ws1[f"H{t_row}"].number_format = fmt_mon_t
 
             for c_idx in range(2, 11):
                 c_let = get_column_letter(c_idx)
@@ -1243,7 +1362,7 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"D{row_subtotal_casco}"] = "Soles"
     ws1[f"D{row_subtotal_casco}"].alignment = align_center
     ws1[f"I{row_subtotal_casco}"] = f"={sum_parts_expr}"
-    ws1[f"I{row_subtotal_casco}"].number_format = "#,##0.00"
+    ws1[f"I{row_subtotal_casco}"].number_format = FMT_SOLES
     ws1[f"I{row_subtotal_casco}"].alignment = align_right
     ws1[f"J{row_subtotal_casco}"] = f"=IFERROR(I{row_subtotal_casco}/I{row_subtotal_casco},0)"
     ws1[f"J{row_subtotal_casco}"].number_format = "0.0%"
@@ -1263,8 +1382,11 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"F{row_gg}"] = gg_dec
     ws1[f"F{row_gg}"].number_format = "0.0%"
     ws1[f"F{row_gg}"].alignment = align_center
-    ws1[f"H{row_gg}"] = f"=I{row_subtotal_casco}*F{row_gg}"
-    ws1[f"H{row_gg}"].number_format = "#,##0.00"
+    if gg_monto_fijo is not None and float(gg_monto_fijo) > 0:
+        ws1[f"H{row_gg}"] = float(gg_monto_fijo)
+    else:
+        ws1[f"H{row_gg}"] = f"=ROUNDUP(I{row_subtotal_casco}*F{row_gg},-1)"
+    ws1[f"H{row_gg}"].number_format = FMT_SOLES
     ws1[f"H{row_gg}"].alignment = align_right
     for c_idx in range(2, 11):
         c_let = get_column_letter(c_idx)
@@ -1279,8 +1401,11 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"F{row_gestion}"] = ges_dec
     ws1[f"F{row_gestion}"].number_format = "0.0%"
     ws1[f"F{row_gestion}"].alignment = align_center
-    ws1[f"H{row_gestion}"] = f"=I{row_subtotal_casco}*F{row_gestion}"
-    ws1[f"H{row_gestion}"].number_format = "#,##0.00"
+    if gestion_monto_fijo is not None and float(gestion_monto_fijo) > 0:
+        ws1[f"H{row_gestion}"] = float(gestion_monto_fijo)
+    else:
+        ws1[f"H{row_gestion}"] = f"=ROUNDUP(I{row_subtotal_casco}*F{row_gestion},-2)"
+    ws1[f"H{row_gestion}"].number_format = FMT_SOLES
     ws1[f"H{row_gestion}"].alignment = align_right
     for c_idx in range(2, 11):
         c_let = get_column_letter(c_idx)
@@ -1296,7 +1421,7 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"F{row_igv}"].number_format = "0%"
     ws1[f"F{row_igv}"].alignment = align_center
     ws1[f"H{row_igv}"] = f"=IF(ISNUMBER(F{row_igv}),(I{row_subtotal_casco}+H{row_gg}+H{row_gestion})*F{row_igv},0)"
-    ws1[f"H{row_igv}"].number_format = "#,##0.00"
+    ws1[f"H{row_igv}"].number_format = FMT_SOLES
     ws1[f"H{row_igv}"].alignment = align_right
     for c_idx in range(2, 11):
         c_let = get_column_letter(c_idx)
@@ -1309,7 +1434,7 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"D{row_total}"] = "Soles"
     ws1[f"D{row_total}"].alignment = align_center
     ws1[f"I{row_total}"] = f"=I{row_subtotal_casco}+H{row_gg}+H{row_gestion}+H{row_igv}"
-    ws1[f"I{row_total}"].number_format = "#,##0.00"
+    ws1[f"I{row_total}"].number_format = FMT_SOLES
     ws1[f"I{row_total}"].alignment = align_right
     ws1[f"J{row_total}"] = f"=IFERROR(I{row_total}/I{row_subtotal_casco},0)"
     ws1[f"J{row_total}"].number_format = "0.0%"
@@ -1326,7 +1451,7 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"D{row_usd}"] = "Dólares"
     ws1[f"D{row_usd}"].alignment = align_center
     ws1[f"I{row_usd}"] = f"=IFERROR(I{row_total}/J4,0)"
-    ws1[f"I{row_usd}"].number_format = "#,##0.00"
+    ws1[f"I{row_usd}"].number_format = FMT_USD
     ws1[f"I{row_usd}"].alignment = align_right
     for c_idx in range(2, 11):
         c_let = get_column_letter(c_idx)
@@ -1336,7 +1461,7 @@ def generar_plantilla_cotizacion_venti(
 
     col_widths_h1 = {
         "A": 3,
-        "B": 9,
+        "B": 11,
         "C": 44,
         "D": 12,
         "E": 10,
@@ -1344,7 +1469,7 @@ def generar_plantilla_cotizacion_venti(
         "G": 15,
         "H": 15,
         "I": 16,
-        "J": 12,
+        "J": 13,
     }
     for col_l, w in col_widths_h1.items():
         ws1.column_dimensions[col_l].width = w
@@ -1354,16 +1479,55 @@ def generar_plantilla_cotizacion_venti(
     # ==========================================
     ws2 = wb.create_sheet(title="Control de Pagos")
     ws2.views.sheetView[0].showGridLines = True
+    ws2.page_setup.orientation = ws2.ORIENTATION_LANDSCAPE
+    ws2.page_setup.paperSize = ws2.PAPERSIZE_A4
+    ws2.sheet_properties.pageSetUpPr.fitToPage = True
+    ws2.page_setup.fitToWidth = 1
+    ws2.page_setup.fitToHeight = 0
 
-    ws2["B1"] = "Proyecto"
-    ws2["B1"].font = f_title
-    ws2["C1"] = "=Presupuesto!C2"
-    ws2["C1"].font = f_title
+    ws2.row_dimensions[1].height = 24
+    ws2.row_dimensions[2].height = 24
+    for r_b2 in (1, 2):
+        for c_i2 in range(2, 13):
+            c_l2 = get_column_letter(c_i2)
+            ws2[f"{c_l2}{r_b2}"].fill = fill_logo_box if c_i2 in (11, 12) else fill_brand
+            ws2[f"{c_l2}{r_b2}"].font = f_banner
+            ws2[f"{c_l2}{r_b2}"].border = border_cell
+
+    ws2["B1"] = "Proyecto:"
+    ws2["B1"].alignment = align_right
+    ws2["C1"] = "=Presupuesto!C3"
+    ws2["I1"] = "Fecha:"
+    ws2["I1"].alignment = align_right
+    ws2["J1"] = "=Presupuesto!J3"
+    ws2["J1"].alignment = align_center
 
     ws2["B2"] = "Cliente:"
-    ws2["B2"].font = f_title
+    ws2["B2"].alignment = align_right
     ws2["C2"] = "=Presupuesto!C4"
-    ws2["C2"].font = f_title
+    ws2["I2"] = "TC:"
+    ws2["I2"].alignment = align_right
+    ws2["J2"] = "=Presupuesto!J4"
+    ws2["J2"].number_format = '"S/ "0.00'
+    ws2["J2"].alignment = align_center
+
+    ws2.merge_cells("K1:L2")
+    ws2["K1"] = nom_estudio.upper() if nom_estudio else "COTA"
+    ws2["K1"].font = f_banner_sub
+    ws2["K1"].alignment = align_center
+
+    if logo_png:
+        try:
+            xl_img2 = XLImage(io.BytesIO(logo_png))
+            if logo_dims and logo_dims[1] > 0:
+                target_h2 = 30
+                target_w2 = min(145, max(28, int(round(logo_dims[0] * (target_h2 / float(logo_dims[1]))))))
+                xl_img2.width = target_w2
+                xl_img2.height = target_h2
+            ws2.add_image(xl_img2, "K1")
+            ws2["K1"] = ""
+        except Exception:
+            pass
 
     headers_h2 = [
         ("B", "Descripción"),
@@ -1385,7 +1549,7 @@ def generar_plantilla_cotizacion_venti(
         cell.font = f_header
         cell.fill = fill_header
         cell.alignment = align_center
-        cell.border = border_cell
+        cell.border = border_header_col
 
     ws2["B6"] = "TRABAJOS CONTRATISTAS"
     ws2["B6"].font = f_partida
@@ -1397,11 +1561,13 @@ def generar_plantilla_cotizacion_venti(
         ws2[f"C{r_c}"] = "Soles"
         ws2[f"C{r_c}"].alignment = align_center
         ws2[f"D{r_c}"] = f"=Presupuesto!I{p_r}"
-        ws2[f"D{r_c}"].number_format = "#,##0.00"
+        ws2[f"D{r_c}"].number_format = FMT_SOLES
+        for c_pay in range(5, 11):
+            ws2[f"{get_column_letter(c_pay)}{r_c}"].number_format = FMT_SOLES
         ws2[f"K{r_c}"] = f"=SUM(E{r_c}:J{r_c})"
-        ws2[f"K{r_c}"].number_format = "#,##0.00"
+        ws2[f"K{r_c}"].number_format = FMT_SOLES
         ws2[f"L{r_c}"] = f"=D{r_c}-K{r_c}"
-        ws2[f"L{r_c}"].number_format = "#,##0.00"
+        ws2[f"L{r_c}"].number_format = FMT_SOLES
         for c_i in range(2, 13):
             c_l = get_column_letter(c_i)
             ws2[f"{c_l}{r_c}"].font = f_task
@@ -1416,7 +1582,7 @@ def generar_plantilla_cotizacion_venti(
     for c_i in range(4, 13):
         c_l = get_column_letter(c_i)
         ws2[f"{c_l}{row_sub_h2}"] = f"=SUM({c_l}{first_c_row}:{c_l}{last_c_row})"
-        ws2[f"{c_l}{row_sub_h2}"].number_format = "#,##0.00"
+        ws2[f"{c_l}{row_sub_h2}"].number_format = FMT_SOLES
     for c_i in range(2, 13):
         c_l = get_column_letter(c_i)
         ws2[f"{c_l}{row_sub_h2}"].font = f_footer
@@ -1428,11 +1594,13 @@ def generar_plantilla_cotizacion_venti(
     ws2[f"C{row_ges_h2}"] = "Soles"
     ws2[f"C{row_ges_h2}"].alignment = align_center
     ws2[f"D{row_ges_h2}"] = f"=Presupuesto!H{row_gestion}"
-    ws2[f"D{row_ges_h2}"].number_format = "#,##0.00"
+    ws2[f"D{row_ges_h2}"].number_format = FMT_SOLES
+    for c_pay in range(5, 11):
+        ws2[f"{get_column_letter(c_pay)}{row_ges_h2}"].number_format = FMT_SOLES
     ws2[f"K{row_ges_h2}"] = f"=SUM(E{row_ges_h2}:J{row_ges_h2})"
-    ws2[f"K{row_ges_h2}"].number_format = "#,##0.00"
+    ws2[f"K{row_ges_h2}"].number_format = FMT_SOLES
     ws2[f"L{row_ges_h2}"] = f"=D{row_ges_h2}-K{row_ges_h2}"
-    ws2[f"L{row_ges_h2}"].number_format = "#,##0.00"
+    ws2[f"L{row_ges_h2}"].number_format = FMT_SOLES
     for c_i in range(2, 13):
         c_l = get_column_letter(c_i)
         ws2[f"{c_l}{row_ges_h2}"].font = f_task
@@ -1443,11 +1611,13 @@ def generar_plantilla_cotizacion_venti(
     ws2[f"C{row_gg_h2}"] = "Soles"
     ws2[f"C{row_gg_h2}"].alignment = align_center
     ws2[f"D{row_gg_h2}"] = f"=Presupuesto!H{row_gg}"
-    ws2[f"D{row_gg_h2}"].number_format = "#,##0.00"
+    ws2[f"D{row_gg_h2}"].number_format = FMT_SOLES
+    for c_pay in range(5, 11):
+        ws2[f"{get_column_letter(c_pay)}{row_gg_h2}"].number_format = FMT_SOLES
     ws2[f"K{row_gg_h2}"] = f"=SUM(E{row_gg_h2}:J{row_gg_h2})"
-    ws2[f"K{row_gg_h2}"].number_format = "#,##0.00"
+    ws2[f"K{row_gg_h2}"].number_format = FMT_SOLES
     ws2[f"L{row_gg_h2}"] = f"=D{row_gg_h2}-K{row_gg_h2}"
-    ws2[f"L{row_gg_h2}"].number_format = "#,##0.00"
+    ws2[f"L{row_gg_h2}"].number_format = FMT_SOLES
     for c_i in range(2, 13):
         c_l = get_column_letter(c_i)
         ws2[f"{c_l}{row_gg_h2}"].font = f_task
@@ -1460,7 +1630,7 @@ def generar_plantilla_cotizacion_venti(
     for c_i in range(4, 13):
         c_l = get_column_letter(c_i)
         ws2[f"{c_l}{row_tot_h2}"] = f"={c_l}{row_sub_h2}+{c_l}{row_ges_h2}+{c_l}{row_gg_h2}"
-        ws2[f"{c_l}{row_tot_h2}"].number_format = "#,##0.00"
+        ws2[f"{c_l}{row_tot_h2}"].number_format = FMT_SOLES
     for c_i in range(2, 13):
         c_l = get_column_letter(c_i)
         ws2[f"{c_l}{row_tot_h2}"].font = f_total
@@ -1474,7 +1644,7 @@ def generar_plantilla_cotizacion_venti(
     for c_i in range(4, 13):
         c_l = get_column_letter(c_i)
         ws2[f"{c_l}{row_usd_h2}"] = f"=IFERROR({c_l}{row_tot_h2}/Presupuesto!$J$4,0)"
-        ws2[f"{c_l}{row_usd_h2}"].number_format = "#,##0.00"
+        ws2[f"{c_l}{row_usd_h2}"].number_format = FMT_USD
     for c_i in range(2, 13):
         c_l = get_column_letter(c_i)
         ws2[f"{c_l}{row_usd_h2}"].font = f_usd
@@ -1509,16 +1679,22 @@ def exportar_proyecto_a_formato_venti(
     gg_pct_override: float = None,
     gestion_pct_override: float = None,
     incluir_igv: bool = None,
+    brand_color: str = None,
+    studio_name: str = None,
+    logo_bytes: bytes = None,
 ) -> bytes:
     """
     Exporta el presupuesto actual del proyecto en COTA a un archivo Excel (.xlsx)
-    listo para compartir con el cliente.
+    listo para compartir con el cliente, aplicando la marca, color y logo del Estudio.
     """
+    totales = recalcular_totales_presupuesto_proyecto(proy_name)
     params = obtener_parametros_presupuesto_proyecto(proy_name)
     tc_final = tc if tc is not None else params["tc"]
-    gg_final = gg_pct_override if gg_pct_override is not None else (params["gg_pct"] / 100.0)
-    ges_final = gestion_pct_override if gestion_pct_override is not None else (params["utilidades_pct"] / 100.0)
+    gg_final = gg_pct_override if gg_pct_override is not None else (totales["gg_pct"] / 100.0)
+    ges_final = gestion_pct_override if gestion_pct_override is not None else (totales["utilidades_pct"] / 100.0)
     igv_final = incluir_igv if incluir_igv is not None else params["incluir_igv"]
+    gg_fijo = totales["gg_monto"] if (gg_pct_override is None and params.get("modo_gg") == "monto") else None
+    ges_fijo = totales["utilidades_monto"] if (gestion_pct_override is None and params.get("modo_util") == "monto") else None
 
     df_p = st.session_state.get("proyectos", pd.DataFrame())
     proy_row = df_p[df_p["Nombre"] == proy_name].iloc[0] if not df_p.empty and proy_name in df_p["Nombre"].values else {}
@@ -1592,6 +1768,11 @@ def exportar_proyecto_a_formato_venti(
         gg_pct=gg_final,
         gestion_pct=ges_final,
         incluir_igv=igv_final,
+        brand_color=brand_color,
+        studio_name=studio_name,
+        logo_bytes=logo_bytes,
+        gg_monto_fijo=gg_fijo,
+        gestion_monto_fijo=ges_fijo,
     )
 
 
@@ -1824,7 +2005,7 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
                 continue
             s_low = s.lower()
 
-            if s_low.startswith("proyecto"):
+            if s_low.startswith("proyecto") and not resultado["proyecto"]:
                 inline_val = re.sub(r"^proyecto\s*:?\s*", "", s, flags=re.IGNORECASE).strip()
                 if inline_val:
                     resultado["proyecto"] = inline_val
@@ -1835,14 +2016,18 @@ def parsear_cotizacion_venti(file_or_df) -> dict:
                             continue
                         if re.match(r"^\d{4}-\d{2}-\d{2}", cand) or re.match(r"^\d{2}/\d{2}/\d{4}", cand):
                             resultado["fecha"] = cand.split(" ")[0]
-                        elif not cand.lower().startswith("tc") and not resultado["proyecto"]:
+                        elif (
+                            not cand.lower().startswith("tc")
+                            and not cand.lower().startswith("fecha")
+                            and not resultado["proyecto"]
+                        ):
                             resultado["proyecto"] = cand
 
             if re.match(r"^\d{4}-\d{2}-\d{2}", s) or re.match(r"^\d{2}/\d{2}/\d{4}", s):
                 if not resultado["fecha"]:
                     resultado["fecha"] = s.split(" ")[0]
 
-            if s_low.startswith("cliente"):
+            if s_low.startswith("cliente") and not resultado["cliente"]:
                 inline_cli = re.sub(r"^cliente\s*:?\s*", "", s, flags=re.IGNORECASE).strip()
                 if inline_cli:
                     resultado["cliente"] = inline_cli
@@ -2395,13 +2580,13 @@ def aplicar_cotizacion_a_proyecto(
 
     for col in COLS_PROY:
         if col not in st.session_state.proyectos.columns:
-            st.session_state.proyectos[col] = ""
+            st.session_state.proyectos[col] = pd.Series([None] * len(st.session_state.proyectos), index=st.session_state.proyectos.index, dtype=object)
     for col in COLS_TASKS:
         if col not in st.session_state.tasks.columns:
-            st.session_state.tasks[col] = ""
+            st.session_state.tasks[col] = pd.Series([None] * len(st.session_state.tasks), index=st.session_state.tasks.index, dtype=object)
     for col in COLS_P_INFO:
         if col not in st.session_state.p_info.columns:
-            st.session_state.p_info[col] = ""
+            st.session_state.p_info[col] = pd.Series([None] * len(st.session_state.p_info), index=st.session_state.p_info.index, dtype=object)
 
     mask_proy = st.session_state.proyectos["Nombre"] == proy_name
     if actualizar_ficha and mask_proy.any():
@@ -3093,21 +3278,46 @@ def calcular_resumen_cuadro_pagos_semanales(data_cuadro: dict) -> dict:
     }
 
 
-def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = None) -> bytes:
+def exportar_cuadro_pagos_semanales_excel(
+    proy_name: str,
+    data_cuadro: dict = None,
+    brand_color: str = None,
+    studio_name: str = None,
+    logo_bytes: bytes = None,
+) -> bytes:
     """
     Exporta el Cuadro de Pagos Semanales por Partida/Contratista a un archivo Excel (.xlsx)
-    con el diseño y fórmulas exactas para entregar al cliente.
+    con el diseño, símbolos de moneda ('S/' o '$'), marca/logo del Estudio y fórmulas exactas.
     """
+    from openpyxl.drawing.image import Image as XLImage
+    from cota.utils import normalizar_hex_color, obtener_marca_estudio, oscurecer_hex_color, preparar_logo_png_bytes
+
     if data_cuadro is None:
         data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
     res = calcular_resumen_cuadro_pagos_semanales(data_cuadro)
 
+    marca = obtener_marca_estudio()
+    brand_hex = normalizar_hex_color(brand_color or marca.get("brand_color", "#C85A32")).lstrip("#")
+    brand_dark_hex = oscurecer_hex_color(f"#{brand_hex}", 0.84).lstrip("#")
+    nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "LB Studio")).strip()
+
+    if logo_bytes is not None:
+        logo_png, logo_dims = preparar_logo_png_bytes(logo_bytes)
+    else:
+        logo_png = marca.get("logo_png_bytes")
+        logo_dims = marca.get("logo_size")
+
+    FMT_SOLES = '"S/ "#,##0.00'
+    FMT_USD = '"$ "#,##0.00'
+
     df_p = st.session_state.get("proyectos", pd.DataFrame())
     cliente = ""
+    fecha = datetime.date.today().strftime("%Y-%m-%d")
     if not df_p.empty and "Nombre" in df_p.columns:
         m = df_p[df_p["Nombre"] == proy_name]
         if not m.empty:
             cliente = safe_str(m.iloc[0].get("Cliente", ""))
+            fecha = safe_str(m.iloc[0].get("Inicio", "")) or fecha
 
     cols_pago = res["cols_pago"]
     cols_por_pagar = set(res["cols_por_pagar"])
@@ -3117,9 +3327,15 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     ws = wb.active
     ws.title = "Control de Pagos"
     ws.views.sheetView[0].showGridLines = True
+    ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
 
     font_family = "Calibri"
     f_title = Font(name=font_family, size=11, bold=True, color="FFFFFF")
+    f_banner_sub = Font(name=font_family, size=9, bold=True, color="EFECE6")
     f_header = Font(name=font_family, size=10, bold=True, color="FFFFFF")
     f_por_pagar = Font(name=font_family, size=9, bold=True, color="FFFFFF")
     f_section = Font(name=font_family, size=10, bold=True, underline="single", color="262320")
@@ -3130,9 +3346,10 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     f_usd = Font(name=font_family, size=10, bold=True, color="FFFFFF")
     f_pagado_hi = Font(name=font_family, size=10, bold=True, color="262320")
 
-    fill_clay = PatternFill(start_color="C85A32", end_color="C85A32", fill_type="solid")
+    fill_clay = PatternFill(start_color=brand_hex, end_color=brand_hex, fill_type="solid")
+    fill_logo_box = PatternFill(start_color="262320", end_color="262320", fill_type="solid")
     fill_header = fill_clay
-    fill_por_pagar = PatternFill(start_color="A84622", end_color="A84622", fill_type="solid")
+    fill_por_pagar = PatternFill(start_color=brand_dark_hex, end_color=brand_dark_hex, fill_type="solid")
     fill_section = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
     fill_subtotal = fill_clay
     fill_total = fill_clay
@@ -3164,17 +3381,27 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     let_saldo = get_column_letter(col_idx_saldo)
     let_notas = get_column_letter(col_idx_notas)
 
-    # Encabezado de Proyecto y Cliente en color Arcilla Cota (#C85A32)
+    # Encabezado ordenado de Proyecto, Cliente, Fecha, TC y Logo del Estudio
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 24
     for r_ban in (1, 2):
         for c_i in range(2, col_idx_notas + 1):
             c_l = get_column_letter(c_i)
-            ws[f"{c_l}{r_ban}"].fill = fill_clay
+            ws[f"{c_l}{r_ban}"].fill = fill_logo_box if c_i == col_idx_notas else fill_clay
             ws[f"{c_l}{r_ban}"].font = f_title
+            ws[f"{c_l}{r_ban}"].border = border_cell
 
     ws["B1"] = "Proyecto:"
     ws["B1"].font = f_title
     ws["C1"] = proy_name
     ws["C1"].font = f_title
+
+    ws["E1"] = "Fecha:"
+    ws["E1"].font = f_title
+    ws["E1"].alignment = align_right
+    ws["F1"] = fecha
+    ws["F1"].font = f_title
+    ws["F1"].alignment = align_center
 
     ws["B2"] = "Cliente:"
     ws["B2"].font = f_title
@@ -3186,8 +3413,26 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     ws["E2"].alignment = align_right
     ws["F2"] = float(tc)
     ws["F2"].font = f_title
-    ws["F2"].number_format = "0.00"
+    ws["F2"].number_format = '"S/ "0.00'
     ws["F2"].alignment = align_center
+
+    ws.merge_cells(f"{let_notas}1:{let_notas}2")
+    ws[f"{let_notas}1"] = nom_estudio.upper() if nom_estudio else "COTA"
+    ws[f"{let_notas}1"].font = f_banner_sub
+    ws[f"{let_notas}1"].alignment = align_center
+
+    if logo_png:
+        try:
+            xl_img_p = XLImage(io.BytesIO(logo_png))
+            if logo_dims and logo_dims[1] > 0:
+                target_h_p = 30
+                target_w_p = min(150, max(28, int(round(logo_dims[0] * (target_h_p / float(logo_dims[1]))))))
+                xl_img_p.width = target_w_p
+                xl_img_p.height = target_h_p
+            ws.add_image(xl_img_p, f"{let_notas}1")
+            ws[f"{let_notas}1"] = ""
+        except Exception:
+            pass
 
     # Fila 4: Cabecera de la tabla (Semana 1, Semana 2, ...)
     headers = [
@@ -3211,7 +3456,7 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
         cell.alignment = align_center
         cell.border = border_cell
 
-    # Fila 5: Indicadores "Por Pagar" sobre las semanas pendientes (franja arcilla continua)
+    # Fila 5: Indicadores "Por Pagar" sobre las semanas pendientes (franja continua del color de marca)
     ws.row_dimensions[5].height = 18
     for c_i in range(2, col_idx_notas + 1):
         c_let = get_column_letter(c_i)
@@ -3257,15 +3502,19 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     for f_c in res["filas_contratistas"]:
         part_s = safe_str(f_c.get("Partida", "")).strip()
         desc_s = safe_str(f_c.get("Descripcion", "")).strip()
+        mon_c = safe_str(f_c.get("Moneda", "Soles")) or "Soles"
+        es_usd_c = any(d in mon_c.lower() for d in ["dolar", "dólar", "usd", "$"])
+        fmt_mon_c = FMT_USD if es_usd_c else FMT_SOLES
+
         if part_s and desc_s and part_s.upper() not in desc_s.upper():
             ws[f"B{curr_r}"] = f"{part_s} — {desc_s}"
         else:
             ws[f"B{curr_r}"] = desc_s or part_s
         ws[f"B{curr_r}"].alignment = align_left
-        ws[f"C{curr_r}"] = f_c["Moneda"]
+        ws[f"C{curr_r}"] = mon_c
         ws[f"C{curr_r}"].alignment = align_center
         ws[f"D{curr_r}"] = float(f_c["TOTAL"])
-        ws[f"D{curr_r}"].number_format = "#,##0.00"
+        ws[f"D{curr_r}"].number_format = fmt_mon_c
         ws[f"D{curr_r}"].alignment = align_right
 
         for c_i in range(2, col_idx_notas + 1):
@@ -3277,7 +3526,7 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
             c_let = get_column_letter(5 + i_c)
             val_c = float(f_c.get(c_name, 0.0))
             ws[f"{c_let}{curr_r}"] = val_c if val_c != 0.0 else None
-            ws[f"{c_let}{curr_r}"].number_format = "#,##0.00"
+            ws[f"{c_let}{curr_r}"].number_format = fmt_mon_c
             ws[f"{c_let}{curr_r}"].alignment = align_right
             ws[f"{c_let}{curr_r}"].font = f_row_paid if (c_name not in cols_por_pagar) else f_row
             np_c = f_c.get("Notas_Pagos", {})
@@ -3285,11 +3534,11 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
                 ws[f"{c_let}{curr_r}"].comment = Comment(str(np_c[c_name]).strip(), "Cota")
 
         ws[f"{let_pagado}{curr_r}"] = _formula_pagado(curr_r)
-        ws[f"{let_pagado}{curr_r}"].number_format = "#,##0.00"
+        ws[f"{let_pagado}{curr_r}"].number_format = fmt_mon_c
         ws[f"{let_pagado}{curr_r}"].alignment = align_right
 
         ws[f"{let_saldo}{curr_r}"] = f"=D{curr_r}-{let_pagado}{curr_r}"
-        ws[f"{let_saldo}{curr_r}"].number_format = "#,##0.00"
+        ws[f"{let_saldo}{curr_r}"].number_format = fmt_mon_c
         ws[f"{let_saldo}{curr_r}"].alignment = align_right
 
         ws[f"{let_notas}{curr_r}"] = f_c.get("Notas", "")
@@ -3299,15 +3548,16 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
 
     last_c_row = max(first_c_row, curr_r - 1)
 
-    # Fila SUB TOTAL (Color Arcilla Cota + Texto Blanco)
+    # Fila SUB TOTAL (Color de Marca + Texto Blanco)
     row_sub = curr_r
     ws[f"B{row_sub}"] = "SUB TOTAL"
     ws[f"B{row_sub}"].alignment = align_center
-    ws[f"C{row_sub}"] = ""
+    ws[f"C{row_sub}"] = "Soles"
+    ws[f"C{row_sub}"].alignment = align_center
     for c_i in range(4, col_idx_saldo + 1):
         c_l = get_column_letter(c_i)
         ws[f"{c_l}{row_sub}"] = f"=SUM({c_l}{first_c_row}:{c_l}{last_c_row})"
-        ws[f"{c_l}{row_sub}"].number_format = "#,##0.00"
+        ws[f"{c_l}{row_sub}"].number_format = FMT_SOLES
         ws[f"{c_l}{row_sub}"].alignment = align_right
     for c_i in range(2, col_idx_notas + 1):
         c_l = get_column_letter(c_i)
@@ -3318,11 +3568,15 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     # Fila Gestión y supervisión de obras
     row_ges = row_sub + 1
     f_ges = res["fila_gestion"]
+    mon_ges = safe_str(f_ges.get("Moneda", "Soles")) or "Soles"
+    es_usd_ges = any(d in mon_ges.lower() for d in ["dolar", "dólar", "usd", "$"])
+    fmt_mon_ges = FMT_USD if es_usd_ges else FMT_SOLES
+
     ws[f"B{row_ges}"] = "Gestión y supervisión de obras"
-    ws[f"C{row_ges}"] = f_ges["Moneda"]
+    ws[f"C{row_ges}"] = mon_ges
     ws[f"C{row_ges}"].alignment = align_center
     ws[f"D{row_ges}"] = float(f_ges["TOTAL"])
-    ws[f"D{row_ges}"].number_format = "#,##0.00"
+    ws[f"D{row_ges}"].number_format = fmt_mon_ges
     ws[f"D{row_ges}"].alignment = align_right
     for c_i in range(2, col_idx_notas + 1):
         c_l = get_column_letter(c_i)
@@ -3332,28 +3586,32 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
         c_let = get_column_letter(5 + i_c)
         v_g = float(f_ges.get(c_name, 0.0))
         ws[f"{c_let}{row_ges}"] = v_g if v_g != 0.0 else None
-        ws[f"{c_let}{row_ges}"].number_format = "#,##0.00"
+        ws[f"{c_let}{row_ges}"].number_format = fmt_mon_ges
         ws[f"{c_let}{row_ges}"].alignment = align_right
         ws[f"{c_let}{row_ges}"].font = f_row_paid if (c_name not in cols_por_pagar) else f_row
         np_ges = f_ges.get("Notas_Pagos", {})
         if isinstance(np_ges, dict) and c_name in np_ges and np_ges[c_name]:
             ws[f"{c_let}{row_ges}"].comment = Comment(str(np_ges[c_name]).strip(), "Cota")
     ws[f"{let_pagado}{row_ges}"] = _formula_pagado(row_ges)
-    ws[f"{let_pagado}{row_ges}"].number_format = "#,##0.00"
+    ws[f"{let_pagado}{row_ges}"].number_format = fmt_mon_ges
     ws[f"{let_pagado}{row_ges}"].alignment = align_right
     ws[f"{let_saldo}{row_ges}"] = f"=D{row_ges}-{let_pagado}{row_ges}"
-    ws[f"{let_saldo}{row_ges}"].number_format = "#,##0.00"
+    ws[f"{let_saldo}{row_ges}"].number_format = fmt_mon_ges
     ws[f"{let_saldo}{row_ges}"].alignment = align_right
     ws[f"{let_notas}{row_ges}"] = f_ges.get("Notas", "")
 
     # Fila Gastos Generales
     row_gg = row_ges + 1
     f_gg = res["fila_gg"]
+    mon_gg = safe_str(f_gg.get("Moneda", "Soles")) or "Soles"
+    es_usd_gg = any(d in mon_gg.lower() for d in ["dolar", "dólar", "usd", "$"])
+    fmt_mon_gg = FMT_USD if es_usd_gg else FMT_SOLES
+
     ws[f"B{row_gg}"] = "Gastos Generales"
-    ws[f"C{row_gg}"] = f_gg["Moneda"]
+    ws[f"C{row_gg}"] = mon_gg
     ws[f"C{row_gg}"].alignment = align_center
     ws[f"D{row_gg}"] = float(f_gg["TOTAL"])
-    ws[f"D{row_gg}"].number_format = "#,##0.00"
+    ws[f"D{row_gg}"].number_format = fmt_mon_gg
     ws[f"D{row_gg}"].alignment = align_right
     for c_i in range(2, col_idx_notas + 1):
         c_l = get_column_letter(c_i)
@@ -3363,21 +3621,21 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
         c_let = get_column_letter(5 + i_c)
         v_gg = float(f_gg.get(c_name, 0.0))
         ws[f"{c_let}{row_gg}"] = v_gg if v_gg != 0.0 else None
-        ws[f"{c_let}{row_gg}"].number_format = "#,##0.00"
+        ws[f"{c_let}{row_gg}"].number_format = fmt_mon_gg
         ws[f"{c_let}{row_gg}"].alignment = align_right
         ws[f"{c_let}{row_gg}"].font = f_row_paid if (c_name not in cols_por_pagar) else f_row
         np_gg = f_gg.get("Notas_Pagos", {})
         if isinstance(np_gg, dict) and c_name in np_gg and np_gg[c_name]:
             ws[f"{c_let}{row_gg}"].comment = Comment(str(np_gg[c_name]).strip(), "Cota")
     ws[f"{let_pagado}{row_gg}"] = _formula_pagado(row_gg)
-    ws[f"{let_pagado}{row_gg}"].number_format = "#,##0.00"
+    ws[f"{let_pagado}{row_gg}"].number_format = fmt_mon_gg
     ws[f"{let_pagado}{row_gg}"].alignment = align_right
     ws[f"{let_saldo}{row_gg}"] = f"=D{row_gg}-{let_pagado}{row_gg}"
-    ws[f"{let_saldo}{row_gg}"].number_format = "#,##0.00"
+    ws[f"{let_saldo}{row_gg}"].number_format = fmt_mon_gg
     ws[f"{let_saldo}{row_gg}"].alignment = align_right
     ws[f"{let_notas}{row_gg}"] = f_gg.get("Notas", "")
 
-    # Fila TOTAL Soles (Color Arcilla Cota + PAGADO en amarillo)
+    # Fila TOTAL Soles (Color de Marca + PAGADO en amarillo)
     row_tot = row_gg + 1
     ws[f"B{row_tot}"] = "TOTAL"
     ws[f"B{row_tot}"].alignment = align_center
@@ -3386,7 +3644,7 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     for c_i in range(4, col_idx_saldo + 1):
         c_l = get_column_letter(c_i)
         ws[f"{c_l}{row_tot}"] = f"={c_l}{row_sub}+{c_l}{row_ges}+{c_l}{row_gg}"
-        ws[f"{c_l}{row_tot}"].number_format = "#,##0.00"
+        ws[f"{c_l}{row_tot}"].number_format = FMT_SOLES
         ws[f"{c_l}{row_tot}"].alignment = align_right
     for c_i in range(2, col_idx_notas + 1):
         c_l = get_column_letter(c_i)
@@ -3396,15 +3654,16 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     ws[f"{let_pagado}{row_tot}"].fill = fill_pagado_hi
     ws[f"{let_pagado}{row_tot}"].font = f_pagado_hi
 
-    # Fila Dólares (Color Arcilla Cota + PAGADO en amarillo)
+    # Fila Dólares (Color de Marca + PAGADO en amarillo)
     row_usd = row_tot + 1
-    ws[f"B{row_usd}"] = ""
+    ws[f"B{row_usd}"] = "TOTAL (USD)"
+    ws[f"B{row_usd}"].alignment = align_center
     ws[f"C{row_usd}"] = "Dólares"
     ws[f"C{row_usd}"].alignment = align_center
     for c_i in range(4, col_idx_saldo + 1):
         c_l = get_column_letter(c_i)
         ws[f"{c_l}{row_usd}"] = f"=IFERROR({c_l}{row_tot}/$F$2,0)"
-        ws[f"{c_l}{row_usd}"].number_format = "#,##0.00"
+        ws[f"{c_l}{row_usd}"].number_format = FMT_USD
         ws[f"{c_l}{row_usd}"].alignment = align_right
     for c_i in range(2, col_idx_notas + 1):
         c_l = get_column_letter(c_i)
@@ -3430,18 +3689,37 @@ def exportar_cuadro_pagos_semanales_excel(proy_name: str, data_cuadro: dict = No
     return out.getvalue()
 
 
-def exportar_cuadro_pagos_semanales_pdf(proy_name: str, data_cuadro: dict = None) -> bytes:
+def exportar_cuadro_pagos_semanales_pdf(
+    proy_name: str,
+    data_cuadro: dict = None,
+    brand_color: str = None,
+    studio_name: str = None,
+    logo_bytes: bytes = None,
+) -> bytes:
     """
     Exporta el Cuadro de Pagos Semanales a PDF horizontal (Landscape A4) con encabezados
-    'Semana 1', 'Semana 2', etc., franjas en color Arcilla Cota (#C85A32), pagos realizados
-    en rojo (#D92B2B) y Total Pagado resaltado en amarillo.
+    'Semana 1', 'Semana 2', etc., franjas en el color de marca del Estudio, logo incrustado,
+    pagos realizados en rojo (#D92B2B) y Total Pagado resaltado en amarillo.
     """
     from fpdf import FPDF
     from cota.pdf import safe_pdf_str
+    from cota.utils import hex_a_rgb, normalizar_hex_color, obtener_marca_estudio, oscurecer_hex_color, preparar_logo_png_bytes
 
     if data_cuadro is None:
         data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
     res = calcular_resumen_cuadro_pagos_semanales(data_cuadro)
+
+    marca = obtener_marca_estudio()
+    brand_hex_full = normalizar_hex_color(brand_color or marca.get("brand_color", "#C85A32"))
+    b_r, b_g, b_b = hex_a_rgb(brand_hex_full)
+    d_r, d_g, d_b = hex_a_rgb(oscurecer_hex_color(brand_hex_full, 0.84))
+    nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "LB Studio")).strip()
+
+    if logo_bytes is not None:
+        logo_png, logo_dims = preparar_logo_png_bytes(logo_bytes)
+    else:
+        logo_png = marca.get("logo_png_bytes")
+        logo_dims = marca.get("logo_size")
 
     df_p = st.session_state.get("proyectos", pd.DataFrame())
     cliente = ""
@@ -3469,24 +3747,33 @@ def exportar_cuadro_pagos_semanales_pdf(proy_name: str, data_cuadro: dict = None
     rem_w = max(40.0, usable_w - (w_desc + w_mon + w_tot + w_pag + w_sal))
     n_sem_cols = max(1, len(cols_pago))
     w_sem = round(rem_w / n_sem_cols, 2)
-    # Ajustar w_desc para cuadrar exactamente usable_w
     w_desc = round(usable_w - (w_mon + w_tot + w_pag + w_sal + w_sem * n_sem_cols), 2)
 
     font_size_tbl = 7.0 if n_sem_cols <= 8 else (6.0 if n_sem_cols <= 12 else 5.2)
 
-    # 1. Banner superior en Arcilla Cota (200, 90, 50)
-    pdf.set_fill_color(200, 90, 50)
+    # 1. Banner superior con Color de Marca y Logo del Estudio
+    pdf.set_fill_color(b_r, b_g, b_b)
     pdf.set_text_color(255, 255, 255)
-    pdf.set_draw_color(168, 70, 34)
+    pdf.set_draw_color(d_r, d_g, d_b)
     pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(usable_w, 7, f"  Proyecto {safe_pdf_str(proy_name)}", border="LTR", fill=True, new_x="LMARGIN", new_y="NEXT")
+    est_tag = f"  [{safe_pdf_str(nom_estudio.upper())}]" if nom_estudio else ""
+    pdf.cell(usable_w, 7, f"  Proyecto: {safe_pdf_str(proy_name)}{est_tag}", border="LTR", fill=True, new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 9)
     cli_txt = safe_pdf_str(cliente) if cliente else "Sin cliente asignado"
-    pdf.cell(usable_w, 6, f"  Cliente: {cli_txt}     |     TC: {tc:.2f}", border="LBR", fill=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(usable_w, 6, f"  Cliente: {cli_txt}     |     TC: S/ {tc:.2f}", border="LBR", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+    if logo_png:
+        try:
+            pdf.set_fill_color(38, 35, 32)
+            pdf.rect(8 + usable_w - 36, 8.5, 35, 12, style="F")
+            pdf.image(io.BytesIO(logo_png), x=8 + usable_w - 34, y=9.5, h=10)
+        except Exception:
+            pass
+
     pdf.ln(1.5)
 
-    # 2. Encabezado de columnas en Arcilla Cota (con Semana 1, Semana 2...)
-    pdf.set_fill_color(200, 90, 50)
+    # 2. Encabezado de columnas con Color de Marca
+    pdf.set_fill_color(b_r, b_g, b_b)
     pdf.set_text_color(255, 255, 255)
     pdf.set_draw_color(38, 35, 32)
     pdf.set_font("Helvetica", "B", font_size_tbl)
@@ -3536,7 +3823,7 @@ def exportar_cuadro_pagos_semanales_pdf(proy_name: str, data_cuadro: dict = None
     def _draw_data_row(desc_txt: str, fila_d: dict):
         mon_s = safe_str(fila_d.get("Moneda", "Soles"))
         es_u = "dólar" in mon_s.lower() or "dolar" in mon_s.lower()
-        pref = "$" if es_u else "S/ "
+        pref = "$ " if es_u else "S/ "
         row_h = 5.5
 
         pdf.set_fill_color(255, 255, 255)
@@ -3565,13 +3852,13 @@ def exportar_cuadro_pagos_semanales_pdf(proy_name: str, data_cuadro: dict = None
         lbl_r = f"{part_s} - {desc_s}" if (part_s and desc_s and part_s.upper() not in desc_s.upper()) else (desc_s or part_s)
         _draw_data_row(lbl_r, f_c)
 
-    # 4. Fila SUB TOTAL en Arcilla Cota
+    # 4. Fila SUB TOTAL en Color de Marca
     sub_d = res["sub_total"]
-    pdf.set_fill_color(200, 90, 50)
+    pdf.set_fill_color(b_r, b_g, b_b)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font("Helvetica", "B", font_size_tbl)
     pdf.cell(w_desc, 6.0, safe_pdf_str("SUB TOTAL"), border=1, align="C", fill=True)
-    pdf.cell(w_mon, 6.0, "", border=1, align="C", fill=True)
+    pdf.cell(w_mon, 6.0, "Soles", border=1, align="C", fill=True)
     pdf.cell(w_tot, 6.0, safe_pdf_str(_fmt_pdf_money(sub_d.get("TOTAL", 0.0), "S/ ", False)), border=1, align="R", fill=True)
     for c_name in cols_pago:
         pdf.cell(w_sem, 6.0, safe_pdf_str(_fmt_pdf_money(sub_d.get(c_name, 0.0), "S/ ", False)), border=1, align="R", fill=True)
@@ -3582,12 +3869,12 @@ def exportar_cuadro_pagos_semanales_pdf(proy_name: str, data_cuadro: dict = None
     _draw_data_row("Gestión y supervisión de obras", res["fila_gestion"])
     _draw_data_row("Gastos Generales", res["fila_gg"])
 
-    # 6. Filas TOTAL (Soles y Dólares) en Arcilla Cota con PAGADO en amarillo
+    # 6. Filas TOTAL (Soles y Dólares) en Color de Marca con PAGADO en amarillo
     for lbl_tot, mon_tot, pref_tot, d_tot in [
         ("TOTAL", "Soles", "S/ ", res["total_soles"]),
-        ("", "Dólares", "$", res["total_dolares"]),
+        ("TOTAL (USD)", "Dólares", "$ ", res["total_dolares"]),
     ]:
-        pdf.set_fill_color(200, 90, 50)
+        pdf.set_fill_color(b_r, b_g, b_b)
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Helvetica", "B", font_size_tbl)
         pdf.cell(w_desc, 6.0, safe_pdf_str(lbl_tot), border=1, align="C", fill=True)
@@ -3599,8 +3886,8 @@ def exportar_cuadro_pagos_semanales_pdf(proy_name: str, data_cuadro: dict = None
         pdf.set_fill_color(255, 224, 102)
         pdf.set_text_color(38, 35, 32)
         pdf.cell(w_pag, 6.0, safe_pdf_str(_fmt_pdf_money(d_tot.get("PAGADO", 0.0), pref_tot, False)), border=1, align="R", fill=True)
-        # SALDO en Arcilla Cota
-        pdf.set_fill_color(200, 90, 50)
+        # SALDO en Color de Marca
+        pdf.set_fill_color(b_r, b_g, b_b)
         pdf.set_text_color(255, 255, 255)
         pdf.cell(w_sal, 6.0, safe_pdf_str(_fmt_pdf_money(d_tot.get("SALDO", 0.0), pref_tot, False)), border=1, align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
 
