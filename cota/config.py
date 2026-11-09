@@ -16,6 +16,18 @@ DEFAULT_STUDIO_NAME = ""
 DEFAULT_SUBTITLE = "PROJECT & DESIGN MANAGEMENT"
 DEFAULT_LOGO_PATH = "logo/Logo Full.png"
 DEFAULT_ICON_PATH = "logo/Logo Full.png"
+DEFAULT_BRAND_COLOR = "#C85A32"
+STUDIO_BRANDING_FILE = "studio_branding.json"
+
+PALETAS_MARCA_ESTUDIO = [
+    ("Terracota Arquitectónico (Default)", "#C85A32"),
+    ("Azul Prusia / Marino", "#1E3A5F"),
+    ("Verde Salvia / Botánico", "#3B5E4C"),
+    ("Carbón Minimalista", "#262320"),
+    ("Borgoña / Vino", "#7A2E3A"),
+    ("Ocre / Bronce", "#9E6B2D"),
+    ("Azul Pizarra", "#3D5A6C"),
+]
 
 # Moneda y Localización
 DEFAULT_CURRENCY = "S/"

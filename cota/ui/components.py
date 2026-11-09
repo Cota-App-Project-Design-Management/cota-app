@@ -13,7 +13,8 @@ from cota.db import (
     obtener_notas_chat_proyecto,
 )
 from cota.config import get_secret
-from cota.utils import get_image_base64, safe_str
+from cota.config import DEFAULT_BRAND_COLOR, PALETAS_MARCA_ESTUDIO, get_secret
+from cota.utils import get_image_base64, guardar_marca_estudio, normalizar_hex_color, obtener_marca_estudio, safe_str
 
 
 def extraer_nombre_studio(raw_title: str = "", default_studio: str = "") -> str:
@@ -39,7 +40,8 @@ def extraer_nombre_studio(raw_title: str = "", default_studio: str = "") -> str:
 
 def render_sidebar_branding(logo_path="logo/Logo Full.png", subtitle="PROJECT & DESIGN MANAGEMENT"):
     """Renderiza en la parte superior izquierda (sidebar) el Logo de Cota y debajo 'PROJECT & DESIGN MANAGEMENT'."""
-    logo_src = get_image_base64(logo_path or "logo/Logo Full.png")
+    marca = obtener_marca_estudio()
+    logo_src = marca.get("logo_base64") or get_image_base64(logo_path or "logo/Logo Full.png")
     brand_top = (
         f'<img src="{logo_src}" alt="COTA" '
         f'style="width:100%; max-width:170px; height:auto; display:block; margin:0 auto 8px auto; object-fit:contain; mix-blend-mode:multiply;">'
@@ -51,15 +53,100 @@ def render_sidebar_branding(logo_path="logo/Logo Full.png", subtitle="PROJECT & 
         f"<div style='text-align:center; padding: 8px 4px 10px 4px;'>"
         f"{brand_top}"
         f"<p style='color:#6E665E; font-family:\"JetBrains Mono\", monospace; font-size:9.5px; font-weight:600; letter-spacing:0.13em; text-transform:uppercase; margin:4px 0 0 0; line-height:1.3;'>{sub_str}</p>"
+        f"<div style='display:flex; align-items:center; justify-content:center; gap:6px; margin-top:6px;'>"
+        f"<span style='display:inline-block; width:9px; height:9px; border-radius:50%; background:{marca.get('brand_color', '#C85A32')}; border:1px solid rgba(38,35,32,0.2);'></span>"
+        f"<span style='font-family:\"JetBrains Mono\", monospace; font-size:10px; font-weight:700; color:#262320; letter-spacing:0.05em;'>{html_lib.escape(marca.get('studio_name') or 'ESTUDIO')}</span>"
+        f"</div>"
         f"</div>",
         unsafe_allow_html=True,
     )
 
 
+    render_configurador_marca_estudio(marca)
+
+
+def render_configurador_marca_estudio(marca: dict = None):
+    """Renderiza en el Sidebar un panel desplegable para personalizar el Color de Marca y el Logo del Estudio por Branch."""
+    if marca is None:
+        marca = obtener_marca_estudio()
+
+    with st.expander("🎨 Marca y Logo del Estudio", expanded=False):
+        st.caption("Personaliza el color corporativo y el logo de este Branch para la interfaz y los archivos exportados (Excel / PDF).")
+
+        nuevo_nombre = st.text_input(
+            "Nombre del Estudio",
+            value=marca.get("studio_name", "LB Studio"),
+            key="cfg_brand_studio_name",
+            placeholder="Ej: LB Studio",
+        )
+
+        opciones_paleta = ["Personalizado (Selector de color)"] + [
+            f"{nombre} ({hx})" for nombre, hx in PALETAS_MARCA_ESTUDIO
+        ]
+        color_actual = normalizar_hex_color(marca.get("brand_color", DEFAULT_BRAND_COLOR))
+        idx_default = 0
+        for i, (_, hx) in enumerate(PALETAS_MARCA_ESTUDIO, start=1):
+            if hx.upper() == color_actual.upper():
+                idx_default = i
+                break
+
+        sel_paleta = st.selectbox(
+            "Paleta Arquitectónica Rápida",
+            options=opciones_paleta,
+            index=idx_default,
+            key="cfg_brand_preset_select",
+        )
+
+        color_sugerido = color_actual
+        if sel_paleta != "Personalizado (Selector de color)":
+            for nombre, hx in PALETAS_MARCA_ESTUDIO:
+                if f"{nombre} ({hx})" == sel_paleta:
+                    color_sugerido = hx
+                    break
+
+        nuevo_color = st.color_picker(
+            "Color Principal de Marca",
+            value=color_sugerido,
+            key="cfg_brand_color_picker",
+        )
+
+        logo_file = st.file_uploader(
+            "Importar Logo del Estudio (PNG / JPG / SVG)",
+            type=["png", "jpg", "jpeg", "webp", "svg"],
+            key="cfg_brand_logo_uploader",
+            help="Se guardará en este Branch y se incrustará en los encabezados de Presupuesto y Control de Pagos.",
+        )
+
+        c_b1, c_b2 = st.columns(2)
+        if c_b1.button("💾 Guardar Marca", use_container_width=True, type="primary", key="btn_save_studio_brand"):
+            up_bytes = logo_file.getvalue() if logo_file is not None else None
+            up_name = logo_file.name if logo_file is not None else None
+            guardar_marca_estudio(
+                studio_name=nuevo_nombre,
+                brand_color=nuevo_color,
+                uploaded_logo_bytes=up_bytes,
+                uploaded_logo_name=up_name,
+            )
+            st.toast("Marca y logo del estudio actualizados en este Branch.")
+            st.rerun()
+
+        if c_b2.button("↺ Restaurar", use_container_width=True, key="btn_reset_studio_brand"):
+            guardar_marca_estudio(
+                studio_name="LB Studio",
+                brand_color=DEFAULT_BRAND_COLOR,
+                reset_logo=True,
+            )
+            st.toast("Marca restaurada a los valores por defecto.")
+            st.rerun()
+
+
 def render_header(title="", subtitle="PROJECT & DESIGN MANAGEMENT", logo_path="logo/Logo Full.png", is_beta=False):
-    studio_name = extraer_nombre_studio(title)
+    marca = obtener_marca_estudio()
+    studio_name = extraer_nombre_studio(title, default_studio=marca.get("studio_name", ""))
     """Renderiza el header principal corporativo del estudio."""
-    logo_src = get_image_base64(logo_path)
+    logo_src = marca.get("logo_base64") or get_image_base64(logo_path)
+    """Renderiza el header principal corporativo del estudio."""
+    logo_src = marca.get("logo_base64") or get_image_base64(logo_path)
     logo_html = f'<img src="{logo_src}" class="header-logo">' if logo_src else ""
     divider_html = '<div class="header-divider"></div>' if (logo_src and studio_name) else ""
     beta_badge = (

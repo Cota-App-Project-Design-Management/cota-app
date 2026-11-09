@@ -4,7 +4,7 @@ Paleta: Blanco Hueso (#F7F4EF), Piedra Travertino (#EFECE6), Rojo Arcilla (#C85A
 """
 
 
-def get_app_css() -> str:
+def get_app_css(brand_color: str = None) -> str:
     """Retorna el bloque CSS completo con la identidad cálida para arquitectos y diseñadores."""
     return """
     <style>
@@ -689,4 +689,28 @@ def get_app_css() -> str:
             border-color: var(--clay-primary) !important;
         }
     </style>
-    """
+    """ + _build_brand_override_css(brand_color)
+
+
+def _build_brand_override_css(brand_color: str = None) -> str:
+    """Inyecta variables CSS dinámicas según el color de marca del Estudio."""
+    try:
+        from cota.utils import obtener_marca_estudio, normalizar_hex_color, hex_a_rgb, oscurecer_hex_color
+        if brand_color:
+            primary = normalizar_hex_color(brand_color, "#C85A32")
+        else:
+            marca = obtener_marca_estudio()
+            primary = marca.get("brand_color", "#C85A32")
+        hover = oscurecer_hex_color(primary, 0.84)
+        r, g, b = hex_a_rgb(primary)
+        return (
+            f"<style>:root {{"
+            f"--clay-primary: {primary} !important;"
+            f"--clay-hover: {hover} !important;"
+            f"--clay-soft: rgba({r}, {g}, {b}, 0.10) !important;"
+            f"--clay-border: rgba({r}, {g}, {b}, 0.30) !important;"
+            f"}}</style>"
+        )
+    except Exception:
+        return ""
+
