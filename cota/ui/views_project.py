@@ -573,7 +573,7 @@ def _render_tab_fases(proy_name, proy_data):
             with st.form(f"form_nueva_fase_banco_{proy_name}", clear_on_submit=True):
                 st.markdown("##### ➕ Nueva Etapa de Diseño")
                 st.caption("Agrega una etapa personalizada al banco de diseño del estudio.")
-                nf_nombre = st.text_input("Nombre de la Etapa", placeholder="ej. 08. Renders Nocturnos Terraza")
+                nf_nombre = st.text_input("Nombre de la Etapa", placeholder="")
                 nf_etapa = st.selectbox("Categoría de Diseño", ETAPAS_DISENO)
                 nf_dias = st.number_input("Duración estimada (días)", min_value=1, max_value=365, value=7)
                 nf_activar = st.checkbox("Activar inmediatamente en este proyecto", value=True)
@@ -702,14 +702,14 @@ def _render_tab_fases(proy_name, proy_data):
                 st.markdown("##### Registrar Cambio o Entregable de Diseño")
                 cd_fase = st.selectbox("Etapa de Diseño vinculada", opciones_fases_select)
                 cd_tipo = st.selectbox("Tipo (Plano / Render / 3D / Moodboard)", TIPOS_ENTREGABLE_DISENO)
-                cd_nom = st.text_input("Plano / Vista 3D / Ambiente", placeholder="ej. Plano Preliminar Cocina / Render Sala Vista 1")
+                cd_nom = st.text_input("Plano / Vista 3D / Ambiente", placeholder="")
                 col_c1, col_c2 = st.columns(2)
                 cd_fecha = col_c1.date_input("Fecha del Cambio / Revisión", value=datetime.date.today())
                 cd_ncambios = col_c2.number_input("N° de Cambios realizados", min_value=0, max_value=50, value=1, step=1)
                 col_c3, col_c4 = st.columns(2)
                 cd_est = col_c3.selectbox("Estado", STATUS_FASES, index=1)
                 cd_resp = col_c4.selectbox("Responsable", socios_disp_dis)
-                cd_det = st.text_area("Detalle del cambio realizado / solicitado", height=72, placeholder="ej. Cambio de ubicación de isla y ajuste de materiales en 3D...")
+                cd_det = st.text_area("Detalle del cambio realizado / solicitado", height=72, placeholder="")
                 cd_link = st.text_input("Enlace a Plano / Render en Drive (opcional)", placeholder="https://drive.google.com/...")
 
                 if st.form_submit_button("GUARDAR CAMBIO DE DISEÑO", type="primary", use_container_width=True):
@@ -1559,7 +1559,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     f"Partida {idx_p} — Nombre de la Partida",
                     key=key_pnom,
                     on_change=_make_on_rename(idx_p, p_nom_completo, key_pnom),
-                    placeholder="ej. Obras Civiles, Carpintería, Inst. Eléctricas...",
+                    placeholder="",
                 )
             with cp_cnt:
                 st.number_input(
@@ -1892,7 +1892,7 @@ def _render_tab_entregables(proy_name, proy_data):
         with st.popover("➕ REGISTRAR NUEVO ENTREGABLE", use_container_width=True):
             with st.form(f"f_new_ent_{proy_name}", clear_on_submit=True):
                 e_esp = st.selectbox("Especialidad", ESPECIALIDADES_DEFAULT)
-                e_nom = st.text_input("Nombre del Plano / Documento", placeholder="ej. A-01 Plano de Distribución y Mobiliario")
+                e_nom = st.text_input("Nombre del Plano / Documento", placeholder="")
                 col_r1, col_r2 = st.columns(2)
                 e_rev = col_r1.text_input("Revisión", value="Rev 0")
                 e_est = col_r2.selectbox("Estado", ["En desarrollo", "En revisión", "Aprobado", "Observado"])
@@ -1992,7 +1992,7 @@ def _render_tab_obra(proy_name, proy_data):
     with col_ap1:
         with st.popover("➕ AGREGAR PARTIDA DE OBRA", use_container_width=True):
             with st.form(f"f_new_part_{proy_name}", clear_on_submit=True):
-                n_pa = st.text_input("Código / Nombre de Partida (ej. 5. Instalaciones Especiales)")
+                n_pa = st.text_input("Código / Nombre de Partida")
                 n_pac = st.number_input("Presupuesto Pactado Contratista (S/)", value=0.0)
                 if st.form_submit_button("CREAR PARTIDA") and n_pa:
                     st.session_state.partidas = pd.concat([st.session_state.partidas, pd.DataFrame([{'Proyecto': proy_name, 'Nombre_Partida': n_pa}])], ignore_index=True)
@@ -2884,7 +2884,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
         const iconCollapse = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>';
 
         function updateFsButtonState(btn, isFs) {{
-            if (!btn) return;
+            if (!btn) return; const desiredState = isFs ? '1' : '0'; if (btn.getAttribute('data-fs-state') === desiredState) return; btn.setAttribute('data-fs-state', desiredState);
             if (isFs) {{
                 btn.innerHTML = iconCollapse + '<span>Salir de Pantalla Completa (ESC)</span>';
                 btn.style.background = '#262320';
@@ -3218,7 +3218,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
             syncFsState();
         }});
         try {{
-            observer.observe(parentDoc.body, {{ childList: true, subtree: true }});
+            // observer.observe deshabilitado para evitar bucle infinito de MutationObserver
         }} catch (e) {{}}
 
         parentWin.__cotaPagosControllers[safeId] = {{
@@ -3487,7 +3487,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             nueva_nota_qp = st.text_input(
                 "Nota del pago (opcional, visible al pasar el mouse):",
                 value=nota_qp_actual,
-                placeholder="Ej. Adelanto 50%, valorización semana 2...",
+                placeholder="",
                 key=f"txt_qp_{proy_name}_{fila_qp_lbl}_{col_qp_sel}",
             )
             if st.button("💾 Guardar Pago", key=f"btn_save_qp_{proy_name}", type="primary", use_container_width=True):
@@ -3561,7 +3561,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             txt_nota_input = st.text_area(
                 f"Detalle / Motivo del pago ({etiqueta_corta_columna_pago(col_sel_pago)}):",
                 value=nota_existente,
-                placeholder="Ej. Adelanto 50% para compra de tableros y cables, o pago contra entrega de desmonte...",
+                placeholder="",
                 key=f"txt_nota_p_{proy_name}_{fila_sel_lbl}_{col_sel_pago}",
                 height=90,
             )
@@ -3652,7 +3652,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
 
     with tb_col3:
         with st.popover("➕ Agregar Contratista / Sub-partida", use_container_width=True):
-            st.caption("Agrega otra fila asociada a una misma Partida (ej. Instalaciones → Eléctricas / Sanitarias).")
+            st.caption("Agrega otra fila asociada a una misma Partida.")
             with st.form(f"frm_add_sub_cont_{proy_name}", clear_on_submit=True):
                 part_sel_new = st.selectbox(
                     "Partida Asociada:",
@@ -3664,8 +3664,8 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                     else []
                 )
                 desc_sub_new = st.text_input(
-                    "Contratista / Especialidad (ej. Eléctricas - Emp. A, Sanitarias - Emp. B):",
-                    placeholder="Ej. Inst. Eléctricas - Contratista",
+                    "Contratista / Especialidad:",
+                    placeholder="",
                 )
                 contra_ref = st.selectbox(
                     "O elegir Contratista de Base de Datos (opcional):",
@@ -4040,7 +4040,7 @@ def _render_tab_finanzas(proy_name, proy_data):
     with col_btn1:
         with st.popover("➕ REGISTRAR HITO DE COBRO", use_container_width=True):
             with st.form(f"f_new_cobro_{proy_name}", clear_on_submit=True):
-                c_hito = st.text_input("Hito / Concepto de Cobro", placeholder="ej. Anticipo 30% - Firma de Contrato")
+                c_hito = st.text_input("Hito / Concepto de Cobro", placeholder="")
                 c_tipo = st.selectbox("Tipo de Concepto", TIPOS_COBRO)
                 c_monto = st.number_input("Monto Pactado (S/)", value=0.0)
                 c_venc = st.date_input("Fecha de Vencimiento", value=datetime.date.today())
@@ -4132,7 +4132,7 @@ def _render_tab_finanzas(proy_name, proy_data):
 
     with st.form(f"form_gg_quick_{proy_name}", clear_on_submit=True):
         cg1, cg2, cg3 = st.columns([5, 2, 2])
-        n_conc = cg1.text_input("Concepto de Gasto (ej. Taxis, materiales menores, ferretería)")
+        n_conc = cg1.text_input("Concepto de Gasto")
         n_monto_gg = cg2.number_input("Monto (S/)", value=0.0)
         if cg3.form_submit_button("REGISTRAR GASTO") and n_conc and n_monto_gg > 0:
             n_row = pd.DataFrame([{
@@ -4394,8 +4394,8 @@ def _render_tab_punch(proy_name, proy_data):
         with st.popover("➕ AGREGAR OBSERVACIÓN", use_container_width=True):
             with st.form(f"f_new_punch_{proy_name}", clear_on_submit=True):
                 p_amb = st.selectbox("Ambiente", AMBIENTES_DEFAULT)
-                p_elem = st.text_input("Elemento (ej. Zócalo, Puerta Principal, Pintura Techo)")
-                p_desc = st.text_area("Descripción de la Observación", placeholder="ej. Retocar masillado y pintura en esquina superior derecha")
+                p_elem = st.text_input("Elemento")
+                p_desc = st.text_area("Descripción de la Observación", placeholder="")
                 col_r1, col_r2 = st.columns(2)
                 p_resp = col_r1.text_input("Responsable (Contratista / Proveedor)")
                 p_prio = col_r2.selectbox("Prioridad", PRIORIDADES_PUNCH, index=1)

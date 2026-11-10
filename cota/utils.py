@@ -5,12 +5,14 @@ Utilidades auxiliares, formateo de datos, motor de fechas, parsing y sugerencias
 import base64
 import datetime
 import io
-import io
 import os
 import re
 import unicodedata
 from zoneinfo import ZoneInfo
 import pandas as pd
+
+_IMAGE_B64_CACHE = {}
+_LOGO_PNG_CACHE = {}
 
 
 def safe_float(val, default=0.0):
@@ -187,6 +189,10 @@ def get_image_base64(path):
     for cand in candidates:
         if cand and os.path.isfile(cand):
             try:
+                mtime = os.path.getmtime(cand)
+                cache_key = (cand, mtime)
+                if cache_key in _IMAGE_B64_CACHE:
+                    return _IMAGE_B64_CACHE[cache_key]
                 with open(cand, "rb") as f:
                     b64 = base64.b64encode(f.read()).decode("ascii")
                     low = cand.lower()
@@ -196,7 +202,9 @@ def get_image_base64(path):
                         mime = "image/png"
                     else:
                         mime = "image/jpeg"
-                    return f"data:{mime};base64,{b64}"
+                    res = f"data:{mime};base64,{b64}"
+                    _IMAGE_B64_CACHE[cache_key] = res
+                    return res
             except Exception:
                 continue
 
@@ -925,7 +933,6 @@ def analizar_tareas_proyecto(df_tasks: pd.DataFrame, proy_name: str, fecha_hoy=N
     return res
 
 
-
 def normalizar_hex_color(color_str, default="#C85A32"):
     """Normaliza un string de color hexadecimal a formato '#RRGGBB'."""
     if not color_str:
@@ -973,20 +980,24 @@ def preparar_logo_png_bytes(source=None, max_height=110):
     optimizados para incrustar en Excel (openpyxl) y PDF (FPDF2).
     Retorna (png_bytes, (width, height)) o (None, (0, 0)).
     """
-    import io
     try:
         from PIL import Image
     except Exception:
         return None, (0, 0)
 
     raw_bytes = None
+    cache_key = None
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     if isinstance(source, (bytes, bytearray)):
         raw_bytes = bytes(source)
+        cache_key = ("bytes", len(raw_bytes), raw_bytes[:32], max_height)
     elif isinstance(source, str) and source.strip():
         s = source.strip()
         if s.startswith("data:image/"):
+            cache_key = ("b64", len(s), s[:64], s[-32:], max_height)
+            if cache_key in _LOGO_PNG_CACHE:
+                return _LOGO_PNG_CACHE[cache_key]
             try:
                 header, b64_data = s.split(",", 1)
                 if "svg+xml" not in header.lower():
@@ -1002,6 +1013,10 @@ def preparar_logo_png_bytes(source=None, max_height=110):
             for cand in candidates:
                 if cand and os.path.isfile(cand) and not cand.lower().endswith(".svg"):
                     try:
+                        mtime = os.path.getmtime(cand)
+                        cache_key = ("file", cand, mtime, max_height)
+                        if cache_key in _LOGO_PNG_CACHE:
+                            return _LOGO_PNG_CACHE[cache_key]
                         with open(cand, "rb") as f:
                             raw_bytes = f.read()
                         break
@@ -1013,6 +1028,10 @@ def preparar_logo_png_bytes(source=None, max_height=110):
             cand = os.path.join(repo_root, fallback_rel)
             if os.path.isfile(cand):
                 try:
+                    mtime = os.path.getmtime(cand)
+                    cache_key = ("file", cand, mtime, max_height)
+                    if cache_key in _LOGO_PNG_CACHE:
+                        return _LOGO_PNG_CACHE[cache_key]
                     with open(cand, "rb") as f:
                         raw_bytes = f.read()
                     break
@@ -1021,6 +1040,9 @@ def preparar_logo_png_bytes(source=None, max_height=110):
 
     if not raw_bytes:
         return None, (0, 0)
+
+    if cache_key and cache_key in _LOGO_PNG_CACHE:
+        return _LOGO_PNG_CACHE[cache_key]
 
     try:
         with Image.open(io.BytesIO(raw_bytes)) as im:
@@ -1033,7 +1055,10 @@ def preparar_logo_png_bytes(source=None, max_height=110):
                 im = im.resize((w, h), Image.Resampling.LANCZOS)
             out = io.BytesIO()
             im.save(out, format="PNG")
-            return out.getvalue(), (w, h)
+            res = (out.getvalue(), (w, h))
+            if cache_key:
+                _LOGO_PNG_CACHE[cache_key] = res
+            return res
     except Exception:
         return None, (0, 0)
 
@@ -1091,10 +1116,13 @@ def obtener_marca_estudio():
 
     studio_name = (
         mem.get("studio_name")
-        or cfg_session.get("studio_name")
-        or data_file.get("studio_name")
-        or sec_studio
-        or ""
+        if "studio_name" in mem
+        else (
+            cfg_session.get("studio_name")
+            or data_file.get("studio_name")
+            or sec_studio
+            or ""
+        )
     )
     raw_color = (
         mem.get("brand_color")
@@ -1161,6 +1189,8 @@ def guardar_marca_estudio(studio_name=None, brand_color=None, uploaded_logo_byte
     logo_dir = os.path.join(repo_root, "Logo")
     os.makedirs(logo_dir, exist_ok=True)
     if reset_logo:
+        _IMAGE_B64_CACHE.clear()
+        _LOGO_PNG_CACHE.clear()
         for _tmp_logo in ("studio_logo.png", "studio_logo.svg"):
             _p = os.path.join(logo_dir, _tmp_logo)
             if os.path.isfile(_p):
@@ -1170,6 +1200,8 @@ def guardar_marca_estudio(studio_name=None, brand_color=None, uploaded_logo_byte
                     pass
 
     if uploaded_logo_bytes:
+        _IMAGE_B64_CACHE.clear()
+        _LOGO_PNG_CACHE.clear()
         ext = os.path.splitext(str(uploaded_logo_name or "studio_logo.png"))[1].lower()
         if ext == ".svg":
             target_rel = "Logo/studio_logo.svg"
