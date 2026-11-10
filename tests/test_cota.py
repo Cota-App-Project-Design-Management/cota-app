@@ -1576,3 +1576,13 @@ def test_marca_estudio_color_y_logo_por_branch():
             brand_color="#C85A32",
             reset_logo=True,
         )
+
+
+def test_render_header_signatures():
+    from cota.ui.components import render_header
+
+    # Asegurarse de que soporta las distintas formas de invocación sin error
+    render_header(title="LB Studio", subtitle="PROJECT", logo_path="logo/Logo Full.png")
+    render_header(title="COTA APP", subtitle="PROJECT", logo_path=None)
+    render_header("COTA APP", "PROJECT")
+    render_header(app_title="COTA APP", app_subtitle="PROJECT", studio_name="LB Studio")

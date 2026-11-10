@@ -103,7 +103,15 @@ def render_configurador_marca_estudio():
             st.rerun()
 
 
-def render_header(app_title, app_subtitle, logo_path=None, studio_name=""):
+def render_header(
+    title=None,
+    subtitle=None,
+    logo_path=None,
+    studio_name="",
+    app_title=None,
+    app_subtitle=None,
+    **kwargs,
+):
     """Renderiza el encabezado principal con el logo de COTA a todo lo alto a la izquierda y el nombre del Studio a la derecha."""
     from cota.utils import obtener_marca_estudio
 
@@ -111,10 +119,18 @@ def render_header(app_title, app_subtitle, logo_path=None, studio_name=""):
     logo_src = get_image_base64(logo_path or "logo/Logo Full.png")
     img_html = f'<img src="{logo_src}" class="header-logo" alt="COTA Logo" />'
 
-    raw_studio = str(studio_name or marca.get("studio_name", "") or "").strip()
-    clean_title = str(app_title or "").strip()
-    if not raw_studio and "//" in clean_title:
-        raw_studio = clean_title.split("//", 1)[1].strip()
+    raw_studio = str(
+        studio_name
+        or kwargs.get("studio", "")
+        or marca.get("studio_name", "")
+        or ""
+    ).strip()
+    clean_title = str(title or app_title or "").strip()
+    if not raw_studio:
+        if "//" in clean_title:
+            raw_studio = clean_title.split("//", 1)[1].strip()
+        elif clean_title and clean_title.upper() not in ["COTA", "COTA APP", "COTA //"]:
+            raw_studio = clean_title
 
     if raw_studio:
         studio_esc = html_lib.escape(raw_studio)
