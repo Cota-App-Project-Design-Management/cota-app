@@ -39,6 +39,111 @@ def extraer_nombre_studio(raw_title: str = "", default_studio: str = "") -> str:
 
 
 def render_sidebar_branding(logo_path="logo/Logo Full.png", subtitle="PROJECT & DESIGN MANAGEMENT"):
+    """Renderiza en la parte superior izquierda (sidebar) el Logo del Estudio, su nombre/color de marca y el configurador de marca del Branch."""
+    from cota.utils import obtener_marca_estudio
+    marca = obtener_marca_estudio()
+    logo_src = marca.get("logo_base64") or get_image_base64(logo_path or "logo/Logo Full.png")
+    studio_nom = marca.get("studio_name", "LB Studio")
+    brand_col = marca.get("brand_color", "#C85A32")
+
+    brand_top = (
+        f'<div style="background:#262320; border-bottom:3px solid {brand_col}; border-radius:10px; padding:10px 14px; margin:0 auto 8px auto; display:flex; align-items:center; justify-content:center;">'
+        f'<img src="{logo_src}" alt="{html_lib.escape(studio_nom)}" '
+        f'style="width:100%; max-width:155px; max-height:56px; height:auto; display:block; object-fit:contain;">'
+        f'</div>'
+        if logo_src
+        else f"<span style='color:{brand_col}; font-size:22px; font-weight:700; letter-spacing:0.04em;'>{html_lib.escape(studio_nom)}</span>"
+    )
+    sub_str = str(subtitle or "PROJECT & DESIGN MANAGEMENT").strip()
+    st.markdown(
+        f"<div style='text-align:center; padding: 6px 4px 8px 4px;'>"
+        f"{brand_top}"
+        f"<div style='display:inline-flex; align-items:center; gap:6px; margin-top:2px;'>"
+        f"<span style='width:8px; height:8px; border-radius:50%; background:{brand_col}; display:inline-block;'></span>"
+        f"<span style='color:#262320; font-size:11.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase;'>{html_lib.escape(studio_nom)}</span>"
+        f"</div>"
+        f"<p style='color:#6E665E; font-family:\"JetBrains Mono\", monospace; font-size:9px; font-weight:600; letter-spacing:0.12em; text-transform:uppercase; margin:3px 0 0 0; line-height:1.3;'>{sub_str}</p>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    render_configurador_marca_estudio(marca)
+
+
+def render_configurador_marca_estudio(marca: dict = None):
+    """Panel en el Sidebar para elegir el Color de Marca del Estudio e importar el Logo del Estudio en cada Branch."""
+    from cota.config import PALETAS_MARCA_ESTUDIO
+    from cota.utils import guardar_marca_estudio, normalizar_hex_color, obtener_marca_estudio
+
+    if marca is None:
+        marca = obtener_marca_estudio()
+
+    cur_name = marca.get("studio_name", "LB Studio")
+    cur_color = normalizar_hex_color(marca.get("brand_color", "#C85A32"))
+
+    with st.expander("🎨 Marca y Logo del Estudio", expanded=False):
+        st.caption("Personaliza el color de marca y el logo de este Branch para la app y todas las exportaciones (Excel y PDF).")
+
+        in_studio_name = st.text_input(
+            "Nombre del Estudio (Branch)",
+            value=cur_name,
+            key="cfg_brand_studio_name",
+            placeholder="Ej. LB Studio, Estudio Venti...",
+        )
+
+        opciones_paleta = ["🎨 Personalizado (Selector)"] + [f"{nom} ({hex_c})" for nom, hex_c in PALETAS_MARCA_ESTUDIO]
+        mapa_paleta = {f"{nom} ({hex_c})": hex_c for nom, hex_c in PALETAS_MARCA_ESTUDIO}
+
+        sel_paleta = st.selectbox(
+            "Paleta rápida:",
+            options=opciones_paleta,
+            index=0,
+            key="cfg_brand_preset_sel",
+        )
+        color_inicial_picker = mapa_paleta.get(sel_paleta, cur_color)
+
+        col_pk1, col_pk2 = st.columns([1.2, 2.8])
+        with col_pk1:
+            picked_color = st.color_picker(
+                "Color",
+                value=color_inicial_picker,
+                key="cfg_brand_color_picker",
+            )
+        with col_pk2:
+            st.markdown(
+                f"<div style='background:{picked_color}; color:#FFFFFF; border-radius:8px; padding:8px 10px; margin-top:18px; text-align:center; font-family:monospace; font-size:11.5px; font-weight:700; box-shadow:0 2px 4px rgba(0,0,0,0.12);'>"
+                f"MARCA: {picked_color.upper()}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+        up_logo = st.file_uploader(
+            "Importar Logo del Estudio",
+            type=["png", "jpg", "jpeg", "webp", "svg"],
+            key="cfg_brand_logo_upload",
+            help="Se guardará en este Branch y se incrustará automáticamente al exportar Presupuestos y Cuadros de Pagos.",
+        )
+
+        cb1, cb2 = st.columns([2.2, 1.2])
+        with cb1:
+            if st.button("💾 Guardar Marca", key="btn_save_studio_brand", type="primary", use_container_width=True):
+                logo_b = up_logo.getvalue() if up_logo is not None else None
+                logo_fn = up_logo.name if up_logo is not None else None
+                guardar_marca_estudio(
+                    studio_name=in_studio_name.strip() or cur_name,
+                    brand_color=picked_color,
+                    logo_bytes=logo_b,
+                    logo_filename=logo_fn,
+                )
+                st.toast("✅ Marca y logo del estudio actualizados", icon="🎨")
+                st.rerun()
+        with cb2:
+            if st.button("↺ Reset", key="btn_reset_studio_brand", help="Restaurar marca y logo por defecto", use_container_width=True):
+                guardar_marca_estudio(reset_default=True)
+                st.toast("↺ Marca restaurada por defecto", icon="↺")
+                st.rerun()
+
+
+def _legacy_render_sidebar_branding(logo_path="logo/Logo Full.png", subtitle="PROJECT & DESIGN MANAGEMENT"):
     """Renderiza en la parte superior izquierda (sidebar) el Logo de Cota y debajo 'PROJECT & DESIGN MANAGEMENT'."""
     marca = obtener_marca_estudio()
     logo_src = marca.get("logo_base64") or get_image_base64(logo_path or "logo/Logo Full.png")
@@ -141,8 +246,32 @@ def render_configurador_marca_estudio(marca: dict = None):
 
 
 def render_header(title="", subtitle="PROJECT & DESIGN MANAGEMENT", logo_path="logo/Logo Full.png", is_beta=False):
+<<<<<<< Updated upstream
     marca = obtener_marca_estudio()
     studio_name = extraer_nombre_studio(title, default_studio=marca.get("studio_name", ""))
+=======
+    from cota.utils import obtener_marca_estudio
+    marca = obtener_marca_estudio()
+    studio_name = extraer_nombre_studio(title) or marca.get("studio_name", "")
+    logo_src = marca.get("logo_base64") or get_image_base64(logo_path)
+    logo_html = f'<img src="{logo_src}" class="header-logo">' if logo_src else ""
+    divider_html = '<div class="header-divider"></div>' if (logo_src and studio_name) else ""
+    html = (
+        f'<div class="header-container">'
+        f'{logo_html}'
+        f'{divider_html}'
+        f'<div class="header-title-box" style="{"display:none;" if not studio_name else ""}">'
+        f'{f"<h1 class=header-title>{studio_name}</h1>" if studio_name else ""}'
+        f'{f"<div class=header-subtitle>{subtitle}</div>" if studio_name and str(subtitle or "").strip() and str(subtitle or "").strip().upper() != "PROJECT & DESIGN MANAGEMENT" else ""}'
+        f'</div>'
+        f'</div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def _legacy_render_header(title="", subtitle="PROJECT & DESIGN MANAGEMENT", logo_path="logo/Logo Full.png", is_beta=False):
+    studio_name = extraer_nombre_studio(title)
+>>>>>>> Stashed changes
     """Renderiza el header principal corporativo del estudio."""
     logo_src = marca.get("logo_base64") or get_image_base64(logo_path)
     """Renderiza el header principal corporativo del estudio."""

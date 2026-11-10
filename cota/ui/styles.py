@@ -688,6 +688,7 @@ def get_app_css(brand_color: str = None) -> str:
             box-shadow: 0 8px 20px rgba(200, 90, 50, 0.14) !important;
             border-color: var(--clay-primary) !important;
         }
+<<<<<<< Updated upstream
     </style>
     """ + _build_brand_override_css(brand_color)
 
@@ -714,3 +715,37 @@ def _build_brand_override_css(brand_color: str = None) -> str:
     except Exception:
         return ""
 
+=======
+        div[data-testid="stColumn"]:has(.st-key-btn_open_modulo_caja):hover .metric-card {
+            transform: translateY(-2px) !important;
+            box-shadow: 0 8px 20px rgba(200, 90, 50, 0.14) !important;
+            border-color: var(--clay-primary) !important;
+        }
+    </style>""" + _build_brand_override_css(brand_color) + """
+    """
+
+
+def _build_brand_override_css(brand_color: str = None) -> str:
+    """Genera las variables CSS dinámicas según el color de marca configurado para el Estudio/Branch."""
+    from cota.utils import hex_a_rgb, normalizar_hex_color, obtener_marca_estudio, oscurecer_hex_color
+
+    if not brand_color:
+        try:
+            marca = obtener_marca_estudio()
+            brand_color = marca.get("brand_color", "#C85A32")
+        except Exception:
+            brand_color = "#C85A32"
+
+    primary_hex = normalizar_hex_color(brand_color, "#C85A32")
+    hover_hex = oscurecer_hex_color(primary_hex, 0.84)
+    r_c, g_c, b_c = hex_a_rgb(primary_hex)
+    return (
+        f"<style>:root {{"
+        f"--clay-primary: {primary_hex} !important;"
+        f"--clay-hover: {hover_hex} !important;"
+        f"--clay-soft: rgba({r_c}, {g_c}, {b_c}, 0.10) !important;"
+        f"--clay-border: rgba({r_c}, {g_c}, {b_c}, 0.30) !important;"
+        f"}}</style>"
+    )
+    """
+>>>>>>> Stashed changes

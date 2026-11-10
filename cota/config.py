@@ -20,6 +20,7 @@ DEFAULT_BRAND_COLOR = "#C85A32"
 STUDIO_BRANDING_FILE = "studio_branding.json"
 
 PALETAS_MARCA_ESTUDIO = [
+<<<<<<< Updated upstream
     ("Terracota Arquitectónico (Default)", "#C85A32"),
     ("Azul Prusia / Marino", "#1E3A5F"),
     ("Verde Salvia / Botánico", "#3B5E4C"),
@@ -27,6 +28,15 @@ PALETAS_MARCA_ESTUDIO = [
     ("Borgoña / Vino", "#7A2E3A"),
     ("Ocre / Bronce", "#9E6B2D"),
     ("Azul Pizarra", "#3D5A6C"),
+=======
+    ("Terracota Cota (Por defecto)", "#C85A32"),
+    ("Carbón Arquitectónico", "#262320"),
+    ("Azul Marino Estudio", "#1E3A5F"),
+    ("Verde Salvia / Bosque", "#2D5A3C"),
+    ("Borgoña Editorial", "#7A283B"),
+    ("Bronce Tierra", "#8C6239"),
+    ("Azul Cobalto", "#1D4ED8"),
+>>>>>>> Stashed changes
 ]
 
 # Moneda y Localización

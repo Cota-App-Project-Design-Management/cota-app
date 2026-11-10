@@ -219,6 +219,334 @@ def _unused_old_get_image(path):
         return None
 
 
+def normalizar_hex_color(color_str: str, default: str = "#C85A32") -> str:
+    """Normaliza un color hexadecimal al formato '#RRGGBB' en mayúsculas."""
+    if not color_str or not isinstance(color_str, str):
+        return default.upper()
+    s = color_str.strip().lstrip("#").upper()
+    if len(s) == 3 and all(c in "0123456789ABCDEF" for c in s):
+        s = "".join(c * 2 for c in s)
+    if len(s) == 6 and all(c in "0123456789ABCDEF" for c in s):
+        return f"#{s}"
+    return default.upper()
+
+
+def hex_a_rgb(color_hex: str) -> tuple[int, int, int]:
+    """Convierte un color '#RRGGBB' a una tupla (R, G, B)."""
+    norm = normalizar_hex_color(color_hex).lstrip("#")
+    return (int(norm[0:2], 16), int(norm[2:4], 16), int(norm[4:6], 16))
+
+
+def oscurecer_hex_color(color_hex: str, factor: float = 0.82) -> str:
+    """Oscurece un color '#RRGGBB' multiplicando sus canales por `factor`."""
+    r, g, b = hex_a_rgb(color_hex)
+    r2 = max(0, min(255, int(round(r * factor))))
+    g2 = max(0, min(255, int(round(g * factor))))
+    b2 = max(0, min(255, int(round(b * factor))))
+    return f"#{r2:02X}{g2:02X}{b2:02X}"
+
+
+def aclarar_hex_color(color_hex: str, mezcla_blanco: float = 0.90) -> str:
+    """Aclara un color '#RRGGBB' mezclándolo con blanco para fondos suaves."""
+    r, g, b = hex_a_rgb(color_hex)
+    m = max(0.0, min(1.0, float(mezcla_blanco)))
+    r2 = max(0, min(255, int(round(r * (1.0 - m) + 255 * m))))
+    g2 = max(0, min(255, int(round(g * (1.0 - m) + 255 * m))))
+    b2 = max(0, min(255, int(round(b * (1.0 - m) + 255 * m))))
+    return f"#{r2:02X}{g2:02X}{b2:02X}"
+
+
+def preparar_logo_png_bytes(source, max_height: int = 110) -> tuple:
+    """
+    Convierte una ruta de archivo, bytes o Data URI base64 en bytes PNG optimizados
+    y retorna (png_bytes, (width, height)) listos para incrustar en Excel (openpyxl) y PDF (FPDF).
+    """
+    raw_bytes = None
+    if isinstance(source, (bytes, bytearray)):
+        raw_bytes = bytes(source)
+    elif isinstance(source, str) and source.strip():
+        s = source.strip()
+        if s.startswith("data:image/"):
+            if "svg+xml" in s:
+                return None, None
+            try:
+                b64_part = s.split(",", 1)[1]
+                raw_bytes = base64.b64decode(b64_part)
+            except Exception:
+                raw_bytes = None
+        else:
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            for cand in [
+                s,
+                os.path.join(repo_root, s),
+                os.path.join(repo_root, "Logo", os.path.basename(s)),
+                os.path.join(repo_root, "logo", os.path.basename(s)),
+                os.path.join(repo_root, "Logo", "Logo Full.png"),
+                os.path.join(repo_root, "logo", "Logo Full.png"),
+            ]:
+                if cand and os.path.isfile(cand) and not cand.lower().endswith(".svg"):
+                    try:
+                        with open(cand, "rb") as f:
+                            raw_bytes = f.read()
+                        break
+                    except Exception:
+                        continue
+
+    if not raw_bytes:
+        return None, None
+
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(raw_bytes)) as im:
+            im_rgba = im.convert("RGBA")
+            w, h = im_rgba.size
+            if h > max_height and h > 0:
+                ratio = max_height / float(h)
+                new_w = max(1, int(round(w * ratio)))
+                new_h = max(1, int(round(h * ratio)))
+                resamp = getattr(Image, "Resampling", Image).LANCZOS
+                im_rgba = im_rgba.resize((new_w, new_h), resamp)
+                w, h = im_rgba.size
+            buf = io.BytesIO()
+            im_rgba.save(buf, format="PNG", optimize=True)
+            return buf.getvalue(), (w, h)
+    except Exception:
+        return None, None
+
+
+def obtener_marca_estudio() -> dict:
+    """
+    Obtiene la configuración de marca del Estudio para el Branch actual (nombre, color de marca y logo).
+    Prioriza sesión/config_estudio -> studio_branding.json del branch -> valores por defecto.
+    """
+    import json
+    import streamlit as st
+    from cota.config import (
+        DEFAULT_BRAND_COLOR,
+        DEFAULT_LOGO_PATH,
+        DEFAULT_STUDIO_NAME,
+        STUDIO_BRANDING_FILE,
+        get_secret,
+    )
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    branding_file = os.path.join(repo_root, STUDIO_BRANDING_FILE)
+
+    data_file = {}
+    if os.path.isfile(branding_file):
+        try:
+            with open(branding_file, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data_file = loaded
+        except Exception:
+            data_file = {}
+
+    sess_brand = {}
+    try:
+        if "studio_branding" in st.session_state and isinstance(st.session_state["studio_branding"], dict):
+            sess_brand = dict(st.session_state["studio_branding"])
+        elif "config_estudio" in st.session_state and isinstance(st.session_state["config_estudio"], pd.DataFrame):
+            df_cfg = st.session_state["config_estudio"]
+            if not df_cfg.empty and "Clave" in df_cfg.columns and "Valor" in df_cfg.columns:
+                for k_cfg, k_dest in [
+                    ("marca_studio_name", "studio_name"),
+                    ("marca_brand_color", "brand_color"),
+                    ("marca_logo_path", "logo_path"),
+                    ("marca_logo_base64", "logo_base64"),
+                ]:
+                    m_r = df_cfg[df_cfg["Clave"].astype(str) == k_cfg]
+                    if not m_r.empty:
+                        v_s = safe_str(m_r.iloc[-1]["Valor"], "")
+                        if v_s:
+                            sess_brand[k_dest] = v_s
+    except Exception:
+        pass
+
+    default_studio = get_secret("STUDIO_NAME", DEFAULT_STUDIO_NAME) or "LB Studio"
+    studio_name = (
+        safe_str(sess_brand.get("studio_name"))
+        or safe_str(data_file.get("studio_name"))
+        or default_studio
+    )
+    brand_color = normalizar_hex_color(
+        safe_str(sess_brand.get("brand_color"))
+        or safe_str(data_file.get("brand_color"))
+        or get_secret("BRAND_COLOR", DEFAULT_BRAND_COLOR)
+        or DEFAULT_BRAND_COLOR
+    )
+    logo_path = (
+        safe_str(sess_brand.get("logo_path"))
+        or safe_str(data_file.get("logo_path"))
+        or get_secret("LOGO_IMAGE", DEFAULT_LOGO_PATH)
+        or DEFAULT_LOGO_PATH
+    )
+    logo_b64_override = (
+        safe_str(sess_brand.get("logo_base64"))
+        or safe_str(data_file.get("logo_base64"))
+    )
+
+    if logo_b64_override and logo_b64_override.startswith("data:image/"):
+        logo_base64 = logo_b64_override
+        png_bytes, png_size = preparar_logo_png_bytes(logo_b64_override)
+        if png_bytes is None:
+            png_bytes, png_size = preparar_logo_png_bytes(logo_path)
+    else:
+        logo_base64 = get_image_base64(logo_path)
+        png_bytes, png_size = preparar_logo_png_bytes(logo_path)
+
+    brand_hex = brand_color.lstrip("#")
+    brand_rgb = hex_a_rgb(brand_color)
+    dark_color = oscurecer_hex_color(brand_color, 0.84)
+    soft_color = aclarar_hex_color(brand_color, 0.90)
+    border_soft = aclarar_hex_color(brand_color, 0.72)
+
+    return {
+        "studio_name": studio_name,
+        "brand_color": brand_color,
+        "brand_hex": brand_hex,
+        "brand_rgb": brand_rgb,
+        "brand_dark_color": dark_color,
+        "brand_dark_hex": dark_color.lstrip("#"),
+        "brand_dark_rgb": hex_a_rgb(dark_color),
+        "brand_soft_color": soft_color,
+        "brand_soft_hex": soft_color.lstrip("#"),
+        "brand_border_color": border_soft,
+        "logo_path": logo_path,
+        "logo_base64": logo_base64,
+        "logo_png_bytes": png_bytes,
+        "logo_size": png_size,
+    }
+
+
+def guardar_marca_estudio(
+    studio_name: str = None,
+    brand_color: str = None,
+    logo_bytes: bytes = None,
+    logo_filename: str = None,
+    reset_default: bool = False,
+) -> dict:
+    """
+    Guarda la configuración de marca del Estudio (color, nombre y logo) tanto en el archivo
+    del Branch (`studio_branding.json` + carpeta `Logo/`) como en `st.session_state`.
+    """
+    import json
+    import streamlit as st
+    from cota.config import (
+        DEFAULT_BRAND_COLOR,
+        STUDIO_BRANDING_FILE,
+    )
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    branding_file = os.path.join(repo_root, STUDIO_BRANDING_FILE)
+    logo_dir = os.path.join(repo_root, "Logo")
+    if not os.path.isdir(logo_dir):
+        logo_dir = os.path.join(repo_root, "logo")
+    os.makedirs(logo_dir, exist_ok=True)
+
+    if reset_default:
+        nuevo_data = {
+            "studio_name": "LB Studio",
+            "brand_color": DEFAULT_BRAND_COLOR,
+            "logo_path": "Logo/Logo Full.png",
+            "logo_base64": "",
+        }
+    else:
+        actual = obtener_marca_estudio()
+        nom_final = safe_str(studio_name).strip() if studio_name is not None else actual["studio_name"]
+        if not nom_final:
+            nom_final = actual["studio_name"] or "LB Studio"
+        col_final = normalizar_hex_color(brand_color, default=actual["brand_color"]) if brand_color is not None else actual["brand_color"]
+        path_final = actual["logo_path"]
+        b64_final = ""
+
+        if os.path.isfile(branding_file):
+            try:
+                with open(branding_file, "r", encoding="utf-8") as f:
+                    prev_d = json.load(f)
+                    if isinstance(prev_d, dict):
+                        b64_final = safe_str(prev_d.get("logo_base64", ""))
+            except Exception:
+                pass
+
+        if logo_bytes is not None and len(logo_bytes) > 0:
+            fn_low = safe_str(logo_filename, "studio_logo.png").lower()
+            if fn_low.endswith(".svg"):
+                dest_rel = "Logo/studio_logo.svg"
+                dest_abs = os.path.join(repo_root, "Logo", "studio_logo.svg")
+                try:
+                    with open(dest_abs, "wb") as f:
+                        f.write(logo_bytes)
+                    path_final = dest_rel
+                except Exception:
+                    pass
+                b64_str = base64.b64encode(logo_bytes).decode("ascii")
+                b64_final = f"data:image/svg+xml;base64,{b64_str}"
+            else:
+                png_opt, _ = preparar_logo_png_bytes(logo_bytes, max_height=240)
+                bytes_to_save = png_opt if png_opt else bytes(logo_bytes)
+                dest_rel = "Logo/studio_logo.png"
+                dest_abs = os.path.join(repo_root, "Logo", "studio_logo.png")
+                try:
+                    with open(dest_abs, "wb") as f:
+                        f.write(bytes_to_save)
+                    path_final = dest_rel
+                except Exception:
+                    pass
+                b64_str = base64.b64encode(bytes_to_save).decode("ascii")
+                b64_final = f"data:image/png;base64,{b64_str}"
+
+        nuevo_data = {
+            "studio_name": nom_final,
+            "brand_color": col_final,
+            "logo_path": path_final,
+            "logo_base64": b64_final,
+        }
+
+    try:
+        with open(branding_file, "w", encoding="utf-8") as f:
+            json.dump(nuevo_data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    try:
+        st.session_state["studio_branding"] = dict(nuevo_data)
+        if "config_estudio" in st.session_state and isinstance(st.session_state["config_estudio"], pd.DataFrame):
+            df_cfg = st.session_state["config_estudio"].copy()
+            for k_c, v_c in [
+                ("marca_studio_name", nuevo_data["studio_name"]),
+                ("marca_brand_color", nuevo_data["brand_color"]),
+                ("marca_logo_path", nuevo_data["logo_path"]),
+                ("marca_logo_base64", nuevo_data.get("logo_base64", "")),
+            ]:
+                if not df_cfg.empty and "Clave" in df_cfg.columns:
+                    df_cfg = df_cfg[df_cfg["Clave"].astype(str) != k_c]
+                df_cfg = pd.concat(
+                    [df_cfg, pd.DataFrame([{"Clave": k_c, "Valor": str(v_c)}])],
+                    ignore_index=True,
+                )
+            st.session_state["config_estudio"] = df_cfg
+    except Exception:
+        pass
+
+    return obtener_marca_estudio()
+
+
+def _legacy_get_image(path):
+    """Convierte una imagen local a Data URL base64 o retorna URLs externas intactas."""
+    if not path:
+        return None
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    try:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+            mime = "image/png" if path.lower().endswith(".png") else "image/jpeg"
+            return f"data:{mime};base64,{b64}"
+    except Exception:
+        return None
+
+
 def calcular_rating(nombre, df_historial=None, df_tasks=None, df_maestro=None):
     """Calcula el rating (1 a 5) de un contratista/maestro según su historial y bitácora."""
     base = 5.0
