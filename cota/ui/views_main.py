@@ -373,16 +373,16 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
     with col_new:
         with st.popover("➕ NUEVO PROYECTO DE DISEÑO", use_container_width=True):
             with st.form("form_nuevo_proy", clear_on_submit=True):
-                pn = st.text_input("Nombre / Código del Proyecto (Único)", placeholder="ej. Casa Las Casuarinas").strip()
+                pn = st.text_input("Nombre / Código del Proyecto (Único)", placeholder="").strip()
                 sel_div = st.selectbox("Carpeta / Cliente", exist_divs + ["+ Crear Nueva Carpeta"])
                 p_div = st.text_input("Nombre de Nueva Carpeta") if sel_div == "+ Crear Nueva Carpeta" else sel_div
                 sel_ubi = st.selectbox("Ubicación", exist_ubis + ["+ Agregar Ubicación"])
-                p_ubi_new = st.text_input("Nueva Ubicación (si elegiste '+ Agregar Ubicación')", placeholder="ej. Chacarilla, Surco").strip()
+                p_ubi_new = st.text_input("Nueva Ubicación (si elegiste '+ Agregar Ubicación')", placeholder="").strip()
                 p_ubi = p_ubi_new if (sel_ubi == "+ Agregar Ubicación" and p_ubi_new) else (exist_ubis[0] if sel_ubi == "+ Agregar Ubicación" else sel_ubi)
                 pe = st.selectbox("Líder de Proyecto", lista_socios)
                 ps = st.selectbox("Estado Inicial", STATUS_PROYECTOS)
                 p_tipo = st.selectbox("Tipo de Proyecto", tipos_cat)
-                p_cliente = st.text_input("Nombre del Cliente", placeholder="ej. Familia Gómez")
+                p_cliente = st.text_input("Nombre del Cliente", placeholder="")
                 p_color = st.color_picker("Color Identificador", value="#C85A32")
 
                 st.markdown("##### Etapas de Diseño del Proyecto (02. Diseño)")
@@ -472,8 +472,8 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
             col_dl_p, col_imp_p = st.columns([1, 1.4])
             with col_dl_p:
                 st.markdown("##### 1. Descargar Plantilla de Cotización")
-                dl_p_nom = st.text_input("Nombre del Proyecto (opcional para cabecera)", placeholder="ej. Proyecto Galeon 129", key="dl_p_nom_port")
-                dl_c_nom = st.text_input("Cliente (opcional para cabecera)", placeholder="ej. Nano Salazar", key="dl_c_nom_port")
+                dl_p_nom = st.text_input("Nombre del Proyecto (opcional para cabecera)", placeholder="", key="dl_p_nom_port")
+                dl_c_nom = st.text_input("Cliente (opcional para cabecera)", placeholder="", key="dl_c_nom_port")
 
                 c_p1, c_p2, c_p3 = st.columns([1.1, 1.3, 1.3])
                 with c_p1:
@@ -875,7 +875,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                     opciones_ubi_ed = exist_ubis + ["+ Agregar Ubicación"]
                                     idx_ubi_ed = exist_ubis.index(proy.get('Ubicación', 'Lima')) if proy.get('Ubicación', 'Lima') in exist_ubis else 0
                                     n_ubi_sel = st.selectbox("Ubicación", opciones_ubi_ed, index=idx_ubi_ed)
-                                    n_ubi_new = st.text_input("Nueva Ubicación (opcional)", placeholder="ej. San Borja").strip()
+                                    n_ubi_new = st.text_input("Nueva Ubicación (opcional)", placeholder="").strip()
                                     n_est = st.selectbox("Estado", STATUS_PROYECTOS, index=STATUS_PROYECTOS.index(proy.get('Estado')) if proy.get('Estado') in STATUS_PROYECTOS else 0)
                                     n_tipo = st.selectbox("Tipo", tipos_cat, index=tipos_cat.index(proy.get('Tipo_Proyecto')) if proy.get('Tipo_Proyecto') in tipos_cat else 0)
                                     col_d1, col_d2 = st.columns(2)
@@ -917,7 +917,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                         options=opciones_f_card,
                                         default=fases_activas_proy if fases_activas_proy else nombres_banco_def,
                                     )
-                                    nueva_f_card = st.text_input("➕ Crear nueva etapa de diseño (opcional):", placeholder="ej. 08. Renders Terraza")
+                                    nueva_f_card = st.text_input("➕ Crear nueva etapa de diseño (opcional):", placeholder="")
                                     if st.form_submit_button("GUARDAR ETAPAS DE DISEÑO", type="primary", use_container_width=True):
                                         fases_finales = list(sel_f_card)
                                         if nueva_f_card.strip():
@@ -967,7 +967,7 @@ def _render_tab_contratistas(fecha_hoy, df_hoy):
         with c_add:
             with st.popover("➕ REGISTRAR CONTRATISTA", use_container_width=True):
                 with st.form("form_nuevo_contratista", clear_on_submit=True):
-                    nc_nom = st.text_input("Nombre / Empresa Especialista", placeholder="ej. Carpintería Hnos. Silva").strip()
+                    nc_nom = st.text_input("Nombre / Empresa Especialista", placeholder="").strip()
                     nc_esp = st.selectbox("Especialidad Principal", especialidades_cat)
                     nc_ubi = st.selectbox("Distrito / Ubicación Base", ubicaciones_cat if ubicaciones_cat else ["Lima"])
                     nc_not = st.text_area("Datos de Contacto / Observaciones Iniciales", placeholder="Teléfono, correo, RUC o referencias")
@@ -1050,7 +1050,7 @@ def _render_tab_contratistas(fecha_hoy, df_hoy):
                 else:
                     st.info("Sin reportes registrados en la bitácora para este especialista.")
 
-            n_rep = st.text_input(f"Añadir evaluación sobre {c_sel}:", placeholder="ej. Cumplió entrega de carpintería antes de fecha pactada...", key="txt_rep_c")
+            n_rep = st.text_input(f"Añadir evaluación sobre {c_sel}:", placeholder="", key="txt_rep_c")
             col_r1, col_r2, _ = st.columns([2.5, 2.5, 5])
 
             if col_r1.button("👍 MÉRITO POSITIVO (+)", use_container_width=True) and n_rep:
@@ -1069,7 +1069,7 @@ def _render_tab_contratistas(fecha_hoy, df_hoy):
         c_u1, c_u2 = st.columns([1, 1.5])
         with c_u1:
             with st.form("form_add_ubicacion_bd", clear_on_submit=True):
-                nueva_ubi = st.text_input("➕ Nueva Ubicación / Distrito:", placeholder="ej. San Borja, Asia, Punta Hermosa...")
+                nueva_ubi = st.text_input("➕ Nueva Ubicación / Distrito:", placeholder="")
                 if st.form_submit_button("AGREGAR UBICACIÓN", type="primary", use_container_width=True):
                     if nueva_ubi and nueva_ubi.strip():
                         agregar_item_catalogo_estudio("ubicaciones", nueva_ubi.strip())
@@ -1091,7 +1091,7 @@ def _render_tab_contratistas(fecha_hoy, df_hoy):
             st.markdown("#### 🛠️ ESPECIALIDADES DE OBRA Y PRESUPUESTO")
             st.caption("Se utilizan en el Directorio de Contratistas, en `03. Presupuesto` y en `05. Partidas y Tareas`.")
             with st.form("form_add_esp_bd", clear_on_submit=True):
-                nueva_esp = st.text_input("➕ Nueva Especialidad:", placeholder="ej. Paisajismo, Domótica, Acústica...")
+                nueva_esp = st.text_input("➕ Nueva Especialidad:", placeholder="")
                 if st.form_submit_button("AGREGAR ESPECIALIDAD", type="primary", use_container_width=True):
                     if nueva_esp and nueva_esp.strip():
                         agregar_item_catalogo_estudio("especialidades", nueva_esp.strip())
@@ -1107,9 +1107,9 @@ def _render_tab_contratistas(fecha_hoy, df_hoy):
 
         with col_uni_bd:
             st.markdown("#### 📏 UNIDADES DE MEDIDA (PRESUPUESTO)")
-            st.caption("Unidades disponibles al armar partidas y tareas en `03. Presupuesto` (ej. glb, m2, ml, und, pto).")
+            st.caption("Unidades disponibles al armar partidas y tareas en `03. Presupuesto`.")
             with st.form("form_add_uni_bd", clear_on_submit=True):
-                nueva_uni = st.text_input("➕ Nueva Unidad de Medida:", placeholder="ej. pza, jgo, mes...")
+                nueva_uni = st.text_input("➕ Nueva Unidad de Medida:", placeholder="")
                 if st.form_submit_button("AGREGAR UNIDAD", type="primary", use_container_width=True):
                     if nueva_uni and nueva_uni.strip():
                         agregar_item_catalogo_estudio("unidades", nueva_uni.strip())
@@ -1129,7 +1129,7 @@ def _render_tab_contratistas(fecha_hoy, df_hoy):
             st.markdown("#### 👥 SOCIOS Y LÍDERES DE PROYECTO")
             st.caption("Socios y encargados disponibles para liderar proyectos, dejar notas y registrar control operativo.")
             with st.form("form_add_soc_bd", clear_on_submit=True):
-                nuevo_soc = st.text_input("➕ Nuevo Socio / Encargado:", placeholder="ej. Camila")
+                nuevo_soc = st.text_input("➕ Nuevo Socio / Encargado:", placeholder="")
                 if st.form_submit_button("AGREGAR SOCIO", type="primary", use_container_width=True):
                     if nuevo_soc and nuevo_soc.strip():
                         agregar_item_catalogo_estudio("socios", nuevo_soc.strip())
@@ -1147,7 +1147,7 @@ def _render_tab_contratistas(fecha_hoy, df_hoy):
             st.markdown("#### 🏛️ TIPOLOGÍAS DE PROYECTO")
             st.caption("Tipos de proyecto disponibles al crear o editar una ficha de proyecto.")
             with st.form("form_add_tip_bd", clear_on_submit=True):
-                nuevo_tip = st.text_input("➕ Nuevo Tipo de Proyecto:", placeholder="ej. Hotel / Hospitality")
+                nuevo_tip = st.text_input("➕ Nuevo Tipo de Proyecto:", placeholder="")
                 if st.form_submit_button("AGREGAR TIPO DE PROYECTO", type="primary", use_container_width=True):
                     if nuevo_tip and nuevo_tip.strip():
                         agregar_item_catalogo_estudio("tipos_proyecto", nuevo_tip.strip())

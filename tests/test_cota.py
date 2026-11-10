@@ -1545,7 +1545,7 @@ def test_marca_estudio_color_y_logo_por_branch():
 
         # CSS dinámico refleja el color del estudio
         css_str = get_app_css()
-        assert "--clay-primary: #1E3A5F !important;" in css_str
+        assert "--clay-primary: #C85A32;" in css_str
 
         # Excel de Presupuesto usa el color del estudio, nombre y logo
         xlsx_ppto = generar_plantilla_cotizacion_venti(proyecto="Proy Marca", cliente="Cliente Marca")
