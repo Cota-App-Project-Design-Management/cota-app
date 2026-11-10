@@ -1,5 +1,6 @@
 """
-Componentes visuales reutilizables para COTA APP (tarjetas de métricas, cabeceras, badges y notas).
+Componentes visuales reutilizables: Header corporativo, tarjetas métricas, badges, chat de notas y fragmentos.
+Estética: Warm Architectural Atelier (#F7F4EF, #C85A32, #262320).
 """
 
 import html as html_lib
@@ -7,273 +8,224 @@ import json
 import re
 import streamlit as st
 import streamlit.components.v1 as components
-from cota.utils import get_image_base64
+from cota.db import (
+    aplicar_accion_chat_notas_proyecto,
+    obtener_notas_chat_proyecto,
+)
+from cota.config import DEFAULT_BRAND_COLOR, get_secret
+from cota.utils import get_image_base64, guardar_marca_estudio, normalizar_hex_color, obtener_marca_estudio, safe_str
 
 
-def render_sidebar_branding(logo_path=None, subtitle="PROJECT & DESIGN MANAGEMENT"):
-    """Renderiza el logo de COTA en la parte superior izquierda de la barra lateral con subtítulo e indicador de color del Estudio."""
-    from cota.utils import obtener_marca_estudio
+def extraer_nombre_studio(raw_title: str = "", default_studio: str = "") -> str:
+    """Extrae el nombre del Studio desde Secrets ('Studio Name' / 'STUDIO_NAME') o APP_TITLE. Si no hay ninguno, retorna vacío."""
+    s = str(raw_title or "").strip()
+    if "//" in s:
+        right = s.split("//", 1)[1].strip()
+        if right:
+            return right
+    for sep in (" - ", " | ", " — ", ":"):
+        if sep in s and s.upper().startswith("COTA"):
+            right = s.split(sep, 1)[1].strip()
+            if right:
+                return right
+    if s.upper() in ("", "COTA", "COTA APP"):
+        for key in ("Studio Name", "STUDIO_NAME", "Studio_Name", "studio_name"):
+            sec_val = str(get_secret(key, "") or "").strip()
+            if sec_val:
+                return sec_val
+        return default_studio
+    return s
 
+
+def render_sidebar_branding(logo_path="logo/Logo Full.png", subtitle="PROJECT & DESIGN MANAGEMENT"):
+    """Renderiza en la parte superior izquierda (sidebar) el Logo de Cota y debajo 'PROJECT & DESIGN MANAGEMENT'."""
     marca = obtener_marca_estudio()
-    cota_logo_src = get_image_base64(logo_path or "logo/Logo Full.png")
-    studio_nom = marca.get("studio_name", "")
-    brand_col = marca.get("brand_color", "#C85A32")
-
-    studio_badge_html = ""
-    if studio_nom:
-        studio_esc = html_lib.escape(studio_nom)
-        studio_badge_html = (
-            f"<div style='margin-top:6px; display:inline-flex; align-items:center; gap:6px; "
-            f"font-size:10.5px; font-weight:700; color:#262320; background:rgba(255,255,255,0.65); "
-            f"padding:2px 8px; border-radius:10px; border:1px solid #DFD9CE;'>"
-            f"<span style='width:8px; height:8px; border-radius:50%; background:{brand_col}; display:inline-block;'></span>"
-            f"<span>{studio_esc}</span>"
-            f"</div>"
-        )
-
+    logo_src = get_image_base64(logo_path or "logo/Logo Full.png") or marca.get("logo_base64")
+    brand_top = (
+        f'<img src="{logo_src}" alt="COTA" '
+        f'style="width:100%; max-width:170px; height:auto; display:block; margin:0 auto 8px auto; object-fit:contain; mix-blend-mode:multiply;">'
+        if logo_src
+        else "<span style='color:#262320; font-size:22px; font-weight:700; letter-spacing:0.04em;'>COTA</span>"
+    )
+    sub_str = str(subtitle or "PROJECT & DESIGN MANAGEMENT").strip()
     st.markdown(
-        f"""
-        <div style='margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid #DFD9CE; text-align: center;'>
-            <div style='display:flex; justify-content:center; align-items:center; margin-bottom:6px;'>
-                <img src='{cota_logo_src}' alt='COTA' style='width: 155px; max-width: 82%; height: auto; object-fit: contain; mix-blend-mode: multiply;' />
-            </div>
-            <div style='font-family: "JetBrains Mono", monospace; font-size: 9px; font-weight: 700; color: #6E665E; letter-spacing: 0.14em; text-transform: uppercase;'>
-                {subtitle}
-            </div>
-            {studio_badge_html}
-        </div>
-        """,
+        f"<div style='text-align:center; padding: 8px 4px 10px 4px;'>"
+        f"{brand_top}"
+        f"<p style='color:#6E665E; font-family:\"JetBrains Mono\", monospace; font-size:9.5px; font-weight:600; letter-spacing:0.13em; text-transform:uppercase; margin:4px 0 0 0; line-height:1.3;'>{sub_str}</p>"
+        f"<div style='display:{'flex' if marca.get('studio_name') else 'none'}; align-items:center; justify-content:center; gap:6px; margin-top:6px;'>"
+        f"<span style='display:inline-block; width:9px; height:9px; border-radius:50%; background:{marca.get('brand_color', '#C85A32')}; border:1px solid rgba(38,35,32,0.2);'></span>"
+        f"<span style='font-family:\"JetBrains Mono\", monospace; font-size:10px; font-weight:700; color:#262320; letter-spacing:0.05em;'>{html_lib.escape(marca.get('studio_name') or 'ESTUDIO')}</span>"
+        f"</div>"
+        f"</div>",
         unsafe_allow_html=True,
     )
 
+    render_configurador_marca_estudio(marca)
 
-def render_configurador_marca_estudio():
-    """Renderiza en la barra lateral un panel desplegable para personalizar color, nombre y logo del Estudio (Branch)."""
-    from cota.config import DEFAULT_BRAND_COLOR
-    from cota.utils import guardar_marca_estudio, obtener_marca_estudio
 
-    marca = obtener_marca_estudio()
+def render_configurador_marca_estudio(marca: dict = None):
+    """Renderiza en el Sidebar un panel desplegable para personalizar el Color de Marca y el Logo del Estudio por Branch."""
+    if marca is None:
+        marca = obtener_marca_estudio()
+
     with st.expander("🎨 Marca y Logo del Estudio", expanded=False):
-        st.caption(
-            "Personaliza el nombre, el color representativo del Estudio y el logo para los archivos exportados (Excel / PDF)."
-        )
-        nom_actual = marca.get("studio_name", "")
-        color_actual = marca.get("brand_color", DEFAULT_BRAND_COLOR)
+        st.caption("Personaliza el color corporativo y el logo de este Branch para la interfaz y los archivos exportados (Excel / PDF).")
 
-        nuevo_nom = st.text_input(
+        nuevo_nombre = st.text_input(
             "Nombre del Estudio",
-            value=nom_actual,
+            value=marca.get("studio_name", ""),
+            key="cfg_brand_studio_name",
             placeholder="",
-            key="cfg_studio_name_input",
         )
 
-        color_elegido = st.color_picker(
-            "Color del Estudio",
+        color_actual = normalizar_hex_color(marca.get("brand_color", DEFAULT_BRAND_COLOR))
+
+        nuevo_color = st.color_picker(
+            "Color Principal de Marca",
             value=color_actual,
             key="cfg_brand_color_picker",
         )
 
-        logo_up = st.file_uploader(
+        logo_file = st.file_uploader(
             "Importar Logo del Estudio (PNG / JPG / SVG)",
-            type=["png", "jpg", "jpeg", "svg"],
+            type=["png", "jpg", "jpeg", "webp", "svg"],
             key="cfg_brand_logo_uploader",
-            help="Este logo se incrustará en las exportaciones de Presupuesto, Control de Pagos y Actas.",
+            help="Se guardará en este Branch y se incrustará en los encabezados de Presupuesto y Control de Pagos.",
         )
 
         c_b1, c_b2 = st.columns(2)
-        if c_b1.button("💾 Guardar", key="btn_save_studio_brand", type="primary", use_container_width=True):
-            up_bytes = logo_up.getvalue() if logo_up is not None else None
-            up_name = logo_up.name if logo_up is not None else None
+        if c_b1.button("💾 Guardar Marca", use_container_width=True, type="primary", key="btn_save_studio_brand"):
+            up_bytes = logo_file.getvalue() if logo_file is not None else None
+            up_name = logo_file.name if logo_file is not None else None
             guardar_marca_estudio(
-                studio_name=nuevo_nom,
-                brand_color=color_elegido,
+                studio_name=nuevo_nombre,
+                brand_color=nuevo_color,
                 uploaded_logo_bytes=up_bytes,
                 uploaded_logo_name=up_name,
             )
-            st.toast("✅ Marca y logo del estudio actualizados.", icon="🎨")
+            st.toast("Marca y logo del estudio actualizados en este Branch.")
             st.rerun()
 
-        if c_b2.button("↺ Restaurar", key="btn_reset_studio_brand", use_container_width=True):
+        if c_b2.button("↺ Restaurar", use_container_width=True, key="btn_reset_studio_brand"):
             guardar_marca_estudio(
                 studio_name="",
                 brand_color=DEFAULT_BRAND_COLOR,
                 reset_logo=True,
             )
-            st.toast("Marca restaurada a valores originales de COTA.", icon="↺")
+            st.toast("Marca restaurada a los valores por defecto.")
             st.rerun()
 
 
 def render_header(
-    title=None,
-    subtitle=None,
-    logo_path=None,
+    title="",
+    subtitle="PROJECT & DESIGN MANAGEMENT",
+    logo_path="logo/Logo Full.png",
+    is_beta=False,
     studio_name="",
     app_title=None,
     app_subtitle=None,
     **kwargs,
 ):
-    """Renderiza el encabezado principal con el logo de COTA a todo lo alto a la izquierda y el nombre del Studio a la derecha."""
-    from cota.utils import obtener_marca_estudio
-
+    """Renderiza el header principal corporativo del estudio."""
     marca = obtener_marca_estudio()
-    logo_src = get_image_base64(logo_path or "logo/Logo Full.png")
-    img_html = f'<img src="{logo_src}" class="header-logo" alt="COTA Logo" />'
+    raw_title = title if title else (studio_name or app_title or "")
+    raw_sub = subtitle if subtitle is not None else (app_subtitle or "PROJECT & DESIGN MANAGEMENT")
+    resolved_studio = extraer_nombre_studio(raw_title, default_studio=marca.get("studio_name", ""))
+    logo_src = get_image_base64(logo_path or "logo/Logo Full.png") or marca.get("logo_base64")
+    logo_html = f'<img src="{logo_src}" class="header-logo">' if logo_src else ""
+    divider_html = '<div class="header-divider"></div>' if (logo_src and resolved_studio) else ""
+    html = (
+        f'<div class="header-container">'
+        f'{logo_html}'
+        f'{divider_html}'
+        f'<div class="header-title-box" style="{"display:none;" if not resolved_studio else ""}">'
+        f'{f"<h1 class=header-title>{html_lib.escape(resolved_studio)}</h1>" if resolved_studio else ""}'
+        f'{f"<div class=header-subtitle>{html_lib.escape(str(raw_sub).strip())}</div>" if resolved_studio and str(raw_sub or "").strip() and str(raw_sub or "").strip().upper() != "PROJECT & DESIGN MANAGEMENT" else ""}'
+        f'</div>'
+        f'</div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
-    raw_studio = str(
-        studio_name
-        or kwargs.get("studio", "")
-        or marca.get("studio_name", "")
-        or ""
-    ).strip()
-    clean_title = str(title or app_title or "").strip()
-    if not raw_studio:
-        if "//" in clean_title:
-            raw_studio = clean_title.split("//", 1)[1].strip()
-        elif clean_title and clean_title.upper() not in ["COTA", "COTA APP", "COTA //"]:
-            raw_studio = clean_title
 
-    if raw_studio:
-        studio_esc = html_lib.escape(raw_studio)
-        right_block_html = f"""
-        <div class="header-divider"></div>
-        <div class="header-title-box">
-            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                <span class="header-title">{studio_esc}</span>
-            </div>
-        </div>
-        """
-    else:
-        right_block_html = ""
+def _build_metric_card_html(title, value, subtitle="", border_color=None, text_color=None) -> str:
+    """Construye el HTML de una tarjeta métrica simétrica sin etiquetas h2/h4 que distorsionen con el CSS de Streamlit."""
+    b_style = f"border-top-color: {border_color} !important;" if border_color else ""
+    t_style = f"color: {text_color} !important;" if text_color else ""
+    sub_text = subtitle if subtitle else "&nbsp;"
+    return (
+        f"<div class='metric-card' style='{b_style}'>"
+        f"<div class='metric-label' title='{title}'>{title}</div>"
+        f"<div class='metric-value' style='{t_style}' title='{value}'>{value}</div>"
+        f"<div class='metric-sub' title='{subtitle}'>{sub_text}</div>"
+        f"</div>"
+    )
 
+
+def render_metric_card(title, value, subtitle="", border_color=None, text_color=None):
+    """Renderiza una tarjeta ejecutiva de métrica con altura fija y estilo editorial cálido."""
     st.markdown(
-        f"""
-        <div class="header-container">
-            {img_html}
-            {right_block_html}
-        </div>
-        """,
+        _build_metric_card_html(title, value, subtitle, border_color, text_color),
         unsafe_allow_html=True,
     )
 
 
-def render_metric_card(title, value, subtitle="", accent_color=None):
-    """Renderiza una tarjeta de métrica con estética arquitectónica cálida y altura uniforme."""
-    border_style = f"border-top: 3px solid {accent_color};" if accent_color else ""
-    st.markdown(
-        f"""
-        <div class="metric-card" style="{border_style}">
-            <div class="metric-label" title="{title}">{title}</div>
-            <div class="metric-value" title="{value}">{value}</div>
-            <div class="metric-sub" title="{subtitle}">{subtitle if subtitle else '&nbsp;'}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_kpi_grid(cards):
+def render_metric_row(cards: list[dict]):
     """
-    Renderiza una fila de tarjetas KPI perfectamente alineadas y con el mismo alto/ancho.
-    cards: lista de dicts con llaves {'title', 'value', 'subtitle', 'accent_color'(opcional)}
+    Renderiza una fila de tarjetas KPI dentro de una cuadrícula CSS Grid simétrica y adaptable al zoom.
+    Cada elemento de `cards` acepta: title, value, subtitle, border_color, text_color.
     """
-    if not cards:
-        return
-    items_html = []
-    for c in cards:
-        t = c.get("title", "")
-        v = c.get("value", "")
-        s = c.get("subtitle", "") or "&nbsp;"
-        acc = c.get("accent_color")
-        b_style = f' style="border-top: 3px solid {acc};"' if acc else ""
-        items_html.append(
-            f'<div class="metric-card"{b_style}>'
-            f'<div class="metric-label" title="{t}">{t}</div>'
-            f'<div class="metric-value" title="{v}">{v}</div>'
-            f'<div class="metric-sub">{s}</div>'
-            f'</div>'
+    inner_html = "".join(
+        _build_metric_card_html(
+            c.get("title", ""),
+            c.get("value", ""),
+            c.get("subtitle", ""),
+            c.get("border_color"),
+            c.get("text_color"),
         )
-    grid_html = f'<div class="cota-kpi-grid">{"".join(items_html)}</div>'
-    st.markdown(grid_html, unsafe_allow_html=True)
-
-
-def render_section_header(icon, title):
-    """Renderiza un separador de sección estilizado."""
-    st.markdown(
-        f"""
-        <div class="cota-section-header">
-            <span>{icon}</span> {title}
-        </div>
-        """,
-        unsafe_allow_html=True,
+        for c in cards
     )
+    st.markdown(f"<div class='cota-kpi-grid'>{inner_html}</div>", unsafe_allow_html=True)
 
 
-def render_notas_proyecto(proy_name, key_suffix, guardar_fn):
-    """
-    Renderiza el módulo de Notas del Proyecto estilo Chat interactivo:
-    - Cada mensaje tiene un menú de 3 puntitos (⋮) con las opciones: Responder, Editar, Borrar.
-    - Responder cita el mensaje original sobre el cuadro de texto y dentro de la burbuja enviada.
-    - Editar permite modificar el texto del mensaje directamente en línea.
-    - Borrar elimina únicamente ese mensaje desde el menú de 3 puntitos.
-    - Soporta envío instantáneo (optimistic UI) y persistencia compatible con Notas en la base de datos.
-    """
-    from cota.state import (
-        agregar_nota_chat_proyecto,
-        editar_nota_chat_proyecto,
-        eliminar_nota_chat_proyecto,
-        obtener_notas_chat_proyecto,
+def render_status_header(label, color="#C85A32"):
+    """Renderiza una cabecera de sección con indicador cromático de estado."""
+    html = (
+        f"<h4 class='cota-status-header' style='color: {color} !important;'>"
+        f"<span class='cota-status-header-bar' style='background-color: {color};'></span>"
+        f"{label}"
+        f"</h4>"
     )
+    st.markdown(html, unsafe_allow_html=True)
 
-    safe_id = re.sub(r"[^a-zA-Z0-9_]", "_", f"{proy_name}_{key_suffix}")
-    bridge_key = f"_cota_chat_bridge_{safe_id}"
-    bridge_label = f"COTA_CHAT_BRIDGE_{safe_id}"
 
-    socios_disp = st.session_state.get("lista_socios", ["Socio 1", "Socio 2"])
+def render_chat_notas_proyecto(proy_name: str, socios_disp: list[str] | None = None, key_prefix: str = "res"):
+    """
+    Renderiza el sistema de notas interactivo tipo Chat (estilo WhatsApp / Slack) para un proyecto:
+    - Cada mensaje tiene en la esquina superior derecha un botón de 3 puntos (⋮) que despliega:
+      1. ↩️ Responder (cita el mensaje original en la burbuja de respuesta)
+      2. ✏️ Editar (abre edición en línea dentro de la misma burbuja y marca '(editado)')
+      3. 🗑️ Borrar (elimina el mensaje directamente)
+    - Soporta envío rápido con Enter (y Shift+Enter para salto de línea) o clic en el botón de enviar.
+    """
     if not socios_disp:
-        socios_disp = ["Socio 1"]
+        socios_disp = ["Alvaro", "Socio 1", "Socio 2"]
+
+    safe_id = re.sub(r"[^a-zA-Z0-9_]", "_", f"{key_prefix}_{proy_name}")
+    bridge_label = f"CHAT_BRIDGE_{safe_id}"
+    bridge_key = f"chat_bridge_in_{safe_id}"
 
     def _on_chat_bridge():
-        raw_payload = st.session_state.get(bridge_key, "")
-        if not raw_payload:
+        raw_val = safe_str(st.session_state.get(bridge_key, "")).strip()
+        if not raw_val:
             return
-        try:
-            payload = json.loads(raw_payload)
-        except Exception:
-            return
-        if not isinstance(payload, dict):
-            return
+        aplicar_accion_chat_notas_proyecto(proy_name, raw_val)
+        st.session_state[bridge_key] = ""
 
-        action = payload.get("action")
-        changed = False
-        if action == "send":
-            socio = str(payload.get("socio") or socios_disp[0]).strip()
-            texto = str(payload.get("texto") or "").strip()
-            reply_to = payload.get("reply_to")
-            if texto:
-                st.session_state["socio_activo"] = socio
-                agregar_nota_chat_proyecto(proy_name, socio, texto, reply_to=reply_to)
-                changed = True
-        elif action == "edit":
-            idx = payload.get("idx")
-            nuevo_texto = str(payload.get("texto") or "").strip()
-            if idx is not None and nuevo_texto:
-                changed = editar_nota_chat_proyecto(proy_name, int(idx), nuevo_texto)
-        elif action == "delete":
-            idx = payload.get("idx")
-            if idx is not None:
-                changed = eliminar_nota_chat_proyecto(proy_name, int(idx))
-
-        if changed:
-            guardar_fn()
-
-    # Ocultar el input puente de Streamlit y definir estilos del chat
     st.markdown(
-        f"""
+        """
         <style>
-        div.st-key-{bridge_key} {{
-            position: fixed !important;
-            left: -9999px !important;
-            top: -9999px !important;
+        div[data-testid="stTextInput"]:has(input[aria-label^="CHAT_BRIDGE_"]) {
+            position: absolute !important;
             width: 1px !important;
             height: 1px !important;
             opacity: 0 !important;
@@ -281,23 +233,23 @@ def render_notas_proyecto(proy_name, key_suffix, guardar_fn):
             pointer-events: none !important;
             margin: 0 !important;
             padding: 0 !important;
-        }}
-        .cota-chat-container {{
+        }
+        .cota-chat-container {
             background: #FFFFFF;
             border: 1px solid #DFD9CE;
             border-radius: 12px;
             padding: 12px;
             box-shadow: 0 2px 8px rgba(38, 35, 32, 0.04);
-        }}
-        .cota-chat-messages {{
+        }
+        .cota-chat-messages {
             display: flex;
             flex-direction: column;
             gap: 8px;
             max-height: 360px;
             overflow-y: auto;
             padding: 2px 4px 8px 2px;
-        }}
-        .cota-chat-bubble {{
+        }
+        .cota-chat-bubble {
             position: relative;
             background: #FAF8F5;
             border: 1px solid #DFD9CE;
@@ -305,46 +257,46 @@ def render_notas_proyecto(proy_name, key_suffix, guardar_fn):
             border-radius: 10px;
             padding: 8px 12px 10px 12px;
             transition: background-color 0.2s ease, box-shadow 0.2s ease;
-        }}
-        .cota-chat-bubble:hover {{
+        }
+        .cota-chat-bubble:hover {
             background: #F7F3EC;
             box-shadow: 0 2px 6px rgba(38, 35, 32, 0.06);
-        }}
-        .cota-chat-bubble.cota-chat-highlight {{
+        }
+        .cota-chat-bubble.cota-chat-highlight {
             background: #FDECE6 !important;
             box-shadow: 0 0 0 2px #C85A32 !important;
-        }}
-        .cota-chat-header {{
+        }
+        .cota-chat-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 4px;
             gap: 8px;
-        }}
-        .cota-chat-author {{
+        }
+        .cota-chat-author {
             color: #C85A32;
             font-weight: 700;
             font-size: 12.5px;
             display: inline-flex;
             align-items: center;
             gap: 5px;
-        }}
-        .cota-chat-meta {{
+        }
+        .cota-chat-meta {
             display: inline-flex;
             align-items: center;
             gap: 6px;
-        }}
-        .cota-chat-time {{
+        }
+        .cota-chat-time {
             color: #8C8278;
             font-family: monospace;
             font-size: 11px;
-        }}
-        .cota-chat-edited {{
+        }
+        .cota-chat-edited {
             color: #8C8278;
             font-size: 10.5px;
             font-style: italic;
-        }}
-        .cota-chat-dots-btn {{
+        }
+        .cota-chat-dots-btn {
             cursor: pointer;
             display: inline-flex;
             align-items: center;
@@ -358,12 +310,12 @@ def render_notas_proyecto(proy_name, key_suffix, guardar_fn):
             line-height: 1;
             user-select: none;
             transition: background 0.15s ease, color 0.15s ease;
-        }}
-        .cota-chat-dots-btn:hover {{
+        }
+        .cota-chat-dots-btn:hover {
             background: rgba(200, 90, 50, 0.14);
             color: #C85A32;
-        }}
-        .cota-chat-quote {{
+        }
+        .cota-chat-quote {
             background: #EFECE6;
             border-left: 3px solid #C85A32;
             border-radius: 6px;
@@ -371,31 +323,31 @@ def render_notas_proyecto(proy_name, key_suffix, guardar_fn):
             margin-bottom: 6px;
             cursor: pointer;
             transition: background 0.15s ease;
-        }}
-        .cota-chat-quote:hover {{
+        }
+        .cota-chat-quote:hover {
             background: #E6E1D8;
-        }}
-        .cota-chat-quote-author {{
+        }
+        .cota-chat-quote-author {
             color: #C85A32;
             font-weight: 700;
             font-size: 11px;
             margin-bottom: 1px;
-        }}
-        .cota-chat-quote-text {{
+        }
+        .cota-chat-quote-text {
             color: #5A534A;
             font-size: 11.5px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
             max-width: 100%;
-        }}
-        .cota-chat-text {{
+        }
+        .cota-chat-text {
             color: #262320;
             font-size: 13px;
             line-height: 1.48;
             white-space: pre-wrap;
             word-break: break-word;
-        }}
+        }
         </style>
         """,
         unsafe_allow_html=True,
