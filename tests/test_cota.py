@@ -71,6 +71,8 @@ def test_sembrar_fases_default():
     assert "Cambios_Realizados" in df_fases.columns
     assert "Fecha_Ultimo_Cambio" in df_fases.columns
     assert all(df_fases['Proyecto'] == "Casa Prueba")
+    assert all(df_fases['Inicio'] == "")
+    assert all(df_fases['Fin'] == "")
 
 
 def test_parse_resumen_meet():
@@ -1719,3 +1721,131 @@ def test_render_header_signatures():
     render_header(title="COTA APP", subtitle="PROJECT", logo_path=None)
     render_header("COTA APP", "PROJECT")
     render_header(app_title="COTA APP", app_subtitle="PROJECT", studio_name="LB Studio")
+
+
+def test_diseno_entregables_sin_cronograma():
+    import streamlit as st
+    from cota.config import STATUS_FASES
+    from cota.db import (
+        COLS_ENTREGABLES,
+        on_table_edit,
+        registrar_cambio_diseno,
+        sembrar_fases_default,
+        sincronizar_fases_proyecto,
+    )
+    from cota.ui.views_project import _contar_estados_diseno
+
+    proy = "Proy Diseno Entregables"
+    st.session_state["fases"] = sembrar_fases_default(proy)
+    st.session_state["entregables_planos"] = pd.DataFrame(columns=COLS_ENTREGABLES)
+
+    df_f = st.session_state["fases"]
+    assert not df_f.empty
+    assert all(df_f["Inicio"] == "")
+    assert all(df_f["Fin"] == "")
+
+    sincronizar_fases_proyecto(proy, ["01. Levantamiento & Brief", "Etapa Extra Sin Fechas"])
+    df_sync = st.session_state["fases"][st.session_state["fases"]["Proyecto"] == proy]
+    assert len(df_sync) == 2
+    assert all(df_sync["Inicio"] == "")
+    assert all(df_sync["Fin"] == "")
+
+    # 1. Entregable inicial en revisión (0 cambios) no suma Cambios_Realizados ni asigna Fecha_Limite
+    ent1 = registrar_cambio_diseno(
+        proy_name=proy,
+        fase_diseno="01. Levantamiento & Brief",
+        tipo_entregable="Plano Preliminar / Layout",
+        nombre_entregable="Plano Sala Principal",
+        fecha_cambio="2026-11-11",
+        estado="🔵 En revisión cliente",
+        nro_cambios=0,
+    )
+    assert ent1["Fecha_Limite"] == ""
+    f_row1 = st.session_state["fases"][
+        (st.session_state["fases"]["Proyecto"] == proy)
+        & (st.session_state["fases"]["Fase"] == "01. Levantamiento & Brief")
+    ].iloc[0]
+    assert int(f_row1["Cambios_Realizados"]) == 0
+
+    # 2. Entregable con observaciones suma cambios y se contabiliza en _contar_estados_diseno
+    ent2 = registrar_cambio_diseno(
+        proy_name=proy,
+        fase_diseno="01. Levantamiento & Brief",
+        tipo_entregable="Renders 3D",
+        nombre_entregable="Render Cocina V2",
+        fecha_cambio="2026-11-12",
+        estado="🟠 Con cambios / Observado",
+        nro_cambios=2,
+    )
+    assert ent2["Estado"] == "🟠 Con cambios / Observado"
+    f_row2 = st.session_state["fases"][
+        (st.session_state["fases"]["Proyecto"] == proy)
+        & (st.session_state["fases"]["Fase"] == "01. Levantamiento & Brief")
+    ].iloc[0]
+    assert int(f_row2["Cambios_Realizados"]) == 2
+
+    resumen = _contar_estados_diseno(
+        st.session_state["fases"],
+        st.session_state["entregables_planos"],
+    )
+    assert set(STATUS_FASES).issubset(set(resumen.keys()))
+    assert resumen["⚪ Pendiente"]["etapas"] == 2
+    assert resumen["🔵 En revisión cliente"]["entregables"] == 1
+    assert resumen["🟠 Con cambios / Observado"]["entregables"] == 1
+
+    # 3. Edición en tabla de fases sincroniza Estado <-> Aprobado_Cliente sin requerir Inicio/Fin
+    base_f_k = f"base_df_fases_{proy}"
+    w_f_k = f"ed_fases_{proy}_0"
+    st.session_state[base_f_k] = df_sync.drop(columns=["Proyecto", "Inicio", "Fin"]).reset_index(drop=True)
+    st.session_state[w_f_k] = {"edited_rows": {"0": {"Estado": "🟢 Aprobado"}}}
+    on_table_edit(
+        base_f_k, w_f_k, "fases", ["Proyecto"], [proy],
+        ["Fecha_Ultimo_Cambio"], ["Fase", "Etapa", "Estado", "Responsable", "Notas"],
+        ["Aprobado_Cliente"], ["Orden", "Avance_Pct", "Cambios_Realizados"], "ID",
+    )
+    f_aprob = st.session_state["fases"].iloc[0]
+    assert bool(f_aprob["Aprobado_Cliente"]) is True
+    assert int(f_aprob["Avance_Pct"]) == 100
+
+    # Cambiar de Aprobado a En revisión cliente desmarca Aprobado_Cliente
+    w_f_k2 = f"ed_fases_{proy}_1"
+    st.session_state[w_f_k2] = {"edited_rows": {"0": {"Estado": "🔵 En revisión cliente"}}}
+    on_table_edit(
+        base_f_k, w_f_k2, "fases", ["Proyecto"], [proy],
+        ["Fecha_Ultimo_Cambio"], ["Fase", "Etapa", "Estado", "Responsable", "Notas"],
+        ["Aprobado_Cliente"], ["Orden", "Avance_Pct", "Cambios_Realizados"], "ID",
+    )
+    f_rev = st.session_state["fases"].iloc[0]
+    assert bool(f_rev["Aprobado_Cliente"]) is False
+
+    # 4. Edición sobre vista filtrada de entregables no borra los entregables ocultos por el filtro
+    base_e_k = f"base_df_ent_{proy}"
+    w_e_k = f"ed_ent_{proy}_0"
+    df_ent_fil = st.session_state["entregables_planos"][
+        st.session_state["entregables_planos"]["Estado"] == "🔵 En revisión cliente"
+    ].copy()
+    st.session_state[base_e_k] = df_ent_fil[[
+        "ID", "Fase", "Especialidad", "Nombre_Entregable", "Estado",
+        "Revision", "Nro_Cambios", "Fecha_Cambio", "Detalle_Cambio", "Responsable", "Link",
+    ]].reset_index(drop=True)
+    st.session_state[w_e_k] = {"edited_rows": {"0": {"Estado": "🟢 Aprobado"}}}
+    on_table_edit(
+        base_e_k, w_e_k, "entregables_planos", ["Proyecto"], [proy],
+        ["Fecha_Cambio"], ["Fase", "Especialidad", "Nombre_Entregable", "Revision", "Estado", "Detalle_Cambio", "Responsable", "Link"],
+        None, ["Nro_Cambios"], "ID",
+    )
+    assert len(st.session_state["entregables_planos"]) == 2
+    estados_ent = st.session_state["entregables_planos"]["Estado"].tolist()
+    assert "🟢 Aprobado" in estados_ent and "🟠 Con cambios / Observado" in estados_ent
+
+    # 5. Código de UI de 02. Diseño no planifica cronograma Gantt ni columnas Inicio/Entrega
+    with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f:
+        vp_code = f.read()
+    tab_diseno = vp_code.split("def _render_tab_fases")[1].split("def _render_table_dnd_controller")[0]
+    assert "Cronograma de Gestión del Diseño" not in tab_diseno
+    assert "Cronograma Gantt" not in tab_diseno
+    assert "Duración estimada (días)" not in tab_diseno
+    assert "Inicio_DT" not in tab_diseno
+    assert "Fin_DT" not in tab_diseno
+    assert '"Entrega"' not in tab_diseno
+    assert "_contar_estados_diseno" in tab_diseno

@@ -436,7 +436,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
 
                         # Sembrar fases seleccionadas del Banco de Fases (sin FF&E)
                         fases_a_sembrar = [f for f in (fases_sel_nuevo if fases_sel_nuevo else nombres_banco_def) if "ff&e" not in f.lower() and "ffe" not in f.lower()]
-                        nuevas_fases = sembrar_fases_default(pn, fecha_hoy, fases_seleccionadas=fases_a_sembrar)
+                        nuevas_fases = sembrar_fases_default(pn, fases_seleccionadas=fases_a_sembrar)
                         if 'fases' not in st.session_state or st.session_state.fases.empty:
                             st.session_state.fases = nuevas_fases
                         else:
@@ -706,7 +706,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                         n_proy_dict[col] = False if col in ['Archivado', 'Incluir_IGV'] else 0.0
                                 n_proy_df = pd.DataFrame([n_proy_dict])
                                 st.session_state.proyectos = pd.concat([st.session_state.proyectos, n_proy_df[COLS_PROY]], ignore_index=True)
-                                nuevas_f = sembrar_fases_default(proy_dest, fecha_hoy, fases_seleccionadas=nombres_banco_def)
+                                nuevas_f = sembrar_fases_default(proy_dest, fases_seleccionadas=nombres_banco_def)
                                 if "fases" not in st.session_state or st.session_state.fases.empty:
                                     st.session_state.fases = nuevas_f
                                 else:

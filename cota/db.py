@@ -618,12 +618,12 @@ def agregar_fase_banco(nombre_fase: str, etapa: str = "Planos", dias: int = 10, 
 
 def sembrar_fases_default(nombre_proyecto, fecha_inicio=None, fases_seleccionadas=None):
     """
-    Crea las etapas de Gestión del Diseño para un proyecto.
+    Crea los entregables / etapas de Gestión del Diseño para un proyecto.
+    No planifica hitos ni fechas de cronograma (Inicio/Fin vacíos); se gestiona por estado y aprobaciones.
     Si `fases_seleccionadas` es None, siembra las etapas canónicas de diseño por defecto.
     Si se pasa una lista de nombres de etapas, siembra únicamente las activadas.
     """
-    f_ini = parse_date(fecha_inicio) or datetime.date.today()
-    cursor = f_ini
+    _ = fecha_inicio  # Se conserva el parámetro por compatibilidad con llamadas previas
     rows = []
 
     if fases_seleccionadas is None:
@@ -638,19 +638,17 @@ def sembrar_fases_default(nombre_proyecto, fecha_inicio=None, fases_seleccionada
             elif str(item) in mapa_banco:
                 plantilla.append(mapa_banco[str(item)])
             else:
-                plantilla.append({"Orden": idx_f, "Fase": str(item), "Etapa": "Planos", "Dias": 10})
+                plantilla.append({"Orden": idx_f, "Fase": str(item), "Etapa": "Planos"})
 
     for idx_ord, f in enumerate(plantilla, start=1):
-        dias = f.get('Dias', 7)
-        cursor_fin = cursor + datetime.timedelta(days=dias)
         rows.append({
             'ID': f"FASE_{int(time.time())}_{uuid.uuid4().hex[:6]}",
             'Proyecto': nombre_proyecto,
             'Orden': f.get('Orden', idx_ord) if fases_seleccionadas is None else idx_ord,
             'Fase': f['Fase'],
             'Etapa': f.get('Etapa', 'Planos'),
-            'Inicio': cursor.strftime('%Y-%m-%d'),
-            'Fin': cursor_fin.strftime('%Y-%m-%d'),
+            'Inicio': '',
+            'Fin': '',
             'Estado': '⚪ Pendiente',
             'Avance_Pct': 0,
             'Cambios_Realizados': 0,
@@ -659,16 +657,17 @@ def sembrar_fases_default(nombre_proyecto, fecha_inicio=None, fases_seleccionada
             'Aprobado_Cliente': False,
             'Notas': ''
         })
-        cursor = cursor_fin + datetime.timedelta(days=1)
 
     return pd.DataFrame(rows, columns=COLS_FASES) if rows else pd.DataFrame(columns=COLS_FASES)
 
 
 def sincronizar_fases_proyecto(nombre_proyecto: str, fases_activas_nombres: list[str], fecha_inicio=None):
     """
-    Activa o desactiva etapas de diseño para un proyecto específico según la selección del Banco de Diseño.
-    Conserva intactos los datos (avance, cambios, fechas, aprobaciones, notas) de las etapas que ya estaban activas.
+    Activa o desactiva etapas/entregables de diseño para un proyecto según el Banco de Diseño.
+    Conserva intactos los datos (estado, avance, cambios, aprobaciones, notas) de las etapas ya activas
+    sin planificar hitos con fechas.
     """
+    _ = fecha_inicio  # Se conserva el parámetro por compatibilidad con llamadas previas
     if 'fases' not in st.session_state or not isinstance(st.session_state.fases, pd.DataFrame):
         st.session_state.fases = pd.DataFrame(columns=COLS_FASES)
 
@@ -679,13 +678,6 @@ def sincronizar_fases_proyecto(nombre_proyecto: str, fases_activas_nombres: list
     banco = obtener_banco_fases()
     mapa_banco = {f["Fase"]: f for f in banco}
     orden_banco = {f["Fase"]: idx for idx, f in enumerate(banco, start=1)}
-
-    f_ini_base = parse_date(fecha_inicio) or datetime.date.today()
-    if not df_proy.empty:
-        fechas_fin_exist = [parse_date(x) for x in df_proy['Fin'].tolist() if parse_date(x) is not None]
-        cursor = (max(fechas_fin_exist) + datetime.timedelta(days=1)) if fechas_fin_exist else f_ini_base
-    else:
-        cursor = f_ini_base
 
     nuevas_filas_proy = []
     # Ordenar las etapas seleccionadas según su orden en el banco
@@ -705,17 +697,15 @@ def sincronizar_fases_proyecto(nombre_proyecto: str, fases_activas_nombres: list
                 fila['Fecha_Ultimo_Cambio'] = ''
             nuevas_filas_proy.append(fila)
         else:
-            info_b = mapa_banco.get(f_nom, {"Fase": f_nom, "Etapa": "Planos", "Dias": 10})
-            dias = int(info_b.get("Dias", 10))
-            c_fin = cursor + datetime.timedelta(days=dias)
+            info_b = mapa_banco.get(f_nom, {"Fase": f_nom, "Etapa": "Planos"})
             nuevas_filas_proy.append({
                 'ID': f"FASE_{int(time.time())}_{uuid.uuid4().hex[:6]}",
                 'Proyecto': nombre_proyecto,
                 'Orden': nuevo_ord,
                 'Fase': f_nom,
                 'Etapa': info_b.get('Etapa', 'Planos'),
-                'Inicio': cursor.strftime('%Y-%m-%d'),
-                'Fin': c_fin.strftime('%Y-%m-%d'),
+                'Inicio': '',
+                'Fin': '',
                 'Estado': '⚪ Pendiente',
                 'Avance_Pct': 0,
                 'Cambios_Realizados': 0,
@@ -724,7 +714,6 @@ def sincronizar_fases_proyecto(nombre_proyecto: str, fases_activas_nombres: list
                 'Aprobado_Cliente': False,
                 'Notas': ''
             })
-            cursor = c_fin + datetime.timedelta(days=1)
 
     df_proy_nuevo = pd.DataFrame(nuevas_filas_proy, columns=COLS_FASES) if nuevas_filas_proy else pd.DataFrame(columns=COLS_FASES)
     st.session_state.fases = pd.concat([df_otros, df_proy_nuevo], ignore_index=True)
@@ -885,7 +874,7 @@ def registrar_cambio_diseno(
         "Fecha_Cambio": fecha_str,
         "Detalle_Cambio": str(detalle_cambio or "").strip(),
         "Estado": est_norm,
-        "Fecha_Limite": fecha_str,
+        "Fecha_Limite": "",
         "Responsable": str(responsable or "").strip(),
         "Fase": str(fase_diseno or "").strip(),
         "Link": str(link or "").strip(),
@@ -906,10 +895,10 @@ def registrar_cambio_diseno(
         mask_f = (st.session_state.fases["Proyecto"] == proy_name) & (
             st.session_state.fases["Fase"] == str(fase_diseno or "").strip()
         )
-        if mask_f.any():
+        if mask_f.any() and cant_cambios > 0:
             for idx_f in st.session_state.fases[mask_f].index:
                 curr_c = int(pd.to_numeric(st.session_state.fases.at[idx_f, "Cambios_Realizados"], errors="coerce") or 0)
-                st.session_state.fases.at[idx_f, "Cambios_Realizados"] = curr_c + max(1, cant_cambios)
+                st.session_state.fases.at[idx_f, "Cambios_Realizados"] = curr_c + cant_cambios
                 st.session_state.fases.at[idx_f, "Fecha_Ultimo_Cambio"] = fecha_str
 
     clear_base_dfs()
@@ -1284,17 +1273,27 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
                 r_idx = int(idx)
                 if r_idx in df_new.index:
                     est_str = str(cols.get('Estado', df_new.at[r_idx, 'Estado'] if 'Estado' in df_new.columns else ''))
-                    if cols.get('Aprobado_Cliente') is True or 'aprob' in est_str.lower():
+                    if 'Estado' in cols:
+                        if 'aprob' in est_str.lower():
+                            if 'Avance_Pct' not in cols and 'Avance_Pct' in df_new.columns:
+                                df_new.at[r_idx, 'Avance_Pct'] = 100
+                            if 'Aprobado_Cliente' in df_new.columns and 'Aprobado_Cliente' not in cols:
+                                df_new.at[r_idx, 'Aprobado_Cliente'] = True
+                        else:
+                            if 'Aprobado_Cliente' in df_new.columns and 'Aprobado_Cliente' not in cols:
+                                df_new.at[r_idx, 'Aprobado_Cliente'] = False
+                            if 'pendiente' in est_str.lower() and 'Avance_Pct' not in cols and 'Avance_Pct' in df_new.columns:
+                                df_new.at[r_idx, 'Avance_Pct'] = 0
+                    elif cols.get('Aprobado_Cliente') is True:
                         if 'Avance_Pct' not in cols and 'Avance_Pct' in df_new.columns:
                             df_new.at[r_idx, 'Avance_Pct'] = 100
-                        if 'Estado' in df_new.columns and 'Estado' not in cols:
+                        if 'Estado' in df_new.columns:
                             df_new['Estado'] = df_new['Estado'].astype(object)
                             df_new.at[r_idx, 'Estado'] = "🟢 Aprobado"
-                        if 'Aprobado_Cliente' in df_new.columns and 'Aprobado_Cliente' not in cols:
-                            df_new.at[r_idx, 'Aprobado_Cliente'] = True
-                    elif cols.get('Aprobado_Cliente') is False and 'aprob' in est_str.lower() and 'Estado' not in cols:
-                        df_new['Estado'] = df_new['Estado'].astype(object)
-                        df_new.at[r_idx, 'Estado'] = "🟡 En proceso"
+                    elif cols.get('Aprobado_Cliente') is False and 'aprob' in est_str.lower():
+                        if 'Estado' in df_new.columns:
+                            df_new['Estado'] = df_new['Estado'].astype(object)
+                            df_new.at[r_idx, 'Estado'] = "🟡 En proceso"
                     if 'Cambios_Realizados' in cols and int(df_new.at[r_idx, 'Cambios_Realizados'] or 0) > 0:
                         if 'Fecha_Ultimo_Cambio' in df_new.columns and 'Fecha_Ultimo_Cambio' not in cols:
                             curr_f = parse_date(df_new.at[r_idx, 'Fecha_Ultimo_Cambio'])
@@ -1369,7 +1368,7 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
 
             for c in master_df.columns:
                 if c not in n_t.columns:
-                    n_t[c] = "" if master_df[c].dtype == object else 0
+                    n_t[c] = "" if (master_df[c].dtype == object or c in ('Inicio', 'Fin', 'Fecha_Ultimo_Cambio', 'Fecha_Limite')) else 0
 
             if group_cols and group_vals and not master_df.empty:
                 clean_mask = pd.Series(True, index=master_df.index)
@@ -1379,8 +1378,19 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
                     first_pos = int(master_df.index[clean_mask][0])
                     df_before = master_df.iloc[:first_pos][~clean_mask.iloc[:first_pos]]
                     df_after = master_df.iloc[first_pos:][~clean_mask.iloc[first_pos:]]
+                    df_hidden_group = pd.DataFrame(columns=master_df.columns)
+                    if id_col and id_col in df.columns and id_col in master_df.columns:
+                        master_grp = master_df[clean_mask]
+                        master_ids = master_grp[id_col].fillna("").astype(str).str.strip()
+                        if not master_grp.empty and master_ids.ne("").all():
+                            orig_ids = {
+                                str(x).strip()
+                                for x in df[id_col].tolist()
+                                if pd.notna(x) and str(x).strip() not in ("", "None", "nan")
+                            }
+                            df_hidden_group = master_grp[~master_ids.isin(orig_ids)]
                     st.session_state[master_state_key] = pd.concat(
-                        [df_before, n_t[master_df.columns], df_after], ignore_index=True
+                        [df_before, df_hidden_group, n_t[master_df.columns], df_after], ignore_index=True
                     )
                 else:
                     st.session_state[master_state_key] = pd.concat(
