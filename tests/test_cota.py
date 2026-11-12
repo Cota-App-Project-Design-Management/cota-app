@@ -964,11 +964,21 @@ def test_gantt_hidden_by_default_code():
 def test_dnd_column_compact_width():
     with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f:
         code = f.read()
-    assert '"⠿": st.column_config.TextColumn(' in code
-    assert 'width=30' in code
-    assert 'alignment="center"' in code
-    # Verificar que no tenga help="..." que forzaba un icono "?" de ayuda ensanchando la cabecera
-    assert 'help="Mantén presionado el click en ⠿' not in code
+    tab_ppto_code = code.split("def _render_tab_presupuesto")[1].split("def _render_tab_entregables")[0]
+    assert '"Sel": st.column_config.CheckboxColumn(' in tab_ppto_code
+    assert 'width=48' in tab_ppto_code
+    assert '"##### ⚙️ Configuración de Presupuesto"' in tab_ppto_code
+    assert '"➕ Agregar Partida"' in tab_ppto_code
+    assert '"🗑️ Eliminar"' in tab_ppto_code
+    assert '"📋 Pegar Tabla"' in tab_ppto_code
+    assert '"⠿ Mover"' not in tab_ppto_code
+    assert 'Configuración de Estructura y Parámetros Financieros' not in tab_ppto_code
+    assert 'Gemini Spark' not in tab_ppto_code
+
+    with open("D:/cota-app/cota/ui/views_main.py", "r", encoding="utf-8") as f:
+        main_code = f.read()
+    assert '"📋 Pegar Tabla"' in main_code
+    assert 'Gemini Spark' not in main_code
 
 
 def test_redondeo_gg_y_utilidades():
@@ -1193,6 +1203,115 @@ def test_mover_tarea_presupuesto_y_edicion_tabla():
     aplicar_edicion_tabla_presupuesto_partida(base_k, widget_k, p_test, 1, part_nom)
     t_after3 = st.session_state["tasks"][st.session_state["tasks"]["Proyecto"] == p_test].reset_index(drop=True)
     assert "Demolición pisos" in t_after3.at[0, "Tarea"]
+
+
+def test_presupuesto_seleccion_partidas_y_tareas():
+    import streamlit as st
+    from cota.cotizacion import (
+        agregar_partida_presupuesto,
+        aplicar_edicion_tabla_presupuesto_partida,
+        deshacer_presupuesto,
+        eliminar_partida_presupuesto,
+        eliminar_tareas_seleccionadas_presupuesto,
+        mover_tareas_seleccionadas_presupuesto,
+    )
+
+    p_test = "Proy Sel Partidas Test"
+    p1 = "01. Obras Preliminares"
+    p2 = "02. Arquitectura"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": p_test,
+        "TC_Presupuesto": 3.42,
+        "Modo_GG": "pct",
+        "GG_Presupuesto": 2.0,
+        "Modo_Utilidades": "pct",
+        "Utilidades": 15.0,
+        "Incluir_IGV": False,
+        "Pagos_Semanales_JSON": "",
+    }])
+    st.session_state["partidas"] = pd.DataFrame([
+        {"Proyecto": p_test, "Nombre_Partida": p1},
+        {"Proyecto": p_test, "Nombre_Partida": p2},
+    ])
+    st.session_state["p_info"] = pd.DataFrame([
+        {"Proyecto": p_test, "Nombre_Partida": p1, "Monto_Pactado": 100.0, "Contratista": ""},
+        {"Proyecto": p_test, "Nombre_Partida": p2, "Monto_Pactado": 200.0, "Contratista": ""},
+    ])
+    st.session_state["tasks"] = pd.DataFrame([
+        {"Proyecto": p_test, "Partida": p1, "Orden": 1, "Codigo_Item": "1.01", "Tarea": "1.01 Limpieza", "Moneda": "Soles", "Unidad": "glb", "Metrado": 1.0, "Valor_Unitario": 100.0, "Presupuesto": 100.0},
+        {"Proyecto": p_test, "Partida": p1, "Orden": 2, "Codigo_Item": "1.02", "Tarea": "1.02 Trazo", "Moneda": "Soles", "Unidad": "glb", "Metrado": 1.0, "Valor_Unitario": 150.0, "Presupuesto": 150.0},
+        {"Proyecto": p_test, "Partida": p1, "Orden": 3, "Codigo_Item": "1.03", "Tarea": "1.03 Demolicion", "Moneda": "Soles", "Unidad": "glb", "Metrado": 1.0, "Valor_Unitario": 200.0, "Presupuesto": 200.0},
+        {"Proyecto": p_test, "Partida": p2, "Orden": 1, "Codigo_Item": "2.01", "Tarea": "2.01 Pintura", "Moneda": "Soles", "Unidad": "m2", "Metrado": 10.0, "Valor_Unitario": 20.0, "Presupuesto": 200.0},
+    ])
+    st.session_state["pagos"] = pd.DataFrame(columns=["Proyecto", "Partida", "Fecha", "Monto", "Tipo", "Notas"])
+    st.session_state.pop(f"ppto_undo_{p_test}", None)
+
+    # 1. Solo marcar casilla 'Sel' no debe alterar c_key ni crear snapshot en Undo
+    base_k = f"base_df_ppto_{p_test}_1"
+    c_k = f"c_{base_k}"
+    widget_k = f"ed_ppto_{p_test}_1_0"
+    st.session_state[c_k] = 0
+    st.session_state[base_k] = pd.DataFrame([
+        {"Sel": False, "Item": "1.01", "Descripcion": "Limpieza", "Moneda": "Soles", "Unidad": "glb", "Metrado": 1.0, "Valor_Unitario": 100.0, "Valor_Parcial": 100.0},
+        {"Sel": False, "Item": "1.02", "Descripcion": "Trazo", "Moneda": "Soles", "Unidad": "glb", "Metrado": 1.0, "Valor_Unitario": 150.0, "Valor_Parcial": 150.0},
+        {"Sel": False, "Item": "1.03", "Descripcion": "Demolicion", "Moneda": "Soles", "Unidad": "glb", "Metrado": 1.0, "Valor_Unitario": 200.0, "Valor_Parcial": 200.0},
+    ])
+    st.session_state[widget_k] = {"edited_rows": {"1": {"Sel": True}}}
+    aplicar_edicion_tabla_presupuesto_partida(base_k, widget_k, p_test, 1, p1)
+    assert st.session_state[c_k] == 0
+    assert not st.session_state.get(f"ppto_undo_{p_test}")
+
+    # 2. Edición de Metrado junto con casilla Sel marcada preserva selección en sel_saved_ppto_
+    st.session_state[widget_k] = {"edited_rows": {"1": {"Sel": True}, "0": {"Metrado": 2.0}}}
+    aplicar_edicion_tabla_presupuesto_partida(base_k, widget_k, p_test, 1, p1)
+    assert st.session_state[c_k] == 1
+    assert st.session_state.get(f"sel_saved_ppto_{p_test}_1") == [1]
+
+    # 3. Mover múltiples tareas seleccionadas [1, 2] hacia arriba -> quedan en [0, 1]
+    movido, nuevos_idx = mover_tareas_seleccionadas_presupuesto(p_test, 1, p1, [1, 2], "subir")
+    assert movido is True
+    assert nuevos_idx == [0, 1]
+    t_p1 = st.session_state["tasks"][(st.session_state["tasks"]["Proyecto"] == p_test) & (st.session_state["tasks"]["Partida"] == p1)].reset_index(drop=True)
+    assert [t_p1.at[0, "Codigo_Item"], t_p1.at[1, "Codigo_Item"], t_p1.at[2, "Codigo_Item"]] == ["1.01", "1.02", "1.03"]
+    assert "Trazo" in t_p1.at[0, "Tarea"] and "Demolicion" in t_p1.at[1, "Tarea"] and "Limpieza" in t_p1.at[2, "Tarea"]
+
+    # Boundary no-op cuando ya están arriba
+    movido_nop, nuevos_nop = mover_tareas_seleccionadas_presupuesto(p_test, 1, p1, [0, 1], "subir")
+    assert movido_nop is False
+    assert nuevos_nop == [0, 1]
+
+    # 4. Eliminar tarea seleccionada índice 1 (Demolicion) y verificar renumeración
+    assert eliminar_tareas_seleccionadas_presupuesto(p_test, 1, p1, [1]) is True
+    t_p1 = st.session_state["tasks"][(st.session_state["tasks"]["Proyecto"] == p_test) & (st.session_state["tasks"]["Partida"] == p1)].reset_index(drop=True)
+    assert len(t_p1) == 2
+    assert "Trazo" in t_p1.at[0, "Tarea"] and t_p1.at[0, "Codigo_Item"] == "1.01"
+    assert "Limpieza" in t_p1.at[1, "Tarea"] and t_p1.at[1, "Codigo_Item"] == "1.02"
+
+    # Eliminar todas deja 1 tarea base vacía 1.01
+    assert eliminar_tareas_seleccionadas_presupuesto(p_test, 1, p1, [0, 1]) is True
+    t_p1 = st.session_state["tasks"][(st.session_state["tasks"]["Proyecto"] == p_test) & (st.session_state["tasks"]["Partida"] == p1)].reset_index(drop=True)
+    assert len(t_p1) == 1
+    assert t_p1.at[0, "Codigo_Item"] == "1.01"
+    assert t_p1.at[0, "Tarea"] == "1.01"
+
+    # 5. Agregar partida con botón único y eliminar partida desde su tarjeta con renumeración
+    assert agregar_partida_presupuesto(p_test) == 3
+    assert len(st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == p_test]) == 3
+
+    # Eliminar la Partida 1 -> Arquitectura pasa a 01. Arquitectura y su tarea 2.01 -> 1.01
+    assert eliminar_partida_presupuesto(p_test, 1, p1) is True
+    parts_rem = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == p_test].reset_index(drop=True)
+    assert len(parts_rem) == 2
+    assert parts_rem.at[0, "Nombre_Partida"] == "01. Arquitectura"
+    assert parts_rem.at[1, "Nombre_Partida"] == "02. Partida 3"
+    t_arq = st.session_state["tasks"][(st.session_state["tasks"]["Proyecto"] == p_test) & (st.session_state["tasks"]["Partida"] == "01. Arquitectura")].reset_index(drop=True)
+    assert t_arq.at[0, "Codigo_Item"] == "1.01"
+    assert "Pintura" in t_arq.at[0, "Tarea"]
+
+    # Eliminar la última partida restante está protegido (mínimo 1)
+    assert eliminar_partida_presupuesto(p_test, 2) is True
+    assert eliminar_partida_presupuesto(p_test, 1) is False
+    assert deshacer_presupuesto(p_test) is True
 
 
 def test_etiquetas_y_exportacion_cuadro_pagos_arcilla_y_rojo():

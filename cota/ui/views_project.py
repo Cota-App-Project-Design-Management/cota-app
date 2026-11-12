@@ -58,6 +58,10 @@ try:
         not hasattr(cota.cotizacion, "deshacer_presupuesto")
         or not hasattr(cota.cotizacion, "mover_partida_presupuesto")
         or not hasattr(cota.cotizacion, "aplicar_edicion_inline_cuadro_pagos")
+        or not hasattr(cota.cotizacion, "agregar_partida_presupuesto")
+        or not hasattr(cota.cotizacion, "eliminar_partida_presupuesto")
+        or not hasattr(cota.cotizacion, "mover_tareas_seleccionadas_presupuesto")
+        or not hasattr(cota.cotizacion, "eliminar_tareas_seleccionadas_presupuesto")
     ):
         importlib.reload(cota.cotizacion)
     if not hasattr(cota.pdf, "generar_pdf_minuta"):
@@ -65,6 +69,7 @@ try:
 except Exception:
     pass
 from cota.cotizacion import (
+    agregar_partida_presupuesto,
     ajustar_cantidad_partidas_proyecto,
     ajustar_cantidad_tareas_partida,
     aplicar_cotizacion_a_proyecto,
@@ -73,6 +78,8 @@ from cota.cotizacion import (
     asegurar_estructura_presupuesto_proyecto,
     calcular_resumen_cuadro_pagos_semanales,
     deshacer_presupuesto,
+    eliminar_partida_presupuesto,
+    eliminar_tareas_seleccionadas_presupuesto,
     etiqueta_corta_columna_pago,
     etiqueta_export_columna_pago,
     exportar_cuadro_pagos_semanales_excel,
@@ -86,6 +93,7 @@ from cota.cotizacion import (
     limpiar_nombre_partida,
     mover_partida_presupuesto,
     mover_tarea_presupuesto,
+    mover_tareas_seleccionadas_presupuesto,
     obtener_columnas_pago_semanal,
     obtener_cuadro_pagos_semanales_proyecto,
     obtener_pagado_por_partida_proyecto,
@@ -1101,14 +1109,13 @@ def _render_tab_presupuesto(proy_name, proy_data):
     Pestaña 3: Constructor y Editor de Presupuesto All-in-One dentro de COTA.
     Permite definir dinámicamente la cantidad de Partidas (1, 2, 3, 4...), sus nombres,
     y la cantidad de Tareas por cada Partida (1.01, 1.02, 1.03...), reordenarlas verticalmente,
-    asignar Especialidad y Contratista (uso interno), o importar presupuestos de Gemini Spark / Excel / CSV.
+    asignar Especialidad y Contratista (uso interno), o importar presupuestos de tablas / Excel / CSV.
     """
     asegurar_estructura_presupuesto_proyecto(proy_name, n_partidas_default=3, n_tareas_default=3)
     totales = recalcular_totales_presupuesto_proyecto(proy_name)
     params = obtener_parametros_presupuesto_proyecto(proy_name)
 
     parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
-    n_partidas_actual = max(1, len(parts_proy))
 
     col_tit_p, col_undo, col_imp_top, col_exp_p = st.columns([4.2, 1.8, 2.0, 2.0])
     with col_tit_p:
@@ -1167,7 +1174,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
             fuente_imp = st.radio(
                 "Método de importación:",
                 options=["texto", "archivo"],
-                format_func=lambda x: "📋 Pegar tabla de Gemini Spark / Excel / Markdown" if x == "texto" else "📁 Subir archivo (.xlsx / .xls / .csv)",
+                format_func=lambda x: "📋 Pegar Tabla" if x == "texto" else "📁 Subir archivo (.xlsx / .xls / .csv)",
                 horizontal=True,
                 key=f"rad_fuente_ppto_{proy_name}",
             )
@@ -1175,7 +1182,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
             parsed_imp = None
             if fuente_imp == "texto":
                 txt_spark = st.text_area(
-                    "Pega aquí el presupuesto de Gemini Spark o Excel:",
+                    "Pega aquí la tabla del presupuesto:",
                     height=165,
                     placeholder=(
                         "| Item | Partida / Tarea | Unidad | Metraje | V. Unitario | Valor Parcial |\n"
@@ -1294,10 +1301,9 @@ def _render_tab_presupuesto(proy_name, proy_data):
 
     # Panel de Configuración Global del Presupuesto (incluye Honorarios de Diseño, % o Monto Exacto con redondeo)
     with st.container(border=True):
-        st.markdown("##### ⚙️ Configuración de Estructura y Parámetros Financieros")
-        c_cfg1, c_cfg2, c_cfg3, c_cfg4, c_cfg_hon, c_cfg5 = st.columns([1.3, 1.2, 2.2, 2.2, 1.6, 1.1])
+        st.markdown("##### ⚙️ Configuración de Presupuesto")
+        c_cfg1, c_cfg2, c_cfg3, c_cfg4, c_cfg_hon, c_cfg5 = st.columns([1.5, 1.2, 2.1, 2.1, 1.6, 1.1])
 
-        key_n_part = f"cfg_n_partidas_{proy_name}"
         key_tc = f"cfg_tc_ppto_{proy_name}"
         key_modo_gg = f"cfg_modo_gg_{proy_name}"
         key_gg_pct = f"cfg_gg_pct_{proy_name}"
@@ -1308,12 +1314,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
         key_hon = f"cfg_hon_diseno_{proy_name}"
         key_igv = f"cfg_igv_chk_{proy_name}"
 
-        st.session_state[key_n_part] = n_partidas_actual
         hon_actual = safe_float(proy_data.get("Honorarios_Diseno", 0.0), 0.0)
-
-        def _on_change_cant_partidas():
-            nueva_cant = st.session_state.get(key_n_part, n_partidas_actual)
-            ajustar_cantidad_partidas_proyecto(proy_name, int(nueva_cant), n_tareas_default=3)
 
         def _on_change_params_ppto():
             modo_gg_val = st.session_state.get(key_modo_gg, params.get("modo_gg", "pct"))
@@ -1344,15 +1345,15 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     st.session_state.proyectos.loc[idx_p_m, "Honorarios_Diseno"] = float(safe_float(st.session_state.get(key_hon, 0.0), 0.0))
 
         with c_cfg1:
-            st.number_input(
-                "N° Partidas",
-                min_value=1,
-                max_value=40,
-                step=1,
-                key=key_n_part,
-                on_change=_on_change_cant_partidas,
-                help="Indica cuántas partidas principales (1, 2, 3, 4...) tendrá el presupuesto.",
-            )
+            st.markdown("<div style='padding-top: 27px;'></div>", unsafe_allow_html=True)
+            if st.button(
+                "➕ Agregar Partida",
+                key=f"btn_add_partida_{proy_name}",
+                use_container_width=True,
+                help="Agrega una nueva partida principal al presupuesto con sus tareas iniciales.",
+            ):
+                agregar_partida_presupuesto(proy_name, n_tareas_default=3)
+                st.rerun()
         with c_cfg2:
             st.number_input(
                 "Tipo de Cambio",
@@ -1532,8 +1533,15 @@ def _render_tab_presupuesto(proy_name, proy_data):
         })
 
         with st.container(border=True):
-            # Cabecera de la Partida: Nombre editable + N° de Tareas editable + Sub Total, Mix y Mover Partida
-            cp_nom, cp_cnt, cp_sub, cp_mix, cp_mv = st.columns([4.0, 1.8, 1.9, 1.3, 1.0])
+            base_ppto_key = f"base_df_ppto_{proy_name}_{idx_p}"
+            c_ppto_key = f"c_{base_ppto_key}"
+            c_ppto_val = st.session_state.get(c_ppto_key, 0)
+            w_ppto_key = f"ed_ppto_{proy_name}_{idx_p}_{c_ppto_val}"
+            sel_saved_key = f"sel_saved_ppto_{proy_name}_{idx_p}"
+            sel_ver_key = f"sel_ver_ppto_{proy_name}_{idx_p}"
+
+            # Cabecera de la Partida: Nombre editable + N° de Tareas editable + Sub Total, Mix, Mover y Eliminar Partida
+            cp_nom, cp_cnt, cp_sub, cp_mix, cp_mv = st.columns([3.5, 1.6, 1.8, 1.1, 2.0])
 
             key_pnom = f"ppto_pnom_{proy_name}_{idx_p}"
             key_ntasks = f"ppto_ntasks_{proy_name}_{idx_p}"
@@ -1548,10 +1556,13 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     renombrar_partida_presupuesto(proy_name, p_idx_1b, curr_full, nuevo_val)
                 return _cb
 
-            def _make_on_cant_tasks(p_idx_1b, curr_full, k_cnt):
+            def _make_on_cant_tasks(p_idx_1b, curr_full, k_cnt, k_base, k_c):
                 def _cb():
                     nueva_c = st.session_state.get(k_cnt, 1)
                     ajustar_cantidad_tareas_partida(proy_name, p_idx_1b, curr_full, int(nueva_c))
+                    if k_base in st.session_state:
+                        del st.session_state[k_base]
+                    st.session_state[k_c] = st.session_state.get(k_c, 0) + 1
                 return _cb
 
             with cp_nom:
@@ -1568,7 +1579,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     max_value=100,
                     step=1,
                     key=key_ntasks,
-                    on_change=_make_on_cant_tasks(idx_p, p_nom_completo, key_ntasks),
+                    on_change=_make_on_cant_tasks(idx_p, p_nom_completo, key_ntasks, base_ppto_key, c_ppto_key),
                 )
             with cp_sub:
                 st.markdown(
@@ -1588,7 +1599,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 )
             with cp_mv:
                 st.markdown("<div style='padding-top: 26px;'></div>", unsafe_allow_html=True)
-                c_u, c_d = st.columns(2)
+                c_u, c_d, c_del = st.columns([1, 1, 2.0])
                 with c_u:
                     if st.button("⬆", key=f"btn_mv_up_p_{proy_name}_{idx_p}", disabled=(idx_p == 1), help="Subir Partida completa", use_container_width=True):
                         mover_partida_presupuesto(proy_name, idx_p, "subir")
@@ -1597,10 +1608,23 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     if st.button("⬇", key=f"btn_mv_dn_p_{proy_name}_{idx_p}", disabled=(idx_p == len(parts_proy)), help="Bajar Partida completa", use_container_width=True):
                         mover_partida_presupuesto(proy_name, idx_p, "bajar")
                         st.rerun()
+                with c_del:
+                    with st.popover("🗑️ Eliminar", use_container_width=True):
+                        if len(parts_proy) <= 1:
+                            st.info("El presupuesto debe conservar al menos 1 partida.")
+                        else:
+                            st.warning(f"¿Eliminar **Partida {idx_p}: {p_nom_limpio}** y sus {len(df_t_p)} tarea(s)?")
+                            if st.button(
+                                "CONFIRMAR",
+                                key=f"btn_del_p_{proy_name}_{idx_p}",
+                                type="primary",
+                                use_container_width=True,
+                            ):
+                                eliminar_partida_presupuesto(proy_name, idx_p, p_nom_completo)
+                                st.rerun()
 
             # Construir DataFrame editable para las tareas de esta partida (incluye Especialidad y Contratista para uso interno)
             rows_ed = []
-            opciones_orden_t = []
             for pos_t, (_, t_r) in enumerate(df_t_p.iterrows(), start=1):
                 cod_item = f"{idx_p}.{pos_t:02d}"
                 desc_t = extraer_descripcion_tarea(t_r.get("Tarea", ""), cod_item)
@@ -1622,9 +1646,8 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 if con_t and con_t not in contratistas_cat:
                     contratistas_cat.append(con_t)
 
-                opciones_orden_t.append((pos_t - 1, f"{cod_item} — {desc_t or '(Sin descripción)'}"))
                 rows_ed.append({
-                    "⠿": "⠿",
+                    "Sel": False,
                     "Item": str(cod_item),
                     "Descripcion": str(desc_t),
                     "Especialidad": str(esp_t),
@@ -1641,54 +1664,110 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 if c_num in df_ed_p.columns:
                     df_ed_p[c_num] = pd.to_numeric(df_ed_p[c_num], errors="coerce").fillna(0.0).astype(float)
 
-            base_ppto_key = f"base_df_ppto_{proy_name}_{idx_p}"
-            c_ppto_key = f"c_{base_ppto_key}"
-            c_ppto_val = st.session_state.get(c_ppto_key, 0)
-            w_ppto_key = f"ed_ppto_{proy_name}_{idx_p}_{c_ppto_val}"
+            prev_base = st.session_state.get(base_ppto_key)
+            if (
+                st.session_state.get(sel_ver_key) == c_ppto_val
+                and isinstance(prev_base, pd.DataFrame)
+                and len(prev_base) == len(df_ed_p)
+                and "Sel" in prev_base.columns
+            ):
+                base_sel = [bool(v) for v in prev_base["Sel"].tolist()]
+            else:
+                saved_sel = {int(i) for i in st.session_state.get(sel_saved_key, []) if 0 <= int(i) < len(df_ed_p)}
+                base_sel = [i in saved_sel for i in range(len(df_ed_p))]
+                st.session_state[sel_ver_key] = c_ppto_val
 
+            df_ed_p["Sel"] = pd.Series(base_sel, index=df_ed_p.index, dtype=bool)
             st.session_state[base_ppto_key] = df_ed_p.copy()
 
-            if len(rows_ed) > 1:
-                col_mv_info, col_mv_sel, col_mv_u, col_mv_d = st.columns([2.5, 4.3, 1.6, 1.6])
-                with col_mv_info:
+            eff_sel = list(base_sel)
+            ed_state = st.session_state.get(w_ppto_key)
+            if isinstance(ed_state, dict):
+                for r_s, ch in ed_state.get("edited_rows", {}).items():
+                    try:
+                        r_idx = int(r_s)
+                        if 0 <= r_idx < len(eff_sel) and isinstance(ch, dict) and "Sel" in ch:
+                            eff_sel[r_idx] = bool(ch["Sel"])
+                    except (TypeError, ValueError):
+                        pass
+            selected_indices = [i for i, checked in enumerate(eff_sel) if checked]
+
+            if rows_ed:
+                n_sel_t = len(selected_indices)
+                sel_set_t = set(selected_indices)
+                can_move_up_t = (
+                    n_sel_t > 0
+                    and len(rows_ed) > 1
+                    and any((i - 1) >= 0 and (i - 1) not in sel_set_t for i in selected_indices)
+                )
+                can_move_dn_t = (
+                    n_sel_t > 0
+                    and len(rows_ed) > 1
+                    and any((i + 1) < len(rows_ed) and (i + 1) not in sel_set_t for i in selected_indices)
+                )
+
+                col_act_info, col_act_u, col_act_d, col_act_del = st.columns([5.2, 1.6, 1.6, 1.6])
+                with col_act_info:
+                    lbl_sel = (
+                        f"☑ {n_sel_t} tarea(s) seleccionada(s)"
+                        if n_sel_t > 0
+                        else "☐ Marca casillas (☑) en las tareas para moverlas o borrarlas"
+                    )
+                    color_sel = "#C85A32" if n_sel_t > 0 else "#6E665E"
                     st.markdown(
-                        f"<div style='font-size:12px; font-weight:700; color:#6E665E; padding-top:6px;'>↕️ MOVER TAREA:</div>",
+                        f"<div style='font-size:12px; font-weight:700; color:{color_sel}; padding-top:6px;'>{lbl_sel}</div>",
                         unsafe_allow_html=True,
                     )
-                with col_mv_sel:
-                    idx_t_sel = st.selectbox(
-                        f"Seleccionar tarea de {p_nom_limpio}",
-                        options=list(range(len(rows_ed))),
-                        format_func=lambda i: opciones_orden_t[i][1] if i < len(opciones_orden_t) else f"Tarea {i+1}",
-                        key=f"sel_mv_task_{proy_name}_{idx_p}",
-                        label_visibility="collapsed",
-                    )
-                with col_mv_u:
+                with col_act_u:
                     if st.button(
                         "⬆ Subir",
                         key=f"btn_up_t_{proy_name}_{idx_p}",
-                        disabled=(idx_t_sel == 0),
+                        disabled=not can_move_up_t,
                         use_container_width=True,
-                        help="Sube la tarea seleccionada una posición",
+                        help="Sube la(s) tarea(s) seleccionada(s) una posición",
                     ):
-                        mover_tarea_presupuesto(proy_name, idx_p, p_nom_completo, idx_t_sel, "subir")
-                        st.session_state[c_ppto_key] = c_ppto_val + 1
-                        st.rerun()
-                with col_mv_d:
+                        movido, nuevos_idx = mover_tareas_seleccionadas_presupuesto(
+                            proy_name, idx_p, p_nom_completo, selected_indices, "subir"
+                        )
+                        if movido:
+                            st.session_state[sel_saved_key] = nuevos_idx
+                            if base_ppto_key in st.session_state:
+                                del st.session_state[base_ppto_key]
+                            st.session_state[c_ppto_key] = c_ppto_val + 1
+                            st.rerun()
+                with col_act_d:
                     if st.button(
                         "⬇ Bajar",
                         key=f"btn_dn_t_{proy_name}_{idx_p}",
-                        disabled=(idx_t_sel == len(rows_ed) - 1),
+                        disabled=not can_move_dn_t,
                         use_container_width=True,
-                        help="Baja la tarea seleccionada una posición",
+                        help="Baja la(s) tarea(s) seleccionada(s) una posición",
                     ):
-                        mover_tarea_presupuesto(proy_name, idx_p, p_nom_completo, idx_t_sel, "bajar")
-                        st.session_state[c_ppto_key] = c_ppto_val + 1
-                        st.rerun()
-
-            safe_proy_id = re.sub(r"[^a-zA-Z0-9_]", "_", proy_name)
-            # Ancla invisible para que el controlador de Drag & Drop ubique la tabla en el DOM
-            st.markdown(f'<div id="anchor_ppto_{safe_proy_id}_{idx_p}" style="display:none;" data-partida="{idx_p}" data-n-rows="{len(rows_ed)}"></div>', unsafe_allow_html=True)
+                        movido, nuevos_idx = mover_tareas_seleccionadas_presupuesto(
+                            proy_name, idx_p, p_nom_completo, selected_indices, "bajar"
+                        )
+                        if movido:
+                            st.session_state[sel_saved_key] = nuevos_idx
+                            if base_ppto_key in st.session_state:
+                                del st.session_state[base_ppto_key]
+                            st.session_state[c_ppto_key] = c_ppto_val + 1
+                            st.rerun()
+                with col_act_del:
+                    if st.button(
+                        "🗑️ Borrar",
+                        key=f"btn_del_t_{proy_name}_{idx_p}",
+                        disabled=(n_sel_t == 0),
+                        use_container_width=True,
+                        help="Elimina la(s) tarea(s) seleccionada(s) y renumera las restantes",
+                    ):
+                        if eliminar_tareas_seleccionadas_presupuesto(
+                            proy_name, idx_p, p_nom_completo, selected_indices
+                        ):
+                            st.session_state[sel_saved_key] = []
+                            if base_ppto_key in st.session_state:
+                                del st.session_state[base_ppto_key]
+                            st.session_state[c_ppto_key] = c_ppto_val + 1
+                            st.rerun()
 
             st.data_editor(
                 st.session_state[base_ppto_key],
@@ -1697,7 +1776,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 num_rows="fixed",
                 disabled=["Item", "Valor_Parcial"],
                 column_order=[
-                    "⠿",
+                    "Sel",
                     "Item",
                     "Descripcion",
                     "Especialidad",
@@ -1710,12 +1789,11 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 ],
                 key=w_ppto_key,
                 column_config={
-                    "⠿": st.column_config.SelectboxColumn(
-                        "⠿ Mover",
-                        options=["⠿", "⬆ Subir", "⬇ Bajar"],
-                        default="⠿",
-                        width=65,
-                        help="Haz click en ⠿ para subir o bajar esta tarea de posición",
+                    "Sel": st.column_config.CheckboxColumn(
+                        "☑",
+                        default=False,
+                        width=48,
+                        help="Selecciona una o varias tareas para moverlas o borrarlas",
                     ),
                     "Item": st.column_config.TextColumn("Ítem", width="small", disabled=True),
                     "Descripcion": st.column_config.TextColumn("Descripción de la Tarea / Sub-partida", width="large"),
@@ -1747,18 +1825,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 ),
             )
 
-            # Reordenamiento Drag & Drop integrado en la misma tabla (click sostenido en ⠿ o Ítem)
-            if len(rows_ed) > 1:
-                _render_table_dnd_controller(
-                    proy_name=proy_name,
-                    idx_p=idx_p,
-                    p_nom_completo=p_nom_completo,
-                    rows_ed=rows_ed,
-                    c_ppto_key=c_ppto_key,
-                    c_ppto_val=c_ppto_val,
-                )
-            else:
-                st.caption("🔒 *Especialidad y Contratista son internos (no se exportan al cliente).*")
+            st.caption("🔒 *Especialidad y Contratista son internos (no se exportan al cliente).*")
 
     # Cuadro Resumen de Cierre del Presupuesto + Exportación a Excel
     st.divider()

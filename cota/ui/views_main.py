@@ -529,11 +529,11 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 )
 
             with col_imp_p:
-                st.markdown("##### 2. Importar Presupuesto (Excel / CSV / Gemini Spark)")
+                st.markdown("##### 2. Importar Presupuesto (Excel / CSV / Pegar Tabla)")
                 modo_imp_port = st.radio(
                     "Fuente del presupuesto:",
                     options=["archivo", "texto"],
-                    format_func=lambda x: "📁 Subir archivo (.xlsx / .csv)" if x == "archivo" else "🤖 Pegar tabla de Gemini Spark / Excel / Markdown",
+                    format_func=lambda x: "📁 Subir archivo (.xlsx / .csv)" if x == "archivo" else "📋 Pegar Tabla",
                     horizontal=True,
                     key="rad_fuente_imp_port",
                 )
@@ -548,7 +548,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                         parsed_p = parsear_presupuesto_flexible(up_port_file)
                 else:
                     txt_spark_port = st.text_area(
-                        "Pega aquí la tabla generada en Gemini Spark, Excel o CSV (con Partidas, Tareas, Unidad, Metraje, V. Unitario, Valor Parcial):",
+                        "Pega aquí la tabla del presupuesto (con Partidas, Tareas, Unidad, Metraje, V. Unitario, Valor Parcial):",
                         height=150,
                         placeholder="| Item | Descripción | Unidad | Metraje | V. Unitario | Valor Parcial |\n|---|---|---|---|---|---|\n| 1.0 | OBRAS PROVISIONALES | | | | |\n| 1.01 | Desmontaje y limpieza | glb | 1 | 1500 | 1500 |",
                         key="txt_spark_portafolio",
