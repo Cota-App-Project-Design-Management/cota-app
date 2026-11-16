@@ -587,6 +587,151 @@ def calcular_rating(nombre, df_historial=None, df_tasks=None, df_maestro=None):
     return max(1, min(5, int(round(rating_final))))
 
 
+def _normalizar_nombre_contratista(nombre) -> str:
+    """Normaliza el nombre de un contratista para detectar coincidencias aunque cambien mayúsculas, tildes o espacios."""
+    s = safe_str(nombre, "").strip()
+    if not s:
+        return ""
+    s_low = s.lower()
+    if s_low in ("none", "nan", "null", "ninguno", "ninguna", "sin asignar", "n/a", "-", "—"):
+        return ""
+    clean = "".join(
+        c for c in unicodedata.normalize("NFD", s)
+        if unicodedata.category(c) != "Mn"
+    )
+    return re.sub(r"\s+", " ", clean).strip().lower()
+
+
+def detectar_cruces_contratistas(
+    df_tasks: pd.DataFrame,
+    proy_name: str | None = None,
+    df_proyectos: pd.DataFrame | None = None,
+    ignorar_completadas: bool = True,
+) -> dict:
+    """
+    Detecta cruces de fechas cuando un mismo contratista tiene dos o más tareas con fechas
+    solapadas (entre distintos proyectos o dentro del mismo proyecto).
+    Retorna {'activos': [...], 'permitidos': [...]}.
+    """
+    res = {"activos": [], "permitidos": []}
+    if df_tasks is None or not isinstance(df_tasks, pd.DataFrame) or df_tasks.empty:
+        return res
+    if "Contratista" not in df_tasks.columns or "Inicio" not in df_tasks.columns:
+        return res
+
+    proyectos_archivados = set()
+    if df_proyectos is not None and isinstance(df_proyectos, pd.DataFrame) and not df_proyectos.empty:
+        if "Nombre" in df_proyectos.columns and "Archivado" in df_proyectos.columns:
+            for _, r_p in df_proyectos.iterrows():
+                p_n = safe_str(r_p.get("Nombre", "")).strip()
+                if p_n and p_n != proy_name and to_bool(r_p.get("Archivado", False)):
+                    proyectos_archivados.add(p_n)
+
+    por_contratista = {}
+    for idx_t, row in df_tasks.iterrows():
+        proy_t = safe_str(row.get("Proyecto", "")).strip()
+        if not proy_t or proy_t in proyectos_archivados:
+            continue
+
+        contra_raw = safe_str(row.get("Contratista", "")).strip()
+        contra_norm = _normalizar_nombre_contratista(contra_raw)
+        if not contra_norm:
+            continue
+
+        est_t = safe_str(row.get("Estado", "")).strip()
+        if ignorar_completadas and "completad" in est_t.lower():
+            continue
+
+        d_ini = parse_date(row.get("Inicio"))
+        d_fin = parse_date(row.get("Fin"))
+        if d_ini is None and d_fin is None:
+            continue
+        if d_ini is None:
+            d_ini = d_fin
+        if d_fin is None or d_fin < d_ini:
+            d_fin = d_ini
+
+        perm = to_bool(row.get("Permitir_Cruce", False))
+        cod_t = safe_str(row.get("Codigo_Item", "")).strip()
+        tarea_t = safe_str(row.get("Tarea", "")).strip() or cod_t or "Tarea sin nombre"
+        part_t = safe_str(row.get("Partida", "")).strip()
+
+        por_contratista.setdefault(contra_norm, []).append({
+            "idx": idx_t,
+            "proyecto": proy_t,
+            "partida": part_t,
+            "codigo_item": cod_t,
+            "tarea": tarea_t,
+            "contratista": contra_raw,
+            "estado": est_t,
+            "inicio": d_ini,
+            "fin": d_fin,
+            "permitir_cruce": perm,
+        })
+
+    activos = []
+    permitidos = []
+    for _, items in por_contratista.items():
+        n_it = len(items)
+        if n_it < 2:
+            continue
+        for i in range(n_it):
+            a = items[i]
+            if proy_name is not None and a["proyecto"] != proy_name:
+                continue
+            for j in range(n_it):
+                if i == j:
+                    continue
+                b = items[j]
+                mismo_proy = a["proyecto"] == b["proyecto"]
+                if mismo_proy and j < i:
+                    continue
+                if a["inicio"] <= b["fin"] and b["inicio"] <= a["fin"]:
+                    c_ini = max(a["inicio"], b["inicio"])
+                    c_fin = min(a["fin"], b["fin"])
+                    dias_c = max(1, (c_fin - c_ini).days + 1)
+                    es_perm = bool(a["permitir_cruce"] or b["permitir_cruce"])
+                    item_cruce = {
+                        "idx_task": a["idx"],
+                        "proyecto": a["proyecto"],
+                        "partida": a["partida"],
+                        "codigo_item": a["codigo_item"],
+                        "tarea": a["tarea"],
+                        "contratista": a["contratista"],
+                        "inicio": a["inicio"],
+                        "fin": a["fin"],
+                        "permitir_cruce": a["permitir_cruce"],
+                        "conflicto_idx": b["idx"],
+                        "conflicto_proyecto": b["proyecto"],
+                        "conflicto_partida": b["partida"],
+                        "conflicto_codigo_item": b["codigo_item"],
+                        "conflicto_tarea": b["tarea"],
+                        "conflicto_inicio": b["inicio"],
+                        "conflicto_fin": b["fin"],
+                        "conflicto_permitir_cruce": b["permitir_cruce"],
+                        "cruce_inicio": c_ini,
+                        "cruce_fin": c_fin,
+                        "dias_cruce": dias_c,
+                        "mismo_proyecto": mismo_proy,
+                        "permitido": es_perm,
+                    }
+                    if es_perm:
+                        permitidos.append(item_cruce)
+                    else:
+                        activos.append(item_cruce)
+
+    sort_key = lambda c: (
+        bool(c["mismo_proyecto"]),
+        c["cruce_inicio"],
+        c["contratista"].lower(),
+        c["codigo_item"],
+        c["conflicto_proyecto"],
+    )
+    activos.sort(key=sort_key)
+    permitidos.sort(key=sort_key)
+    return {"activos": activos, "permitidos": permitidos}
+
+
 def sugerir_contratista(esp_req, ubi_proy, req_i, req_f, df_maestro, df_tasks, df_historial=None, app_title="COTA APP"):
     """
     Sugeridor inteligente de contratistas según especialidad requerida,

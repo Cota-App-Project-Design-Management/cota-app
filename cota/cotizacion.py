@@ -29,6 +29,7 @@ import pandas as pd
 import streamlit as st
 
 from cota.db import COLS_P_INFO, COLS_PROY, COLS_TASKS, clear_base_dfs
+import uuid
 from cota.utils import safe_float, safe_str, to_bool
 
 
@@ -927,6 +928,24 @@ def ajustar_cantidad_tareas_partida(
     recalcular_totales_presupuesto_proyecto(proy_name)
 
 
+def agregar_tarea_presupuesto(
+    proy_name: str,
+    idx_partida_1based: int,
+    nombre_partida_completo: str,
+) -> int:
+    """Agrega una nueva tarea al final de una Partida del presupuesto y retorna la nueva cantidad."""
+    mask_t = (
+        (st.session_state.tasks["Proyecto"] == proy_name)
+        & (st.session_state.tasks["Partida"] == nombre_partida_completo)
+        if "tasks" in st.session_state and not st.session_state.tasks.empty
+        else pd.Series(dtype=bool)
+    )
+    actual_cant = int(mask_t.sum()) if len(mask_t) else 0
+    nueva_cant = actual_cant + 1
+    ajustar_cantidad_tareas_partida(proy_name, idx_partida_1based, nombre_partida_completo, nueva_cant)
+    return nueva_cant
+
+
 def mover_tarea_presupuesto(
     proy_name: str,
     idx_partida_1based: int,
@@ -1331,15 +1350,28 @@ def generar_plantilla_cotizacion_venti(
     - Hoja 2 ('Control de Pagos'): Cronograma de desembolsos por semanas integrado simétricamente.
     """
     from openpyxl.drawing.image import Image as XLImage
-    from cota.utils import normalizar_hex_color, obtener_marca_estudio, oscurecer_hex_color, preparar_logo_png_bytes
+    from cota.utils import (
+        aclarar_hex_color,
+        hex_a_rgb,
+        normalizar_hex_color,
+        obtener_marca_estudio,
+        oscurecer_hex_color,
+        preparar_logo_png_bytes,
+    )
 
     if not fecha:
         fecha = datetime.date.today().strftime("%Y-%m-%d")
 
     marca = obtener_marca_estudio()
-    brand_hex = normalizar_hex_color(brand_color or marca.get("brand_color", "#C85A32")).lstrip("#")
-    brand_dark_hex = oscurecer_hex_color(f"#{brand_hex}", 0.82).lstrip("#")
+    brand_hex_full = normalizar_hex_color(brand_color or marca.get("brand_color", "#C85A32"))
+    brand_hex = brand_hex_full.lstrip("#")
+    brand_dark_hex = oscurecer_hex_color(brand_hex_full, 0.82).lstrip("#")
+    brand_soft_hex = aclarar_hex_color(brand_hex_full, 0.88).lstrip("#")
     nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "")).strip()
+
+    b_r, b_g, b_b = hex_a_rgb(brand_hex_full)
+    lum_brand = 0.299 * b_r + 0.587 * b_g + 0.114 * b_b
+    brand_txt_hex = "262320" if lum_brand > 185 else "FFFFFF"
 
     if logo_bytes is not None:
         logo_png, logo_dims = preparar_logo_png_bytes(logo_bytes)
@@ -1347,8 +1379,18 @@ def generar_plantilla_cotizacion_venti(
         logo_png = marca.get("logo_png_bytes")
         logo_dims = marca.get("logo_size")
 
+    def _fit_xl_logo(max_w: float, max_h: float):
+        xl_img = XLImage(io.BytesIO(logo_png))
+        if logo_dims and logo_dims[0] > 0 and logo_dims[1] > 0:
+            ratio = min(max_w / float(logo_dims[0]), max_h / float(logo_dims[1]))
+            xl_img.width = max(18, int(round(logo_dims[0] * ratio)))
+            xl_img.height = max(14, int(round(logo_dims[1] * ratio)))
+        return xl_img
+
     FMT_SOLES = '"S/ "#,##0.00'
     FMT_USD = '"$ "#,##0.00'
+    FMT_PCT_DASH = '0.0%;-0.0%;"-%"'
+    FMT_INT_PCT_DASH = '0%;-0%;"-%"'
 
     gg_dec = float(gg_pct) / 100.0 if float(gg_pct) > 1.0 else float(gg_pct)
     ges_dec = float(gestion_pct) / 100.0 if float(gestion_pct) > 1.0 else float(gestion_pct)
@@ -1356,33 +1398,34 @@ def generar_plantilla_cotizacion_venti(
     wb = openpyxl.Workbook()
 
     font_family = "Calibri"
-    f_banner = Font(name=font_family, size=11, bold=True, color="FFFFFF")
-    f_banner_sub = Font(name=font_family, size=9, bold=True, color="EFECE6")
+    f_banner = Font(name=font_family, size=10, bold=True, color=brand_txt_hex)
+    f_banner_sub = Font(name=font_family, size=8, bold=True, color=brand_hex)
     f_meta_lbl = Font(name=font_family, size=10, bold=True, color="262320")
-    f_title = Font(name=font_family, size=11, bold=True, color="262320")
-    f_header = Font(name=font_family, size=10, bold=True, color="FFFFFF")
+    f_title = Font(name=font_family, size=10, bold=True, color="262320")
+    f_header = Font(name=font_family, size=10, bold=True, color=brand_txt_hex)
     f_partida = Font(name=font_family, size=10, bold=True, color="262320")
     f_task = Font(name=font_family, size=10, bold=False, color="262320")
     f_footer = Font(name=font_family, size=10, bold=True, color="262320")
-    f_total = Font(name=font_family, size=10, bold=True, color="FFFFFF")
+    f_total = Font(name=font_family, size=10, bold=True, color=brand_txt_hex)
     f_usd = Font(name=font_family, size=10, bold=True, color="262320")
 
     fill_brand = PatternFill(start_color=brand_hex, end_color=brand_hex, fill_type="solid")
-    fill_logo_box = PatternFill(start_color="262320", end_color="262320", fill_type="solid")
-    fill_header = PatternFill(start_color="262320", end_color="262320", fill_type="solid")
+    fill_brand_soft = PatternFill(start_color=brand_soft_hex, end_color=brand_soft_hex, fill_type="solid")
+    fill_logo_box = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    fill_header = fill_brand
     fill_meta_lbl = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
-    fill_meta_val = PatternFill(start_color="FAF8F5", end_color="FAF8F5", fill_type="solid")
-    fill_partida = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
-    fill_subtotal = PatternFill(start_color="DFD9CE", end_color="DFD9CE", fill_type="solid")
-    fill_total = PatternFill(start_color=brand_hex, end_color=brand_hex, fill_type="solid")
-    fill_usd = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
+    fill_meta_val = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    fill_partida = fill_brand_soft
+    fill_subtotal = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
+    fill_total = fill_brand
+    fill_usd = fill_brand_soft
     fill_input = PatternFill(start_color="FAF8F5", end_color="FAF8F5", fill_type="solid")
 
     thin_side = Side(border_style="thin", color="D0C9BD")
     brand_med_side = Side(border_style="medium", color=brand_hex)
     med_bottom = Side(border_style="medium", color="262320")
     border_cell = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
-    border_header_col = Border(left=thin_side, right=thin_side, top=thin_side, bottom=brand_med_side)
+    border_header_col = Border(left=thin_side, right=thin_side, top=brand_med_side, bottom=brand_med_side)
     border_partida = Border(left=thin_side, right=thin_side, top=thin_side, bottom=med_bottom)
     border_closing = Border(left=thin_side, right=thin_side, top=thin_side, bottom=med_bottom)
 
@@ -1391,7 +1434,7 @@ def generar_plantilla_cotizacion_venti(
     align_right = Alignment(horizontal="right", vertical="center", wrap_text=True)
 
     # ==========================================
-    # HOJA 1: PRESUPUESTO
+    # HOJA 1: PRESUPUESTO (FORMATO VENTI + MARCA DEL ESTUDIO)
     # ==========================================
     ws1 = wb.active
     ws1.title = "Presupuesto"
@@ -1401,84 +1444,64 @@ def generar_plantilla_cotizacion_venti(
     ws1.sheet_properties.pageSetUpPr.fitToPage = True
     ws1.page_setup.fitToWidth = 1
     ws1.page_setup.fitToHeight = 0
+    if nom_estudio:
+        ws1.oddHeader.center.text = f"&B{nom_estudio.upper()} — PRESUPUESTO"
 
-    # --- ENCABEZADO ORDENADO E INTEGRADO DEL PRESUPUESTO (Filas 2, 3 y 4) ---
+    # --- ENCABEZADO FORMATO VENTI (Fila 1 vacía, Fila 2 Logo + Proyecto + Fecha, Fila 3 espacio, Fila 4 Cliente + TC) ---
     ws1.row_dimensions[1].height = 8
-    ws1.row_dimensions[2].height = 34
-    ws1.row_dimensions[3].height = 22
+    ws1.row_dimensions[2].height = 22
+    ws1.row_dimensions[3].height = 10
     ws1.row_dimensions[4].height = 22
 
-    # Fila 2: Banner Superior de Marca del Estudio + Logo
-    banner_txt = f"  {nom_estudio.upper()}  —  PRESUPUESTO DE OBRA" if nom_estudio else "  PRESUPUESTO DE OBRA"
-    ws1.merge_cells("B2:H2")
-    ws1["B2"] = banner_txt
-    ws1["B2"].font = f_banner
-    ws1["B2"].alignment = align_left
-
-    ws1.merge_cells("I2:J2")
-    ws1["I2"] = nom_estudio.upper() if nom_estudio else "COTA"
-    ws1["I2"].font = f_banner_sub
-    ws1["I2"].alignment = align_center
-
-    for c_idx in range(2, 9):
-        c_let = get_column_letter(c_idx)
-        ws1[f"{c_let}2"].fill = fill_brand
-        ws1[f"{c_let}2"].border = border_cell
-    for c_idx in (9, 10):
-        c_let = get_column_letter(c_idx)
-        ws1[f"{c_let}2"].fill = fill_logo_box
-        ws1[f"{c_let}2"].border = border_cell
+    # Celda izquierda de Logo [logo] en B2:B4
+    ws1.merge_cells("B2:B4")
+    ws1["B2"] = nom_estudio.upper() if nom_estudio else ""
+    ws1["B2"].font = f_banner_sub
+    ws1["B2"].alignment = align_center
+    for r_l in (2, 3, 4):
+        ws1[f"B{r_l}"].fill = fill_logo_box
+        ws1[f"B{r_l}"].border = border_cell
 
     if logo_png:
         try:
-            xl_img1 = XLImage(io.BytesIO(logo_png))
-            if logo_dims and logo_dims[1] > 0:
-                target_h = 30
-                target_w = min(145, max(28, int(round(logo_dims[0] * (target_h / float(logo_dims[1]))))))
-                xl_img1.width = target_w
-                xl_img1.height = target_h
-            ws1.add_image(xl_img1, "I2")
-            ws1["I2"] = ""
+            ws1.add_image(_fit_xl_logo(88, 50), "B2")
+            ws1["B2"] = ""
         except Exception:
             pass
 
-    # Fila 3: Proyecto (B3:H3) y Fecha (I3:J3)
-    ws1.merge_cells("C3:H3")
-    ws1["B3"] = "Proyecto:"
-    ws1["B3"].font = f_meta_lbl
-    ws1["B3"].fill = fill_meta_lbl
-    ws1["B3"].alignment = align_right
+    # Fila 2: Proyecto (C2:H2) y Fecha (I2:J2)
+    ws1["C2"] = "Proyecto:"
+    ws1["C2"].font = f_meta_lbl
+    ws1["C2"].fill = fill_meta_lbl
+    ws1["C2"].alignment = align_left
 
-    ws1["C3"] = proyecto
-    ws1["C3"].font = f_title
-    ws1["C3"].alignment = align_left
+    ws1.merge_cells("D2:H2")
+    ws1["D2"] = proyecto
+    ws1["D2"].font = f_title
+    ws1["D2"].alignment = align_left
 
-    ws1["I3"] = "Fecha:"
-    ws1["I3"].font = f_meta_lbl
-    ws1["I3"].fill = fill_meta_lbl
-    ws1["I3"].alignment = align_right
+    ws1.merge_cells("I2:J2")
+    ws1["I2"] = fecha
+    ws1["I2"].font = f_meta_lbl
+    ws1["I2"].fill = fill_meta_val
+    ws1["I2"].alignment = align_center
 
-    ws1["J3"] = fecha
-    ws1["J3"].font = f_meta_lbl
-    ws1["J3"].fill = fill_meta_val
-    ws1["J3"].alignment = align_center
-
-    for c_idx in range(2, 11):
+    for c_idx in range(3, 11):
         c_let = get_column_letter(c_idx)
-        if c_idx in range(3, 9):
-            ws1[f"{c_let}3"].fill = fill_meta_val
-        ws1[f"{c_let}3"].border = border_cell
+        if c_idx in range(4, 9):
+            ws1[f"{c_let}2"].fill = fill_meta_val
+        ws1[f"{c_let}2"].border = border_cell
 
-    # Fila 4: Cliente (B4:H4) y TC (I4:J4)
-    ws1.merge_cells("C4:H4")
-    ws1["B4"] = "Cliente:"
-    ws1["B4"].font = f_meta_lbl
-    ws1["B4"].fill = fill_meta_lbl
-    ws1["B4"].alignment = align_right
-
-    ws1["C4"] = cliente
-    ws1["C4"].font = f_title
+    # Fila 4: Cliente (C4:H4) y TC (I4:J4)
+    ws1["C4"] = "Cliente:"
+    ws1["C4"].font = f_meta_lbl
+    ws1["C4"].fill = fill_meta_lbl
     ws1["C4"].alignment = align_left
+
+    ws1.merge_cells("D4:H4")
+    ws1["D4"] = cliente
+    ws1["D4"].font = f_title
+    ws1["D4"].alignment = align_left
 
     ws1["I4"] = "TC:"
     ws1["I4"].font = f_meta_lbl
@@ -1488,17 +1511,17 @@ def generar_plantilla_cotizacion_venti(
     ws1["J4"] = float(tc)
     ws1["J4"].font = f_title
     ws1["J4"].fill = fill_meta_val
-    ws1["J4"].number_format = '"S/ "0.00'
+    ws1["J4"].number_format = "0.00"
     ws1["J4"].alignment = align_center
 
-    for c_idx in range(2, 11):
+    for c_idx in range(3, 11):
         c_let = get_column_letter(c_idx)
-        if c_idx in range(3, 9):
+        if c_idx in range(4, 9):
             ws1[f"{c_let}4"].fill = fill_meta_val
         ws1[f"{c_let}4"].border = border_cell
 
     headers_h1 = [
-        ("B", "Ítem"),
+        ("B", ""),
         ("C", "Descripción"),
         ("D", "Moneda"),
         ("E", "Unidad"),
@@ -1645,7 +1668,7 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"D{row_gg}"] = "Soles"
     ws1[f"D{row_gg}"].alignment = align_center
     ws1[f"F{row_gg}"] = gg_dec
-    ws1[f"F{row_gg}"].number_format = "0.0%"
+    ws1[f"F{row_gg}"].number_format = FMT_PCT_DASH
     ws1[f"F{row_gg}"].alignment = align_center
     if gg_monto_fijo is not None and float(gg_monto_fijo) > 0:
         ws1[f"H{row_gg}"] = float(gg_monto_fijo)
@@ -1664,7 +1687,7 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"D{row_gestion}"] = "Soles"
     ws1[f"D{row_gestion}"].alignment = align_center
     ws1[f"F{row_gestion}"] = ges_dec
-    ws1[f"F{row_gestion}"].number_format = "0.0%"
+    ws1[f"F{row_gestion}"].number_format = FMT_PCT_DASH
     ws1[f"F{row_gestion}"].alignment = align_center
     if gestion_monto_fijo is not None and float(gestion_monto_fijo) > 0:
         ws1[f"H{row_gestion}"] = float(gestion_monto_fijo)
@@ -1683,7 +1706,7 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"D{row_igv}"] = "Soles"
     ws1[f"D{row_igv}"].alignment = align_center
     ws1[f"F{row_igv}"] = 0.18 if incluir_igv else 0.0
-    ws1[f"F{row_igv}"].number_format = "0%"
+    ws1[f"F{row_igv}"].number_format = FMT_INT_PCT_DASH
     ws1[f"F{row_igv}"].alignment = align_center
     ws1[f"H{row_igv}"] = f"=IF(ISNUMBER(F{row_igv}),(I{row_subtotal_casco}+H{row_gg}+H{row_gestion})*F{row_igv},0)"
     ws1[f"H{row_igv}"].number_format = FMT_SOLES
@@ -1693,9 +1716,30 @@ def generar_plantilla_cotizacion_venti(
         ws1[f"{c_let}{row_igv}"].font = f_footer
         ws1[f"{c_let}{row_igv}"].border = border_cell
 
-    # Fila TOTAL Soles
+    # Fila TOTAL Soles + Logo inferior en B[row_total]:B[row_usd] (Formato Venti)
     row_total = row_igv + 1
+    row_usd = row_total + 1
+    ws1.row_dimensions[row_total].height = 22
+    ws1.row_dimensions[row_usd].height = 22
+
+    ws1.merge_cells(f"B{row_total}:B{row_usd}")
+    ws1[f"B{row_total}"] = nom_estudio.upper() if nom_estudio else ""
+    ws1[f"B{row_total}"].font = f_banner_sub
+    ws1[f"B{row_total}"].alignment = align_center
+    ws1[f"B{row_total}"].fill = fill_logo_box
+    ws1[f"B{row_total}"].border = border_cell
+    ws1[f"B{row_usd}"].fill = fill_logo_box
+    ws1[f"B{row_usd}"].border = border_closing
+
+    if logo_png:
+        try:
+            ws1.add_image(_fit_xl_logo(88, 38), f"B{row_total}")
+            ws1[f"B{row_total}"] = ""
+        except Exception:
+            pass
+
     ws1[f"C{row_total}"] = "TOTAL"
+    ws1[f"C{row_total}"].alignment = align_left
     ws1[f"D{row_total}"] = "Soles"
     ws1[f"D{row_total}"].alignment = align_center
     ws1[f"I{row_total}"] = f"=I{row_subtotal_casco}+H{row_gg}+H{row_gestion}+H{row_igv}"
@@ -1704,21 +1748,20 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"J{row_total}"] = f"=IFERROR(I{row_total}/I{row_subtotal_casco},0)"
     ws1[f"J{row_total}"].number_format = "0.0%"
     ws1[f"J{row_total}"].alignment = align_center
-    for c_idx in range(2, 11):
+    for c_idx in range(3, 11):
         c_let = get_column_letter(c_idx)
         ws1[f"{c_let}{row_total}"].font = f_total
         ws1[f"{c_let}{row_total}"].fill = fill_total
         ws1[f"{c_let}{row_total}"].border = border_cell
 
-    # Fila TOTAL Dólares integrada simétricamente al cuadro
-    row_usd = row_total + 1
-    ws1[f"C{row_usd}"] = "TOTAL (USD)"
+    # Fila Dólares (Formato Venti: Col C vacía, Col D = "Dólares", Col I = USD)
+    ws1[f"C{row_usd}"] = ""
     ws1[f"D{row_usd}"] = "Dólares"
     ws1[f"D{row_usd}"].alignment = align_center
     ws1[f"I{row_usd}"] = f"=IFERROR(I{row_total}/J4,0)"
     ws1[f"I{row_usd}"].number_format = FMT_USD
     ws1[f"I{row_usd}"].alignment = align_right
-    for c_idx in range(2, 11):
+    for c_idx in range(3, 11):
         c_let = get_column_letter(c_idx)
         ws1[f"{c_let}{row_usd}"].font = f_usd
         ws1[f"{c_let}{row_usd}"].fill = fill_usd
@@ -1726,7 +1769,7 @@ def generar_plantilla_cotizacion_venti(
 
     col_widths_h1 = {
         "A": 3,
-        "B": 11,
+        "B": 14,
         "C": 44,
         "D": 12,
         "E": 10,
@@ -1761,15 +1804,15 @@ def generar_plantilla_cotizacion_venti(
 
     ws2["B1"] = "Proyecto:"
     ws2["B1"].alignment = align_right
-    ws2["C1"] = "=Presupuesto!C3"
+    ws2["C1"] = "=Presupuesto!D2"
     ws2["I1"] = "Fecha:"
     ws2["I1"].alignment = align_right
-    ws2["J1"] = "=Presupuesto!J3"
+    ws2["J1"] = "=Presupuesto!I2"
     ws2["J1"].alignment = align_center
 
     ws2["B2"] = "Cliente:"
     ws2["B2"].alignment = align_right
-    ws2["C2"] = "=Presupuesto!C4"
+    ws2["C2"] = "=Presupuesto!D4"
     ws2["I2"] = "TC:"
     ws2["I2"].alignment = align_right
     ws2["J2"] = "=Presupuesto!J4"
@@ -1938,23 +1981,20 @@ def generar_plantilla_cotizacion_venti(
     return out.getvalue()
 
 
-def exportar_proyecto_a_formato_venti(
+def _construir_payload_presupuesto_export(
     proy_name: str,
     tc: float = None,
     gg_pct_override: float = None,
     gestion_pct_override: float = None,
     incluir_igv: bool = None,
-    brand_color: str = None,
-    studio_name: str = None,
-    logo_bytes: bytes = None,
-) -> bytes:
-    """
-    Exporta el presupuesto actual del proyecto en COTA a un archivo Excel (.xlsx)
-    listo para compartir con el cliente, aplicando la marca, color y logo del Estudio.
-    """
+) -> dict:
+    """Recopila partidas, tareas y totales actualizados del proyecto para exportar a Excel o PDF."""
     totales = recalcular_totales_presupuesto_proyecto(proy_name)
     params = obtener_parametros_presupuesto_proyecto(proy_name)
     tc_final = tc if tc is not None else params["tc"]
+    if tc_final <= 0:
+        tc_final = 3.42
+
     gg_final = gg_pct_override if gg_pct_override is not None else (totales["gg_pct"] / 100.0)
     ges_final = gestion_pct_override if gestion_pct_override is not None else (totales["utilidades_pct"] / 100.0)
     igv_final = incluir_igv if incluir_igv is not None else params["incluir_igv"]
@@ -1974,6 +2014,8 @@ def exportar_proyecto_a_formato_venti(
     df_tasks = st.session_state.get("tasks", pd.DataFrame())
 
     partidas_precargadas = []
+    subtotal_casco = 0.0
+
     if not parts_proy.empty:
         for idx_p, (_, p_r) in enumerate(parts_proy.iterrows(), start=1):
             p_nom_raw = safe_str(p_r.get("Nombre_Partida", f"Partida {idx_p}"))
@@ -1983,7 +2025,11 @@ def exportar_proyecto_a_formato_venti(
             monto_pact = safe_float(pinfo_m["Monto_Pactado"].iloc[0], 0.0) if not pinfo_m.empty else 0.0
 
             tasks_m = df_tasks[(df_tasks["Proyecto"] == proy_name) & (df_tasks["Partida"] == p_nom_raw)] if not df_tasks.empty else pd.DataFrame()
+            if not tasks_m.empty and "Orden" in tasks_m.columns:
+                tasks_m = tasks_m.sort_values(by="Orden", kind="stable")
+
             subitems = []
+            subtot_p_calc = 0.0
             if not tasks_m.empty:
                 for idx_t, (_, t_r) in enumerate(tasks_m.iterrows(), start=1):
                     cod_item = f"{idx_p}.{idx_t:02d}"
@@ -1996,8 +2042,12 @@ def exportar_proyecto_a_formato_venti(
                         t_met = 1.0
                     t_ppto = safe_float(t_r.get("Presupuesto", 0.0), 0.0)
                     t_vu = safe_float(t_r.get("Valor_Unitario", 0.0), 0.0)
+                    es_usd_t = any(d in t_mon.lower() for d in ["dolar", "dólar", "usd", "$"])
                     if t_vu <= 0 and t_ppto > 0:
-                        t_vu = round(t_ppto / t_met, 2)
+                        t_vu = round(t_ppto / (t_met * tc_final), 2) if es_usd_t else round(t_ppto / t_met, 2)
+                    vp_moneda = round(t_met * t_vu, 2)
+                    vp_soles = round(vp_moneda * (tc_final if es_usd_t else 1.0), 2)
+                    subtot_p_calc += vp_soles
 
                     subitems.append({
                         "codigo": cod_item,
@@ -2006,8 +2056,11 @@ def exportar_proyecto_a_formato_venti(
                         "unidad": t_und,
                         "metrado": t_met,
                         "valor_unitario": t_vu,
+                        "valor_parcial": vp_moneda,
+                        "parcial_soles": vp_soles,
                     })
             else:
+                subtot_p_calc = monto_pact
                 subitems.append({
                     "codigo": f"{idx_p}.01",
                     "descripcion": p_nom_clean if monto_pact > 0 else "",
@@ -2015,30 +2068,421 @@ def exportar_proyecto_a_formato_venti(
                     "unidad": "glb",
                     "metrado": 1.0,
                     "valor_unitario": monto_pact if monto_pact > 0 else None,
+                    "valor_parcial": monto_pact,
+                    "parcial_soles": monto_pact,
                 })
 
+            subtot_p_round = round(subtot_p_calc, 2)
+            subtotal_casco += subtot_p_round
             partidas_precargadas.append({
                 "codigo": str(idx_p),
                 "nombre": p_nom_clean,
-                "monto_pactado": monto_pact,
+                "monto_pactado": subtot_p_round,
                 "subitems": subitems,
             })
 
+    subtotal_casco = round(subtotal_casco, 2)
+    for part in partidas_precargadas:
+        part["mix_pct"] = round((part["monto_pactado"] / subtotal_casco * 100.0), 1) if subtotal_casco > 0 else 0.0
+
+    gg_dec = float(gg_final) / 100.0 if float(gg_final) > 1.0 else float(gg_final)
+    ges_dec = float(ges_final) / 100.0 if float(ges_final) > 1.0 else float(ges_final)
+    gg_monto = float(gg_fijo) if (gg_fijo is not None and float(gg_fijo) > 0) else redondear_arriba_10(subtotal_casco * gg_dec)
+    util_monto = float(ges_fijo) if (ges_fijo is not None and float(ges_fijo) > 0) else redondear_arriba_100(subtotal_casco * ges_dec)
+    gg_pct_eff = round((gg_monto / subtotal_casco * 100.0), 1) if (gg_fijo is not None and subtotal_casco > 0) else round(gg_dec * 100.0, 1)
+    util_pct_eff = round((util_monto / subtotal_casco * 100.0), 1) if (ges_fijo is not None and subtotal_casco > 0) else round(ges_dec * 100.0, 1)
+
+    base_imp = subtotal_casco + gg_monto + util_monto
+    igv_monto = round(base_imp * 0.18, 2) if igv_final else 0.0
+    total_soles = round(base_imp + igv_monto, 2)
+    total_usd = round(total_soles / tc_final, 2) if tc_final > 0 else 0.0
+
+    return {
+        "proyecto": proy_name,
+        "cliente": cliente,
+        "fecha": fecha,
+        "tc": tc_final,
+        "gg_final": gg_final,
+        "ges_final": ges_final,
+        "igv_final": igv_final,
+        "gg_fijo": gg_fijo,
+        "ges_fijo": ges_fijo,
+        "partidas_precargadas": partidas_precargadas,
+        "subtotal_casco": subtotal_casco,
+        "gg_pct_eff": gg_pct_eff,
+        "gg_monto": gg_monto,
+        "util_pct_eff": util_pct_eff,
+        "util_monto": util_monto,
+        "igv_monto": igv_monto,
+        "presupuesto_total": total_soles,
+        "presupuesto_dolares": total_usd,
+    }
+
+
+def exportar_proyecto_a_formato_venti(
+    proy_name: str,
+    tc: float = None,
+    gg_pct_override: float = None,
+    gestion_pct_override: float = None,
+    incluir_igv: bool = None,
+    brand_color: str = None,
+    studio_name: str = None,
+    logo_bytes: bytes = None,
+) -> bytes:
+    """
+    Exporta el presupuesto actual del proyecto en COTA a un archivo Excel (.xlsx)
+    siguiendo el formato de Venti con el color y logo del Estudio.
+    """
+    payload = _construir_payload_presupuesto_export(
+        proy_name=proy_name,
+        tc=tc,
+        gg_pct_override=gg_pct_override,
+        gestion_pct_override=gestion_pct_override,
+        incluir_igv=incluir_igv,
+    )
+    partidas = payload["partidas_precargadas"]
     return generar_plantilla_cotizacion_venti(
-        proyecto=proy_name,
-        cliente=cliente,
-        tc=tc_final,
-        fecha=fecha,
-        partidas_precargadas=partidas_precargadas if partidas_precargadas else None,
-        gg_pct=gg_final,
-        gestion_pct=ges_final,
-        incluir_igv=igv_final,
+        proyecto=payload["proyecto"],
+        cliente=payload["cliente"],
+        tc=payload["tc"],
+        fecha=payload["fecha"],
+        partidas_precargadas=partidas if partidas else None,
+        gg_pct=payload["gg_final"],
+        gestion_pct=payload["ges_final"],
+        incluir_igv=payload["igv_final"],
         brand_color=brand_color,
         studio_name=studio_name,
         logo_bytes=logo_bytes,
-        gg_monto_fijo=gg_fijo,
-        gestion_monto_fijo=ges_fijo,
+        gg_monto_fijo=payload["gg_fijo"],
+        gestion_monto_fijo=payload["ges_fijo"],
     )
+
+
+def exportar_presupuesto_pdf(
+    proy_name: str,
+    tc: float = None,
+    gg_pct_override: float = None,
+    gestion_pct_override: float = None,
+    incluir_igv: bool = None,
+    brand_color: str = None,
+    studio_name: str = None,
+    logo_bytes: bytes = None,
+) -> bytes:
+    """
+    Exporta el presupuesto del proyecto a PDF horizontal (Landscape A4) replicando
+    el mismo formato de Venti con el color y logo del Estudio.
+    """
+    from fpdf import FPDF
+    from cota.pdf import safe_pdf_str
+    from cota.utils import aclarar_hex_color, hex_a_rgb, normalizar_hex_color, obtener_marca_estudio, preparar_logo_png_bytes
+
+    payload = _construir_payload_presupuesto_export(
+        proy_name=proy_name,
+        tc=tc,
+        gg_pct_override=gg_pct_override,
+        gestion_pct_override=gestion_pct_override,
+        incluir_igv=incluir_igv,
+    )
+
+    marca = obtener_marca_estudio()
+    brand_hex_full = normalizar_hex_color(brand_color or marca.get("brand_color", "#C85A32"))
+    b_r, b_g, b_b = hex_a_rgb(brand_hex_full)
+    s_r, s_g, s_b = hex_a_rgb(aclarar_hex_color(brand_hex_full, 0.88))
+    lum = 0.299 * b_r + 0.587 * b_g + 0.114 * b_b
+    txt_on_brand = (38, 35, 32) if lum > 185 else (255, 255, 255)
+    nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "")).strip()
+
+    if logo_bytes is not None:
+        logo_png, logo_dims = preparar_logo_png_bytes(logo_bytes)
+    else:
+        logo_png = marca.get("logo_png_bytes")
+        logo_dims = marca.get("logo_size")
+
+    class VentiBudgetPDF(FPDF):
+        def footer(self):
+            self.set_y(-11)
+            self.set_font("Helvetica", "I", 7.5)
+            self.set_text_color(110, 102, 94)
+            brand_lbl = safe_pdf_str(nom_estudio) if nom_estudio else "COTA"
+            self.cell(0, 6, f"Pagina {self.page_no()}/{{nb}}  -  {brand_lbl}", align="C")
+
+    pdf = VentiBudgetPDF(orientation="L", unit="mm", format="A4")
+    pdf.alias_nb_pages()
+    pdf.set_auto_page_break(auto=False)
+    pdf.set_margins(10, 10, 10)
+    pdf.add_page()
+    pdf.set_y(10)
+
+    margin_x = 10.0
+    page_bottom = 194.0
+    w_item = 20.0
+    w_desc = 115.0
+    w_mon = 18.0
+    w_und = 14.0
+    w_met = 18.0
+    w_vu = 26.0
+    w_vp = 26.0
+    w_sub = 26.0
+    w_mix = 14.0
+    widths_all = [w_item, w_desc, w_mon, w_und, w_met, w_vu, w_vp, w_sub, w_mix]
+
+    def _draw_logo_box(x: float, y: float, w: float, h: float):
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_draw_color(208, 201, 189)
+        pdf.rect(x, y, w, h, style="DF")
+        if logo_png:
+            try:
+                if logo_dims and logo_dims[0] > 0 and logo_dims[1] > 0:
+                    ratio = min((w - 2.4) / float(logo_dims[0]), (h - 2.0) / float(logo_dims[1]))
+                    draw_w = float(logo_dims[0]) * ratio
+                    draw_h = float(logo_dims[1]) * ratio
+                else:
+                    draw_h = h - 2.4
+                    draw_w = draw_h * 2.0
+                    if draw_w > w - 2.4:
+                        draw_w = w - 2.4
+                img_x = x + (w - draw_w) / 2.0
+                img_y = y + (h - draw_h) / 2.0
+                pdf.image(io.BytesIO(logo_png), x=img_x, y=img_y, w=draw_w, h=draw_h)
+                return
+            except Exception:
+                pass
+        if nom_estudio:
+            pdf.set_font("Helvetica", "B", 7.5)
+            pdf.set_text_color(b_r, b_g, b_b)
+            pdf.set_xy(x, y + (h - 4.0) / 2.0)
+            pdf.cell(w, 4.0, safe_pdf_str(nom_estudio.upper())[:12], align="C")
+
+    def _wrap_lines(txt: str, max_w: float) -> list[str]:
+        clean = " ".join(str(txt or "").split())
+        if not clean:
+            return [""]
+        words = clean.split(" ")
+        lines = []
+        cur = words[0]
+        for w_tok in words[1:]:
+            cand = f"{cur} {w_tok}"
+            if pdf.get_string_width(cand) <= max_w:
+                cur = cand
+            else:
+                lines.append(cur)
+                cur = w_tok
+        lines.append(cur)
+        return lines
+
+    def _draw_table_header():
+        y_hdr = pdf.get_y()
+        hdr_h = 9.0
+        pdf.set_fill_color(b_r, b_g, b_b)
+        pdf.set_text_color(*txt_on_brand)
+        pdf.set_draw_color(208, 201, 189)
+        pdf.set_font("Helvetica", "B", 7.8)
+
+        headers_spec = [
+            (w_item, ""),
+            (w_desc, "Descripción"),
+            (w_mon, "Moneda"),
+            (w_und, "Unidad"),
+            (w_met, "Metrado"),
+            (w_vu, "Valor\nUnitario"),
+            (w_vp, "Valor\nParcial"),
+            (w_sub, "Sub Total (S/.)"),
+            (w_mix, "Mix"),
+        ]
+        cx = margin_x
+        for cw, htxt in headers_spec:
+            pdf.rect(cx, y_hdr, cw, hdr_h, style="DF")
+            if "\n" in htxt:
+                parts_h = htxt.split("\n", 1)
+                pdf.set_xy(cx, y_hdr + 1.0)
+                pdf.cell(cw, 3.5, safe_pdf_str(parts_h[0]), align="C")
+                pdf.set_xy(cx, y_hdr + 4.5)
+                pdf.cell(cw, 3.5, safe_pdf_str(parts_h[1]), align="C")
+            else:
+                pdf.set_xy(cx, y_hdr + 2.5)
+                pdf.cell(cw, 4.0, safe_pdf_str(htxt), align="C")
+            cx += cw
+        pdf.set_xy(margin_x, y_hdr + hdr_h)
+
+    # 1. Encabezado Venti (Filas 2..4: Logo izquierda, Proyecto/Fecha arriba, Cliente/TC abajo)
+    y_top = 10.0
+    _draw_logo_box(margin_x, y_top, w_item, 15.0)
+
+    x_meta = margin_x + w_item
+    w_lbl_meta = 24.0
+    w_val_meta = w_desc + w_mon + w_und + w_met + w_vu + w_vp - w_lbl_meta
+
+    pdf.set_draw_color(208, 201, 189)
+    # Fila Proyecto + Fecha
+    pdf.set_xy(x_meta, y_top)
+    pdf.set_fill_color(239, 236, 230)
+    pdf.set_text_color(38, 35, 32)
+    pdf.set_font("Helvetica", "B", 8.5)
+    pdf.cell(w_lbl_meta, 6.2, safe_pdf_str("Proyecto:"), border=1, align="L", fill=True)
+    pdf.set_fill_color(255, 255, 255)
+    pdf.cell(w_val_meta, 6.2, safe_pdf_str(payload["proyecto"])[:85], border=1, align="L", fill=True)
+    pdf.set_font("Helvetica", "B", 8.0)
+    pdf.cell(w_sub + w_mix, 6.2, safe_pdf_str(payload["fecha"]), border=1, align="C", fill=True)
+
+    # Fila Cliente + TC (tras espacio 2.6mm)
+    y_cli = y_top + 8.8
+    pdf.set_xy(x_meta, y_cli)
+    pdf.set_fill_color(239, 236, 230)
+    pdf.set_font("Helvetica", "B", 8.5)
+    pdf.cell(w_lbl_meta, 6.2, safe_pdf_str("Cliente:"), border=1, align="L", fill=True)
+    pdf.set_fill_color(255, 255, 255)
+    pdf.set_font("Helvetica", "", 8.5)
+    pdf.cell(w_val_meta, 6.2, safe_pdf_str(payload["cliente"])[:85], border=1, align="L", fill=True)
+    pdf.set_fill_color(239, 236, 230)
+    pdf.set_font("Helvetica", "B", 8.0)
+    pdf.cell(w_sub, 6.2, safe_pdf_str("TC:"), border=1, align="R", fill=True)
+    pdf.set_fill_color(255, 255, 255)
+    pdf.cell(w_mix, 6.2, f"{payload['tc']:.2f}", border=1, align="C", fill=True)
+
+    pdf.set_xy(margin_x, y_top + 15.0)
+    _draw_table_header()
+
+    def _draw_row_cells(vals: list[str], aligns: list[str], fill_rgb: tuple, text_rgb: tuple, bold: bool, desc_text: str):
+        pdf.set_font("Helvetica", "B" if bold else "", 7.6)
+        desc_lines = _wrap_lines(safe_pdf_str(desc_text), w_desc - 3.0)
+        row_h = max(5.6, len(desc_lines) * 4.1 + 1.5)
+        if pdf.get_y() + row_h > page_bottom:
+            pdf.add_page()
+            _draw_table_header()
+            pdf.set_font("Helvetica", "B" if bold else "", 7.6)
+
+        y0 = pdf.get_y()
+        cx = margin_x
+        pdf.set_fill_color(*fill_rgb)
+        pdf.set_text_color(*text_rgb)
+        pdf.set_draw_color(208, 201, 189)
+        for idx_c, (cw, val_s, al) in enumerate(zip(widths_all, vals, aligns)):
+            pdf.rect(cx, y0, cw, row_h, style="DF")
+            if idx_c == 1:
+                pdf.set_xy(cx + 1.5, y0 + 0.8)
+                pdf.multi_cell(cw - 3.0, 4.1, "\n".join(desc_lines), border=0, align="L")
+            elif val_s:
+                pdf.set_xy(cx + 1.0, y0 + (row_h - 4.0) / 2.0)
+                pdf.cell(cw - 2.0, 4.0, safe_pdf_str(val_s), border=0, align=al)
+            cx += cw
+        pdf.set_xy(margin_x, y0 + row_h)
+
+    # 2. Filas de Partidas y Tareas
+    for part in payload["partidas_precargadas"]:
+        sub_p_str = f"S/ {part['monto_pactado']:,.2f}"
+        mix_p_str = f"{part.get('mix_pct', 0.0):.1f}%"
+        _draw_row_cells(
+            vals=[str(part["codigo"]), "", "", "", "", "", "", sub_p_str, mix_p_str],
+            aligns=["C", "L", "C", "C", "C", "R", "R", "R", "C"],
+            fill_rgb=(s_r, s_g, s_b),
+            text_rgb=(38, 35, 32),
+            bold=True,
+            desc_text=part["nombre"],
+        )
+        for sub in part["subitems"]:
+            t_mon = safe_str(sub.get("moneda", "Soles")) or "Soles"
+            es_usd = any(d in t_mon.lower() for d in ["dolar", "dólar", "usd", "$"])
+            pref_m = "$ " if es_usd else "S/ "
+            t_met = safe_float(sub.get("metrado", 1.0), 1.0)
+            t_vu = sub.get("valor_unitario", None)
+            vu_str = f"{pref_m}{safe_float(t_vu, 0.0):,.2f}" if (t_vu is not None and safe_float(t_vu, 0.0) > 0) else ""
+            vp_val = safe_float(sub.get("valor_parcial", 0.0), 0.0)
+            vp_str = f"{pref_m}{vp_val:,.2f}"
+            _draw_row_cells(
+                vals=[
+                    str(sub.get("codigo", "")),
+                    "",
+                    t_mon,
+                    safe_str(sub.get("unidad", "glb")),
+                    f"{t_met:,.2f}",
+                    vu_str,
+                    vp_str,
+                    "",
+                    "",
+                ],
+                aligns=["C", "L", "C", "C", "C", "R", "R", "R", "C"],
+                fill_rgb=(255, 255, 255),
+                text_rgb=(38, 35, 32),
+                bold=False,
+                desc_text=sub.get("descripcion", ""),
+            )
+
+    # 3. Bloque de Cierre Venti (Subtotal Casco, GG, Gestión, IGV, [logo]+TOTAL, Dólares)
+    if pdf.get_y() + 38.0 > page_bottom:
+        pdf.add_page()
+        _draw_table_header()
+
+    sub_casco = payload["subtotal_casco"]
+    mix_casco_str = "100.0%" if sub_casco > 0 else "0.0%"
+    _draw_row_cells(
+        vals=["", "", "Soles", "", "", "", "", f"S/ {sub_casco:,.2f}", mix_casco_str],
+        aligns=["C", "L", "C", "C", "C", "R", "R", "R", "C"],
+        fill_rgb=(239, 236, 230),
+        text_rgb=(38, 35, 32),
+        bold=True,
+        desc_text="SUB TOTAL (Casco)",
+    )
+
+    gg_f_str = f"{payload['gg_pct_eff']:g}%" if payload["gg_pct_eff"] > 0 else "-%"
+    _draw_row_cells(
+        vals=["", "", "Soles", "", gg_f_str, "", f"S/ {payload['gg_monto']:,.2f}", "", ""],
+        aligns=["C", "L", "C", "C", "C", "R", "R", "R", "C"],
+        fill_rgb=(255, 255, 255),
+        text_rgb=(38, 35, 32),
+        bold=True,
+        desc_text="Gastos generales",
+    )
+
+    ges_f_str = f"{payload['util_pct_eff']:g}%" if payload["util_pct_eff"] > 0 else "-%"
+    _draw_row_cells(
+        vals=["", "", "Soles", "", ges_f_str, "", f"S/ {payload['util_monto']:,.2f}", "", ""],
+        aligns=["C", "L", "C", "C", "C", "R", "R", "R", "C"],
+        fill_rgb=(255, 255, 255),
+        text_rgb=(38, 35, 32),
+        bold=True,
+        desc_text="Gestión y supervisión de obras",
+    )
+
+    igv_f_str = "18%" if payload["igv_final"] else "-%"
+    _draw_row_cells(
+        vals=["", "", "Soles", "", igv_f_str, "", f"S/ {payload['igv_monto']:,.2f}", "", ""],
+        aligns=["C", "L", "C", "C", "C", "R", "R", "R", "C"],
+        fill_rgb=(255, 255, 255),
+        text_rgb=(38, 35, 32),
+        bold=True,
+        desc_text="IGV",
+    )
+
+    # Fila TOTAL (Soles) + Dólares con [logo] en Col B a la izquierda
+    y_tot = pdf.get_y()
+    h_tot = 6.8
+    _draw_logo_box(margin_x, y_tot, w_item, h_tot * 2.0)
+
+    # Fila TOTAL Soles en Color de Marca del Estudio
+    pdf.set_xy(x_meta, y_tot)
+    pdf.set_fill_color(b_r, b_g, b_b)
+    pdf.set_text_color(*txt_on_brand)
+    pdf.set_draw_color(208, 201, 189)
+    pdf.set_font("Helvetica", "B", 8.0)
+    tot_mix_str = f"{(payload['presupuesto_total'] / sub_casco * 100.0):.1f}%" if sub_casco > 0 else "0.0%"
+    pdf.cell(w_desc, h_tot, safe_pdf_str("TOTAL"), border=1, align="L", fill=True)
+    pdf.cell(w_mon, h_tot, "Soles", border=1, align="C", fill=True)
+    pdf.cell(w_und + w_met + w_vu + w_vp, h_tot, "", border=1, align="C", fill=True)
+    pdf.cell(w_sub, h_tot, f"S/ {payload['presupuesto_total']:,.2f}", border=1, align="R", fill=True)
+    pdf.cell(w_mix, h_tot, tot_mix_str, border=1, align="C", fill=True)
+
+    # Fila Dólares (Col C vacía, Col D = Dólares, Col I = USD) en tinta suave del Estudio
+    pdf.set_xy(x_meta, y_tot + h_tot)
+    pdf.set_fill_color(s_r, s_g, s_b)
+    pdf.set_text_color(38, 35, 32)
+    pdf.set_font("Helvetica", "B", 8.0)
+    pdf.cell(w_desc, h_tot, "", border=1, align="L", fill=True)
+    pdf.cell(w_mon, h_tot, safe_pdf_str("Dólares"), border=1, align="C", fill=True)
+    pdf.cell(w_und + w_met + w_vu + w_vp, h_tot, "", border=1, align="C", fill=True)
+    pdf.cell(w_sub, h_tot, f"$ {payload['presupuesto_dolares']:,.2f}", border=1, align="R", fill=True)
+    pdf.cell(w_mix, h_tot, "", border=1, align="C", fill=True)
+
+    return bytes(pdf.output())
 
 
 # ==========================================
@@ -3010,6 +3454,516 @@ def aplicar_cotizacion_a_proyecto(
 # 4. CUADRO DE PAGOS SEMANALES POR PARTIDA / CONTRATISTA (06. COBROS & FINANZAS)
 # ==========================================
 
+TIPOS_PAGO_CUADRO = ["Adelanto", "Valorización", "Liquidación"]
+
+
+def _normalizar_tipo_pago_cuadro(tipo_raw: str, col_name: str = "") -> str:
+    """Normaliza el tipo de pago del cuadro a Adelanto, Valorización o Liquidación."""
+    s = safe_str(tipo_raw).strip().lower()
+    if "adelant" in s:
+        return "Adelanto"
+    if "liquid" in s:
+        return "Liquidación"
+    if "valoriz" in s:
+        return "Valorización"
+    if "adelanto" in safe_str(col_name).lower():
+        return "Adelanto"
+    return "Valorización"
+
+
+def _normalizar_fecha_pago_iso(fecha_raw) -> str:
+    """Convierte una fecha a formato ISO YYYY-MM-DD (o fecha de hoy si está vacía)."""
+    if isinstance(fecha_raw, datetime.datetime):
+        return fecha_raw.date().strftime("%Y-%m-%d")
+    if isinstance(fecha_raw, datetime.date):
+        return fecha_raw.strftime("%Y-%m-%d")
+    s = safe_str(fecha_raw).strip()
+    if s:
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+            return s
+        for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%Y-%m-%d"):
+            try:
+                return datetime.datetime.strptime(s, fmt).date().strftime("%Y-%m-%d")
+            except Exception:
+                pass
+    return datetime.date.today().strftime("%Y-%m-%d")
+
+
+def _formatear_fecha_ddmmyyyy(fecha_raw) -> str:
+    """Formatea una fecha a DD/MM/YYYY."""
+    iso_s = _normalizar_fecha_pago_iso(fecha_raw)
+    try:
+        return datetime.datetime.strptime(iso_s, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except Exception:
+        return iso_s
+
+
+def _normalizar_col_pago_name(col_raw: str, cols_pago: list[str] | None = None) -> str:
+    """Normaliza nombres de columnas semanales ('S1'/'Semana 1' -> 'SEMANA 1', 'ADELANTO 1' -> 'ADELANTO 1')."""
+    s = safe_str(col_raw).strip()
+    if not s:
+        return ""
+    s_up = s.upper()
+    if cols_pago and s_up in cols_pago:
+        return s_up
+    if "adelanto" in s.lower():
+        m_a = re.search(r"(\d+)", s)
+        return f"ADELANTO {int(m_a.group(1))}" if m_a else "ADELANTO 1"
+    m = re.match(r"^(?:SEMANA|SEM\.?|S)\s*(\d+)$", s, flags=re.IGNORECASE)
+    if m:
+        return f"SEMANA {int(m.group(1))}"
+    if cols_pago:
+        for c in cols_pago:
+            if c.upper() == s_up:
+                return c
+    return s_up
+
+
+def _normalizar_detalle_pagos_celda(raw_list, col_name: str = "") -> list[dict]:
+    """Normaliza la lista de pagos registrados en una celda (contratista, tipo, fecha, monto, nota)."""
+    if not isinstance(raw_list, list):
+        return []
+    out = []
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        monto_v = round(max(0.0, safe_float(item.get("monto", item.get("Monto", 0.0)), 0.0)), 2)
+        contra_v = safe_str(item.get("contratista", item.get("Contratista", ""))).strip()
+        if monto_v <= 0.0 and not contra_v:
+            continue
+        pid = safe_str(item.get("id", "")).strip() or f"pg_{uuid.uuid4().hex[:8]}"
+        tipo_v = _normalizar_tipo_pago_cuadro(item.get("tipo", item.get("Tipo", "")), col_name)
+        fecha_v = _normalizar_fecha_pago_iso(item.get("fecha", item.get("Fecha", "")))
+        nota_v = safe_str(item.get("nota", item.get("Nota", ""))).strip()
+        out.append({
+            "id": pid,
+            "contratista": contra_v,
+            "tipo": tipo_v,
+            "fecha": fecha_v,
+            "monto": monto_v,
+            "nota": nota_v,
+        })
+    return out
+
+
+def _extraer_contratista_de_notas(notas_txt: str) -> str:
+    """Extrae el contratista sugerido desde notas tipo 'Contratista: Nombre'."""
+    s = safe_str(notas_txt).strip()
+    m = re.search(r"Contratista\s*:\s*([^|\n]+)", s, flags=re.IGNORECASE)
+    return m.group(1).strip() if m else ""
+
+
+def obtener_contratistas_disponibles_proyecto(proy_name: str, data_cuadro: dict | None = None) -> list[str]:
+    """Retorna la lista ordenada y sin duplicados de contratistas disponibles para el proyecto."""
+    candidatos = []
+    df_m = st.session_state.get("maestro", pd.DataFrame())
+    if df_m is not None and not df_m.empty and "ID_Contratista" in df_m.columns:
+        candidatos.extend(df_m["ID_Contratista"].dropna().astype(str).tolist())
+
+    df_t = st.session_state.get("tasks", pd.DataFrame())
+    if df_t is not None and not df_t.empty and "Proyecto" in df_t.columns and "Contratista" in df_t.columns:
+        candidatos.extend(df_t[df_t["Proyecto"] == proy_name]["Contratista"].dropna().astype(str).tolist())
+
+    df_pi = st.session_state.get("p_info", pd.DataFrame())
+    if df_pi is not None and not df_pi.empty and "Proyecto" in df_pi.columns and "Contratista" in df_pi.columns:
+        candidatos.extend(df_pi[df_pi["Proyecto"] == proy_name]["Contratista"].dropna().astype(str).tolist())
+
+    if isinstance(data_cuadro, dict):
+        for f_d in list(data_cuadro.get("filas_contratistas", [])) + [
+            data_cuadro.get("fila_gestion", {}),
+            data_cuadro.get("fila_gg", {}),
+        ]:
+            if not isinstance(f_d, dict):
+                continue
+            c_not = _extraer_contratista_de_notas(f_d.get("Notas", ""))
+            if c_not:
+                candidatos.append(c_not)
+            pd_map = f_d.get("Pagos_Detalle", {})
+            if isinstance(pd_map, dict):
+                for lst_p in pd_map.values():
+                    if isinstance(lst_p, list):
+                        for p in lst_p:
+                            if isinstance(p, dict) and safe_str(p.get("contratista", "")).strip():
+                                candidatos.append(safe_str(p.get("contratista", "")).strip())
+
+    vistos = set()
+    resultado = []
+    for raw_c in candidatos:
+        c_s = safe_str(raw_c).strip()
+        if not c_s or c_s.lower() in ("none", "nan", "ninguno", "ninguna", "sin contratistas"):
+            continue
+        k = c_s.lower()
+        if k not in vistos:
+            vistos.add(k)
+            resultado.append(c_s)
+    return resultado
+
+
+def obtener_pagos_semana(data_cuadro: dict, col_semana: str | None = None) -> list[dict]:
+    """
+    Retorna la lista plana de pagos registrados en el Cuadro de Pagos para una semana específica
+    o para todas las semanas si `col_semana` es None o 'ALL'.
+    """
+    if not isinstance(data_cuadro, dict):
+        return []
+    num_sem = max(1, min(30, int(data_cuadro.get("num_semanas", 5) or 5)))
+    cols_pago = obtener_columnas_pago_semanal(num_sem)
+
+    if col_semana and str(col_semana).strip().upper() != "ALL":
+        c_norm = _normalizar_col_pago_name(col_semana, cols_pago)
+        target_cols = [c_norm] if c_norm else []
+    else:
+        target_cols = list(cols_pago)
+
+    filas_iter = []
+    for idx_f, f_c in enumerate(data_cuadro.get("filas_contratistas", [])):
+        if isinstance(f_c, dict):
+            part_s = safe_str(f_c.get("Partida", "")).strip()
+            desc_s = safe_str(f_c.get("Descripcion", "")).strip()
+            lbl = (
+                f"{part_s} — {desc_s}"
+                if (part_s and desc_s and part_s.upper() not in desc_s.upper())
+                else (desc_s or part_s or f"Partida {idx_f + 1}")
+            )
+            filas_iter.append(("contratista", idx_f, lbl, f_c))
+    if isinstance(data_cuadro.get("fila_gestion"), dict):
+        filas_iter.append(("gestion", 0, "Gestión y supervisión de obras", data_cuadro["fila_gestion"]))
+    if isinstance(data_cuadro.get("fila_gg"), dict):
+        filas_iter.append(("gg", 0, "Gastos Generales", data_cuadro["fila_gg"]))
+
+    pagos_out = []
+    for r_type, r_idx, lbl_row, f_d in filas_iter:
+        mon_s = safe_str(f_d.get("Moneda", "Soles")) or "Soles"
+        es_usd = any(d in mon_s.lower() for d in ("dolar", "dólar", "usd", "$"))
+        mon_canon = "Dólares" if es_usd else "Soles"
+        pref = "$ " if es_usd else "S/ "
+        pd_map = f_d.get("Pagos_Detalle", {})
+        if not isinstance(pd_map, dict):
+            continue
+        for c_k in target_cols:
+            lst = _normalizar_detalle_pagos_celda(pd_map.get(c_k, []), c_k)
+            for p in lst:
+                pagos_out.append({
+                    "row_type": r_type,
+                    "row_idx": r_idx,
+                    "partida": lbl_row,
+                    "semana": c_k,
+                    "semana_label": etiqueta_export_columna_pago(c_k),
+                    "semana_short": etiqueta_corta_columna_pago(c_k),
+                    "moneda": mon_canon,
+                    "pref": pref,
+                    "id": p["id"],
+                    "contratista": p["contratista"],
+                    "tipo": p["tipo"],
+                    "fecha": p["fecha"],
+                    "fecha_fmt": _formatear_fecha_ddmmyyyy(p["fecha"]),
+                    "monto": float(p["monto"]),
+                    "nota": p["nota"],
+                })
+    return pagos_out
+
+
+def resumen_contratistas_semana(data_cuadro: dict, col_semana: str | None = None) -> list[dict]:
+    """
+    Agrupa los pagos de la semana (o de todas las semanas) por contratista y moneda
+    para el resumen 'a quién hacer los pagos' (solo contratista y monto).
+    """
+    pagos = obtener_pagos_semana(data_cuadro, col_semana)
+    if not pagos:
+        return []
+
+    monedas_por_contratista: dict[str, set[str]] = {}
+    agrupado: dict[tuple[str, str], float] = {}
+    orden: list[tuple[str, str]] = []
+
+    for p in pagos:
+        c_nom = safe_str(p.get("contratista", "")).strip() or "Sin contratista asignado"
+        mon = p.get("moneda", "Soles")
+        key = (c_nom, mon)
+        monedas_por_contratista.setdefault(c_nom, set()).add(mon)
+        if key not in agrupado:
+            agrupado[key] = 0.0
+            orden.append(key)
+        agrupado[key] = round(agrupado[key] + safe_float(p.get("monto", 0.0), 0.0), 2)
+
+    res = []
+    for c_nom, mon in orden:
+        m_val = agrupado[(c_nom, mon)]
+        if m_val <= 0:
+            continue
+        pref = "$ " if mon == "Dólares" else "S/ "
+        etq_con = f"{c_nom} ({'USD' if mon == 'Dólares' else 'S/'})" if len(monedas_por_contratista.get(c_nom, set())) > 1 else c_nom
+        res.append({
+            "contratista": etq_con,
+            "moneda": mon,
+            "pref": pref,
+            "monto": m_val,
+        })
+    return res
+
+
+def _resolver_semanas_resumen_export(data_cuadro: dict, semana_resumen: str | None = None) -> list[str]:
+    """Determina qué semana(s) mostrar en el bloque de resumen al exportar a Excel/PDF."""
+    num_sem = max(1, min(30, int(data_cuadro.get("num_semanas", 5) or 5)))
+    cols_pago = obtener_columnas_pago_semanal(num_sem)
+    semanas_con_pagos = [c for c in cols_pago if obtener_pagos_semana(data_cuadro, c)]
+
+    sem_req = semana_resumen if semana_resumen is not None else safe_str(data_cuadro.get("semana_resumen", "")).strip()
+    if sem_req:
+        if sem_req.upper() == "ALL":
+            return semanas_con_pagos
+        c_norm = _normalizar_col_pago_name(sem_req, cols_pago)
+        if c_norm in cols_pago:
+            return [c_norm]
+
+    sem_act = safe_str(data_cuadro.get("semana_activa", "")).strip()
+    if sem_act:
+        if sem_act.upper() == "ALL":
+            return semanas_con_pagos
+        c_norm = _normalizar_col_pago_name(sem_act, cols_pago)
+        if c_norm in semanas_con_pagos:
+            return [c_norm]
+
+    return semanas_con_pagos
+
+
+def _resolver_fila_target_cuadro(
+    filas_c: list[dict], fila_ges: dict, fila_gg: dict, r_type: str, r_idx: int
+) -> dict | None:
+    """Retorna el diccionario de la fila destino en el Cuadro de Pagos."""
+    if r_type == "contratista":
+        if 0 <= r_idx < len(filas_c):
+            return filas_c[r_idx]
+        return None
+    if r_type == "gestion":
+        return fila_ges
+    if r_type == "gg":
+        return fila_gg
+    return None
+
+
+def registrar_pago_en_fila_dict(
+    target: dict,
+    col_w: str,
+    contratista: str,
+    tipo: str,
+    fecha,
+    monto: float,
+    nota: str = "",
+    preserve_legacy: bool = True,
+    replace_all: bool = False,
+    payment_id: str = "",
+) -> dict | None:
+    """Agrega un pago detallado en una celda de fila del cuadro y actualiza la suma de esa celda."""
+    monto_v = round(max(0.0, safe_float(monto, 0.0)), 2)
+    if target is None or not col_w or monto_v <= 0:
+        return None
+    pago_new = {
+        "id": safe_str(payment_id).strip() or f"pg_{uuid.uuid4().hex[:8]}",
+        "contratista": safe_str(contratista).strip(),
+        "tipo": _normalizar_tipo_pago_cuadro(tipo, col_w),
+        "fecha": _normalizar_fecha_pago_iso(fecha),
+        "monto": monto_v,
+        "nota": safe_str(nota).strip(),
+    }
+    pd_map = dict(target.get("Pagos_Detalle", {}) if isinstance(target.get("Pagos_Detalle"), dict) else {})
+    cur_list = _normalizar_detalle_pagos_celda(pd_map.get(col_w, []), col_w)
+    prev_val = round(safe_float(target.get(col_w, 0.0), 0.0), 2)
+    if not replace_all and not cur_list and prev_val > 0 and preserve_legacy:
+        cur_list.append({
+            "id": f"pg_{uuid.uuid4().hex[:8]}",
+            "contratista": _extraer_contratista_de_notas(target.get("Notas", "")) or "Registro previo",
+            "tipo": _normalizar_tipo_pago_cuadro("", col_w),
+            "fecha": _normalizar_fecha_pago_iso(""),
+            "monto": prev_val,
+            "nota": "",
+        })
+    if replace_all:
+        cur_list = [pago_new]
+    else:
+        cur_list.append(pago_new)
+    pd_map[col_w] = cur_list
+    target["Pagos_Detalle"] = pd_map
+    target[col_w] = round(sum(p["monto"] for p in cur_list), 2)
+    return pago_new
+
+
+def _agregar_resumen_pagos_semanal_excel(
+    ws,
+    row_usd: int,
+    data_cuadro: dict,
+    fill_header,
+    fill_subhdr,
+    f_header,
+    f_subhdr,
+    f_row,
+    f_total,
+    border_cell,
+    border_closing,
+    align_left,
+    align_right,
+    align_center,
+    fmt_soles: str,
+    fmt_usd: str,
+    semana_resumen: str | None = None,
+):
+    """Agrega al Excel exportado la tabla resumen semanal por contratista (solo Contratista y Monto)."""
+    semanas_target = _resolver_semanas_resumen_export(data_cuadro, semana_resumen=semana_resumen)
+    if not semanas_target:
+        return
+
+    explicit_sem = bool(semana_resumen or safe_str(data_cuadro.get("semana_resumen", "")).strip())
+    curr_r = row_usd + 2
+    for col_w in semanas_target:
+        items = resumen_contratistas_semana(data_cuadro, col_w)
+        if not items and not explicit_sem:
+            continue
+
+        lbl_w = etiqueta_export_columna_pago(col_w).upper()
+        ws.merge_cells(f"B{curr_r}:C{curr_r}")
+        ws.row_dimensions[curr_r].height = 22
+        ws[f"B{curr_r}"] = f"RESUMEN DE PAGOS — {lbl_w}"
+        for c_i in (2, 3):
+            c_let = get_column_letter(c_i)
+            ws[f"{c_let}{curr_r}"].fill = fill_header
+            ws[f"{c_let}{curr_r}"].font = f_header
+            ws[f"{c_let}{curr_r}"].alignment = align_center
+            ws[f"{c_let}{curr_r}"].border = border_cell
+
+        curr_r += 1
+        ws.row_dimensions[curr_r].height = 20
+        ws[f"B{curr_r}"] = "Contratista"
+        ws[f"C{curr_r}"] = "Monto"
+        for c_i, aln in ((2, align_left), (3, align_right)):
+            c_let = get_column_letter(c_i)
+            ws[f"{c_let}{curr_r}"].fill = fill_subhdr
+            ws[f"{c_let}{curr_r}"].font = f_subhdr
+            ws[f"{c_let}{curr_r}"].alignment = aln
+            ws[f"{c_let}{curr_r}"].border = border_cell
+
+        if not items:
+            curr_r += 1
+            ws.merge_cells(f"B{curr_r}:C{curr_r}")
+            ws[f"B{curr_r}"] = "Sin pagos registrados en esta semana"
+            ws[f"B{curr_r}"].font = f_row
+            ws[f"B{curr_r}"].alignment = align_center
+            ws[f"B{curr_r}"].border = border_closing
+            ws[f"C{curr_r}"].border = border_closing
+            curr_r += 2
+            continue
+
+        first_item_r = curr_r + 1
+        monedas_set = set()
+        for it in items:
+            curr_r += 1
+            mon_i = it.get("moneda", "Soles")
+            monedas_set.add(mon_i)
+            fmt_i = fmt_usd if mon_i == "Dólares" else fmt_soles
+            ws[f"B{curr_r}"] = it["contratista"]
+            ws[f"B{curr_r}"].font = f_row
+            ws[f"B{curr_r}"].alignment = align_left
+            ws[f"B{curr_r}"].border = border_cell
+
+            ws[f"C{curr_r}"] = float(it["monto"])
+            ws[f"C{curr_r}"].font = f_row
+            ws[f"C{curr_r}"].alignment = align_right
+            ws[f"C{curr_r}"].number_format = fmt_i
+            ws[f"C{curr_r}"].border = border_cell
+
+        last_item_r = curr_r
+        if len(monedas_set) == 1:
+            curr_r += 1
+            only_mon = next(iter(monedas_set))
+            fmt_tot = fmt_usd if only_mon == "Dólares" else fmt_soles
+            ws[f"B{curr_r}"] = "TOTAL SEMANA"
+            ws[f"B{curr_r}"].font = f_header
+            ws[f"B{curr_r}"].fill = fill_header
+            ws[f"B{curr_r}"].alignment = align_left
+            ws[f"B{curr_r}"].border = border_closing
+
+            ws[f"C{curr_r}"] = f"=SUM(C{first_item_r}:C{last_item_r})"
+            ws[f"C{curr_r}"].font = f_total
+            ws[f"C{curr_r}"].fill = fill_header
+            ws[f"C{curr_r}"].alignment = align_right
+            ws[f"C{curr_r}"].number_format = fmt_tot
+            ws[f"C{curr_r}"].border = border_closing
+
+        curr_r += 2
+
+
+def _agregar_resumen_pagos_semanal_pdf(
+    pdf,
+    data_cuadro: dict,
+    brand_rgb: tuple[int, int, int],
+    dark_rgb: tuple[int, int, int],
+    semana_resumen: str | None = None,
+):
+    """Agrega al PDF exportado el resumen semanal por contratista (solo Contratista y Monto)."""
+    from cota.pdf import safe_pdf_str
+
+    semanas_target = _resolver_semanas_resumen_export(data_cuadro, semana_resumen=semana_resumen)
+    if not semanas_target:
+        return
+
+    explicit_sem = bool(semana_resumen or safe_str(data_cuadro.get("semana_resumen", "")).strip())
+    b_r, b_g, b_b = brand_rgb
+    d_r, d_g, d_b = dark_rgb
+    w_con = 85.0
+    w_mto = 40.0
+    w_tot_blk = w_con + w_mto
+
+    for col_w in semanas_target:
+        items = resumen_contratistas_semana(data_cuadro, col_w)
+        if not items and not explicit_sem:
+            continue
+
+        need_h = 18.0 + max(1, len(items)) * 5.8
+        if pdf.get_y() + need_h > 195.0:
+            pdf.add_page()
+        else:
+            pdf.ln(5)
+
+        lbl_w = etiqueta_export_columna_pago(col_w).upper()
+        pdf.set_fill_color(b_r, b_g, b_b)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_draw_color(d_r, d_g, d_b)
+        pdf.set_font("Helvetica", "B", 8.5)
+        pdf.cell(w_tot_blk, 6.5, safe_pdf_str(f"RESUMEN DE PAGOS - {lbl_w}"), border=1, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+        pdf.set_fill_color(38, 35, 32)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", 8.0)
+        pdf.cell(w_con, 5.5, safe_pdf_str("Contratista"), border=1, align="L", fill=True)
+        pdf.cell(w_mto, 5.5, safe_pdf_str("Monto"), border=1, align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+        if not items:
+            pdf.set_fill_color(255, 255, 255)
+            pdf.set_text_color(110, 102, 94)
+            pdf.set_font("Helvetica", "I", 8.0)
+            pdf.cell(w_tot_blk, 5.5, safe_pdf_str("Sin pagos registrados en esta semana"), border=1, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
+            continue
+
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_text_color(38, 35, 32)
+        pdf.set_font("Helvetica", "", 8.0)
+        monedas_set = set()
+        sum_uniq = 0.0
+        for it in items:
+            mon_i = it.get("moneda", "Soles")
+            monedas_set.add(mon_i)
+            sum_uniq += float(it["monto"])
+            pdf.cell(w_con, 5.5, safe_pdf_str(it["contratista"])[:52], border=1, align="L", fill=True)
+            pdf.cell(w_mto, 5.5, safe_pdf_str(f"{it['pref']}{it['monto']:,.2f}"), border=1, align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+        if len(monedas_set) == 1:
+            pref_u = "$ " if next(iter(monedas_set)) == "Dólares" else "S/ "
+            pdf.set_fill_color(b_r, b_g, b_b)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Helvetica", "B", 8.0)
+            pdf.cell(w_con, 5.8, safe_pdf_str("TOTAL SEMANA"), border=1, align="L", fill=True)
+            pdf.cell(w_mto, 5.8, safe_pdf_str(f"{pref_u}{sum_uniq:,.2f}"), border=1, align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+
 PARTIDAS_PAGOS_DEFAULT = [
     "OBRAS CIVILES",
     "INSTALACIONES E&S",
@@ -3058,6 +4012,20 @@ def _normalizar_fila_pago(fila: dict, cols_pago: list[str], desc_default: str = 
     for c in cols_pago:
         res[c] = round(safe_float(fila.get(c, 0.0), 0.0), 2)
     res["Notas"] = safe_str(fila.get("Notas", "")).strip()
+    raw_pd = fila.get("Pagos_Detalle", {})
+    pagos_detalle = {}
+    if isinstance(raw_pd, dict):
+        for k_raw, lst_raw in raw_pd.items():
+            k_norm = _normalizar_col_pago_name(k_raw, cols_pago)
+            if not k_norm:
+                continue
+            lst_norm = _normalizar_detalle_pagos_celda(lst_raw, k_norm)
+            if lst_norm:
+                pagos_detalle[k_norm] = lst_norm
+    res["Pagos_Detalle"] = pagos_detalle
+    for c in cols_pago:
+        if c in pagos_detalle and pagos_detalle[c]:
+            res[c] = round(sum(safe_float(p.get("monto", 0.0), 0.0) for p in pagos_detalle[c]), 2)
     raw_np = fila.get("Notas_Pagos", {})
     if isinstance(raw_np, dict):
         res["Notas_Pagos"] = {safe_str(k).strip(): safe_str(v).strip() for k, v in raw_np.items() if safe_str(v).strip()}
@@ -3235,6 +4203,7 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
             "filas_contratistas": filas_c,
             "fila_gestion": fila_ges,
             "fila_gg": fila_gg,
+            "semana_activa": safe_str(data_guardada.get("semana_activa", "")).strip(),
         }
         if sincronizar_partidas:
             guardar_cuadro_pagos_semanales_proyecto(proy_name, res_data)
@@ -3266,6 +4235,7 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
         "filas_contratistas": filas_c,
         "fila_gestion": _normalizar_fila_pago({"TOTAL": util_proy}, cols_pago, "Gestión y supervisión de obras"),
         "fila_gg": _normalizar_fila_pago({"TOTAL": gg_proy}, cols_pago, "Gastos Generales"),
+        "semana_activa": "",
     }
     return res_init
 
@@ -3283,9 +4253,11 @@ def obtener_pagado_por_partida_proyecto(proy_name: str) -> dict[str, float]:
     if df_parts.empty or "Proyecto" not in df_parts.columns:
         return resultado_pagado
 
+
     p_sub = df_parts[df_parts["Proyecto"] == proy_name]
     if p_sub.empty:
         return resultado_pagado
+
 
     data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
     res_calc = calcular_resumen_cuadro_pagos_semanales(data_cuadro)
@@ -3316,6 +4288,91 @@ def obtener_pagado_por_partida_proyecto(proy_name: str) -> dict[str, float]:
         resultado_pagado[p_raw] = round(pagado_cuadro + pagado_manual, 2)
 
     return resultado_pagado
+
+
+
+def obtener_utilidades_gestion_pagadas_proyecto(proy_name: str) -> float:
+    """
+    Retorna el monto total PAGADO en Soles de la fila 'Gestión y supervisión de obras'
+    en el Cuadro de Pagos Semanales del proyecto `proy_name`
+    (excluye columnas marcadas como 'Por Pagar').
+    """
+    if not proy_name:
+        return 0.0
+    data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+    res = calcular_resumen_cuadro_pagos_semanales(data_cuadro)
+    f_ges = res.get("fila_gestion", {})
+    pagado_val = safe_float(f_ges.get("PAGADO", 0.0), 0.0)
+    if pagado_val <= 0:
+        return 0.0
+    tc = safe_float(res.get("tc", 3.60), 3.60)
+    if tc <= 0:
+        tc = 3.60
+    mon = safe_str(f_ges.get("Moneda", "Soles")).lower()
+    es_usd = any(tok in mon for tok in ("dolar", "dólar", "usd", "$"))
+    return round(pagado_val * (tc if es_usd else 1.0), 2)
+
+
+def obtener_utilidades_recibidas_estudio(nombres_proyectos: list[str] | None = None) -> dict:
+    """
+    Calcula las utilidades totales recibidas del estudio y su desglose por proyecto,
+    sumando directamente los pagos registrados en la fila 'Gestión y supervisión de obras'
+    del Cuadro de Pagos Semanales más los ingresos registrados en `ingresos_socios`.
+    """
+    if nombres_proyectos is None:
+        df_p = st.session_state.get("proyectos", pd.DataFrame())
+        if isinstance(df_p, pd.DataFrame) and not df_p.empty and "Nombre" in df_p.columns:
+            mask_act = ~df_p["Archivado"].apply(to_bool) if "Archivado" in df_p.columns else pd.Series(True, index=df_p.index)
+            nombres_proyectos = df_p.loc[mask_act, "Nombre"].dropna().astype(str).tolist()
+        else:
+            nombres_proyectos = []
+
+    por_proyecto: dict[str, dict[str, float]] = {}
+    tot_gestion_pagado = 0.0
+    for p_nom in nombres_proyectos:
+        g_pag = obtener_utilidades_gestion_pagadas_proyecto(p_nom)
+        por_proyecto[p_nom] = {
+            "gestion_pagado": g_pag,
+            "ingresos_util": 0.0,
+            "ingresos_gg": 0.0,
+            "total_recibidas": g_pag,
+        }
+        tot_gestion_pagado = round(tot_gestion_pagado + g_pag, 2)
+
+    tot_ing_util = 0.0
+    tot_ing_gg = 0.0
+    df_ing = st.session_state.get("ingresos_socios", pd.DataFrame())
+    if isinstance(df_ing, pd.DataFrame) and not df_ing.empty and "Monto" in df_ing.columns:
+        valid_proys = set(nombres_proyectos) | {"General"}
+        df_sub = df_ing[df_ing["Proyecto"].isin(valid_proys)].copy() if "Proyecto" in df_ing.columns else df_ing.copy()
+        if not df_sub.empty:
+            cat_col = df_sub["Categoria"].astype(str) if "Categoria" in df_sub.columns else pd.Series("", index=df_sub.index)
+            montos = pd.to_numeric(df_sub["Monto"], errors="coerce").fillna(0.0)
+            mask_util = cat_col.str.contains("Utilidad|Honorario", case=False, na=False)
+            mask_gg = cat_col.str.contains("Gasto|Caja|GG", case=False, na=False)
+            tot_ing_util = round(float(montos.loc[mask_util].sum()), 2)
+            tot_ing_gg = round(float(montos.loc[mask_gg].sum()), 2)
+            if "Proyecto" in df_sub.columns:
+                for p_nom in nombres_proyectos:
+                    m_p = df_sub["Proyecto"] == p_nom
+                    u_p = round(float(montos.loc[m_p & mask_util].sum()), 2)
+                    gg_p = round(float(montos.loc[m_p & mask_gg].sum()), 2)
+                    otros_p = round(float(montos.loc[m_p & (~mask_util) & (~mask_gg)].sum()), 2)
+                    por_proyecto[p_nom]["ingresos_util"] = round(u_p + otros_p, 2)
+                    por_proyecto[p_nom]["ingresos_gg"] = gg_p
+                    por_proyecto[p_nom]["total_recibidas"] = round(
+                        por_proyecto[p_nom]["gestion_pagado"] + u_p + otros_p, 2
+                    )
+
+    total_util_recibidas = round(tot_gestion_pagado + tot_ing_util, 2)
+    return {
+        "total_utilidades_recibidas": total_util_recibidas,
+        "gestion_pagado_total": tot_gestion_pagado,
+        "ingresos_util_total": tot_ing_util,
+        "gg_cobrados_total": tot_ing_gg,
+        "total_recibidas_mas_gg": round(total_util_recibidas + tot_ing_gg, 2),
+        "por_proyecto": por_proyecto,
+    }
 
 
 def guardar_cuadro_pagos_semanales_proyecto(proy_name: str, data_cuadro: dict):
@@ -3372,10 +4429,10 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
     def _apply_single_edit(ed: dict):
         r_type = safe_str(ed.get("row_type", "contratista")).strip()
         r_idx = int(ed.get("row_idx", 0) or 0)
-        field = safe_str(ed.get("field", "")).strip()
+        field = safe_str(ed.get("field") or ed.get("col") or "").strip()
         val = ed.get("value")
-        has_nota_pago = "nota_pago" in ed
-        nota_pago_val = safe_str(ed.get("nota_pago", "")).strip()
+        has_nota_pago = ("nota_pago" in ed) or ("nota" in ed)
+        nota_pago_val = safe_str(ed.get("nota_pago") if "nota_pago" in ed else ed.get("nota", "")).strip()
 
         target = None
         if r_type == "contratista":
@@ -3388,6 +4445,9 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
 
         if target is None or not field:
             return
+
+        if "notas_row" in ed:
+            target["Notas"] = safe_str(ed.get("notas_row", "")).strip()
 
         if field in ("Descripcion", "Partida", "Notas", "Moneda"):
             if val is not None:
@@ -3415,7 +4475,104 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
                     np_map.pop(field, None)
                 target["Notas_Pagos"] = np_map
 
-    if action == "edit_cells":
+    def _sync_semana_activa(col_w: str):
+        if col_w:
+            data_cuadro["semana_activa"] = col_w
+            st.session_state[f"sel_sem_resumen_{proy_name}"] = col_w
+
+    def _build_pago_entry(src: dict, col_w: str, existing_id: str = "") -> dict:
+        return {
+            "id": existing_id or safe_str(src.get("id", "")).strip() or f"pg_{uuid.uuid4().hex[:8]}",
+            "contratista": safe_str(src.get("contratista", src.get("Contratista", ""))).strip(),
+            "tipo": _normalizar_tipo_pago_cuadro(src.get("tipo", src.get("Tipo", "")), col_w),
+            "fecha": _normalizar_fecha_pago_iso(src.get("fecha", src.get("Fecha", ""))),
+            "monto": round(max(0.0, safe_float(src.get("monto", src.get("Monto", 0.0)), 0.0)), 2),
+            "nota": safe_str(src.get("nota", src.get("Nota", ""))).strip(),
+        }
+
+    if action in ("add_payment", "replace_legacy_with_payment"):
+        r_type = safe_str(payload.get("row_type", "contratista")).strip()
+        r_idx = int(payload.get("row_idx", 0) or 0)
+        col_w = _normalizar_col_pago_name(payload.get("field") or payload.get("col") or "", cols_pago)
+        target = _resolver_fila_target_cuadro(filas_c, fila_ges, fila_gg, r_type, r_idx)
+        pago_new = _build_pago_entry(payload, col_w)
+        if target is not None and col_w in cols_pago and pago_new["monto"] > 0:
+            registrar_pago_en_fila_dict(
+                target=target,
+                col_w=col_w,
+                contratista=pago_new["contratista"],
+                tipo=pago_new["tipo"],
+                fecha=pago_new["fecha"],
+                monto=pago_new["monto"],
+                nota=pago_new["nota"],
+                preserve_legacy=bool(payload.get("preserve_legacy", True)),
+                replace_all=(action == "replace_legacy_with_payment"),
+                payment_id=pago_new["id"],
+            )
+            _sync_semana_activa(col_w)
+    elif action == "edit_payment":
+        r_type = safe_str(payload.get("row_type", "contratista")).strip()
+        r_idx = int(payload.get("row_idx", 0) or 0)
+        col_w = _normalizar_col_pago_name(payload.get("field") or payload.get("col") or "", cols_pago)
+        pid = safe_str(payload.get("payment_id") or payload.get("id") or "").strip()
+        target = _resolver_fila_target_cuadro(filas_c, fila_ges, fila_gg, r_type, r_idx)
+        if target is not None and col_w in cols_pago and pid:
+            pd_map = dict(target.get("Pagos_Detalle", {}) if isinstance(target.get("Pagos_Detalle"), dict) else {})
+            cur_list = _normalizar_detalle_pagos_celda(pd_map.get(col_w, []), col_w)
+            upd_list = []
+            for p in cur_list:
+                if p.get("id") == pid:
+                    upd = _build_pago_entry(payload, col_w, existing_id=pid)
+                    if upd["monto"] > 0:
+                        upd_list.append(upd)
+                else:
+                    upd_list.append(p)
+            if upd_list:
+                pd_map[col_w] = upd_list
+                target[col_w] = round(sum(p["monto"] for p in upd_list), 2)
+            else:
+                pd_map.pop(col_w, None)
+                target[col_w] = 0.0
+            target["Pagos_Detalle"] = pd_map
+            _sync_semana_activa(col_w)
+    elif action == "delete_payment":
+        r_type = safe_str(payload.get("row_type", "contratista")).strip()
+        r_idx = int(payload.get("row_idx", 0) or 0)
+        col_w = _normalizar_col_pago_name(payload.get("field") or payload.get("col") or "", cols_pago)
+        pid = safe_str(payload.get("payment_id") or payload.get("id") or "").strip()
+        target = _resolver_fila_target_cuadro(filas_c, fila_ges, fila_gg, r_type, r_idx)
+        if target is not None and col_w in cols_pago and pid:
+            pd_map = dict(target.get("Pagos_Detalle", {}) if isinstance(target.get("Pagos_Detalle"), dict) else {})
+            cur_list = _normalizar_detalle_pagos_celda(pd_map.get(col_w, []), col_w)
+            rem_list = [p for p in cur_list if p.get("id") != pid]
+            if rem_list:
+                pd_map[col_w] = rem_list
+                target[col_w] = round(sum(p["monto"] for p in rem_list), 2)
+            else:
+                pd_map.pop(col_w, None)
+                target[col_w] = 0.0
+            target["Pagos_Detalle"] = pd_map
+            _sync_semana_activa(col_w)
+    elif action == "clear_legacy_cell":
+        r_type = safe_str(payload.get("row_type", "contratista")).strip()
+        r_idx = int(payload.get("row_idx", 0) or 0)
+        col_w = _normalizar_col_pago_name(payload.get("field") or payload.get("col") or "", cols_pago)
+        target = _resolver_fila_target_cuadro(filas_c, fila_ges, fila_gg, r_type, r_idx)
+        if target is not None and col_w in cols_pago:
+            pd_map = dict(target.get("Pagos_Detalle", {}) if isinstance(target.get("Pagos_Detalle"), dict) else {})
+            pd_map.pop(col_w, None)
+            target["Pagos_Detalle"] = pd_map
+            target[col_w] = 0.0
+            _sync_semana_activa(col_w)
+    elif action == "select_week":
+        col_raw = safe_str(payload.get("col") or payload.get("semana") or "").strip()
+        if col_raw.upper() == "ALL":
+            _sync_semana_activa("ALL")
+        else:
+            col_w = _normalizar_col_pago_name(col_raw, cols_pago)
+            if col_w in cols_pago:
+                _sync_semana_activa(col_w)
+    elif action == "edit_cells":
         edits = payload.get("edits", [])
         if isinstance(edits, list):
             for ed_item in edits:
@@ -3433,7 +4590,7 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
             data_cuadro["cols_por_pagar"] = cols_pp
             st.session_state.pop(f"por_pagar_cols_{proy_name}", None)
     elif action == "add_row":
-        part_name = safe_str(payload.get("Partida", "")).strip() or (filas_c[-1].get("Partida", "General") if filas_c else "General")
+        part_name = safe_str(payload.get("Partida") or payload.get("partida") or "").strip() or (filas_c[-1].get("Partida", "General") if filas_c else "General")
         desc_name = safe_str(payload.get("Descripcion", "")).strip() or f"{part_name} — Nuevo Contratista"
         mon_name = safe_str(payload.get("Moneda", "Soles")).strip() or "Soles"
         tot_val = round(safe_float(payload.get("TOTAL", 0.0), 0.0), 2)
@@ -3795,8 +4952,18 @@ def exportar_cuadro_pagos_semanales_excel(
             ws[f"{c_let}{curr_r}"].alignment = align_right
             ws[f"{c_let}{curr_r}"].font = f_row_paid if (c_name not in cols_por_pagar) else f_row
             np_c = f_c.get("Notas_Pagos", {})
+            pd_c = f_c.get("Pagos_Detalle", {})
+            c_lines = []
+            if isinstance(pd_c, dict) and isinstance(pd_c.get(c_name), list):
+                pref_cm = "$ " if es_usd_c else "S/ "
+                for p_it in pd_c[c_name]:
+                    c_lines.append(
+                        f"- {p_it.get('contratista') or 'Sin contratista'} | {p_it.get('tipo', '')} | {_formatear_fecha_ddmmyyyy(p_it.get('fecha', ''))}: {pref_cm}{safe_float(p_it.get('monto', 0.0), 0.0):,.2f}"
+                    )
+            if c_lines and not (isinstance(np_c, dict) and c_name in np_c and np_c[c_name]):
+                ws[f"{c_let}{curr_r}"].comment = Comment("\n".join(c_lines), "Cota")
             if isinstance(np_c, dict) and c_name in np_c and np_c[c_name]:
-                ws[f"{c_let}{curr_r}"].comment = Comment(str(np_c[c_name]).strip(), "Cota")
+                ws[f"{c_let}{curr_r}"].comment = Comment("\n".join(c_lines + [str(np_c[c_name]).strip()]), "Cota")
 
         ws[f"{let_pagado}{curr_r}"] = _formula_pagado(curr_r)
         ws[f"{let_pagado}{curr_r}"].number_format = fmt_mon_c
@@ -3941,13 +5108,34 @@ def exportar_cuadro_pagos_semanales_excel(
     # Anchos de columna
     ws.column_dimensions["A"].width = 3
     ws.column_dimensions["B"].width = 32
-    ws.column_dimensions["C"].width = 12
+    ws.column_dimensions["C"].width = 18
     ws.column_dimensions["D"].width = 15
     for i_c in range(len(cols_pago)):
         ws.column_dimensions[get_column_letter(5 + i_c)].width = 14
     ws.column_dimensions[let_pagado].width = 15
     ws.column_dimensions[let_saldo].width = 15
     ws.column_dimensions[let_notas].width = 24
+
+    fill_subhdr = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
+    f_subhdr = Font(name=font_family, size=10, bold=True, color="262320")
+    _agregar_resumen_pagos_semanal_excel(
+        ws=ws,
+        row_usd=row_usd,
+        data_cuadro=data_cuadro,
+        fill_header=fill_header,
+        fill_subhdr=fill_subhdr,
+        f_header=f_header,
+        f_subhdr=f_subhdr,
+        f_row=f_row,
+        f_total=f_total,
+        border_cell=border_cell,
+        border_closing=border_closing,
+        align_left=align_left,
+        align_right=align_right,
+        align_center=align_center,
+        fmt_soles=FMT_SOLES,
+        fmt_usd=FMT_USD,
+    )
 
     out = io.BytesIO()
     wb.save(out)
@@ -4156,6 +5344,13 @@ def exportar_cuadro_pagos_semanales_pdf(
         pdf.set_text_color(255, 255, 255)
         pdf.cell(w_sal, 6.0, safe_pdf_str(_fmt_pdf_money(d_tot.get("SALDO", 0.0), pref_tot, False)), border=1, align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
 
+    _agregar_resumen_pagos_semanal_pdf(
+        pdf=pdf,
+        data_cuadro=data_cuadro,
+        brand_rgb=(b_r, b_g, b_b),
+        dark_rgb=(d_r, d_g, d_b),
+    )
+
     return bytes(pdf.output())
 
 
@@ -4246,6 +5441,8 @@ def parsear_cuadro_pagos_semanales(file_or_df, tc_default: float = 3.60) -> dict
         desc_low = desc.lower()
         mon_low = mon.lower()
 
+        if desc_low.startswith("resumen de pagos"):
+            break
         if "trabajos contratistas" in desc_low:
             continue
         if desc_low in ["sub total", "subtotal"]:
