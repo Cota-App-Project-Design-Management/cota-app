@@ -2419,3 +2419,27 @@ def test_cruces_contratistas_y_permitir_cruce():
     assert '"Permitir_Cruce": st.column_config.CheckboxColumn(' in tab_obra_code
 
 
+def test_python311_fstring_no_backslash_syntax():
+    import ast
+    import re
+
+    archivos = [
+        "D:/cota-app/app.py",
+        "D:/cota-app/cota/config.py",
+        "D:/cota-app/cota/utils.py",
+        "D:/cota-app/cota/db.py",
+        "D:/cota-app/cota/cotizacion.py",
+        "D:/cota-app/cota/pdf.py",
+        "D:/cota-app/cota/ui/styles.py",
+        "D:/cota-app/cota/ui/components.py",
+        "D:/cota-app/cota/ui/cuadro_pagos.py",
+        "D:/cota-app/cota/ui/views_main.py",
+        "D:/cota-app/cota/ui/views_project.py",
+    ]
+    for path in archivos:
+        with open(path, "r", encoding="utf-8") as f:
+            src = f.read()
+        ast.parse(src, filename=path)
+        assert 'payload_json.replace("</", "<\\/")' not in src
+
+

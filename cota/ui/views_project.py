@@ -2701,7 +2701,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
     <body style="margin:0; padding:0; overflow:hidden; background:transparent;">
     <script>
     (function() {{
-        const payload = {payload_json.replace("</", "<\\/")};
+        const payload = {payload_json.replace("</", "<" + chr(92) + "/")};
         const parentWin = window.parent;
         const parentDoc = parentWin.document;
         const safeId = payload.safeId;
