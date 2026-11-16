@@ -980,7 +980,10 @@ def test_dnd_column_compact_width():
 
     with open("D:/cota-app/cota/ui/views_main.py", "r", encoding="utf-8") as f:
         main_code = f.read()
-    assert '"📋 Pegar Tabla"' in main_code
+    assert '"➕ NUEVO PROYECTO"' in main_code
+    assert 'NUEVO PROYECTO DE DISEÑO' not in main_code
+    assert 'COTIZACIÓN / IMPORTAR PPTO.' not in main_code
+    assert 'show_cot_portafolio' not in main_code
     assert 'Gemini Spark' not in main_code
 
 

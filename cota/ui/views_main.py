@@ -42,22 +42,11 @@ from cota.db import (
 import importlib
 import cota.cotizacion
 try:
-    if (
-        not hasattr(cota.cotizacion, "aplicar_cotizacion_a_proyecto")
-        or not hasattr(cota.cotizacion, "obtener_utilidades_recibidas_estudio")
-    ):
+    if not hasattr(cota.cotizacion, "obtener_utilidades_recibidas_estudio"):
         importlib.reload(cota.cotizacion)
 except Exception:
     pass
-from cota.cotizacion import (
-    aplicar_cotizacion_a_proyecto,
-    obtener_utilidades_recibidas_estudio,
-    generar_plantilla_cotizacion_venti,
-    parsear_cotizacion_venti,
-    parsear_presupuesto_flexible,
-    redondear_arriba_10,
-    redondear_arriba_100,
-)
+from cota.cotizacion import obtener_utilidades_recibidas_estudio
 import cota.ui.components
 try:
     if not hasattr(cota.ui.components, "render_chat_notas_proyecto"):
@@ -366,8 +355,8 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
 
     st.divider()
 
-    # 2. Barra de herramientas: Nuevo Proyecto + Cotización / Importar Presupuesto + Buscador
-    col_new, col_cot, col_search = st.columns([2.6, 2.8, 4.6])
+    # 2. Barra de herramientas: Nuevo Proyecto + Buscador
+    col_new, col_search = st.columns([2.8, 7.2])
     banco_fases_estudio = obtener_banco_fases()
     nombres_banco_all = [f["Fase"] for f in banco_fases_estudio]
     nombres_banco_def = [f["Fase"] for f in banco_fases_estudio if f.get("Por_Defecto", True)]
@@ -375,7 +364,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
     tipos_cat = obtener_catalogo_estudio("tipos_proyecto") or TIPOS_PROYECTO
 
     with col_new:
-        with st.popover("➕ NUEVO PROYECTO DE DISEÑO", use_container_width=True):
+        with st.popover("➕ NUEVO PROYECTO", use_container_width=True):
             with st.form("form_nuevo_proy", clear_on_submit=True):
                 pn = st.text_input("Nombre / Código del Proyecto (Único)", placeholder="").strip()
                 sel_div = st.selectbox("Carpeta / Cliente", exist_divs + ["+ Crear Nueva Carpeta"])
@@ -450,287 +439,12 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                         st.success(f"Proyecto '{pn}' creado exitosamente con {len(fases_a_sembrar)} fase(s) activa(s).")
                         st.rerun()
 
-    with col_cot:
-        if st.button("📄 COTIZACIÓN / IMPORTAR PPTO.", use_container_width=True, key="btn_open_cot_portafolio"):
-            st.session_state["show_cot_portafolio"] = not st.session_state.get("show_cot_portafolio", False)
-
     with col_search:
         search_q = st.text_input(
             "Buscar proyecto o cliente:",
             placeholder="🔍 Filtrar por nombre de proyecto, cliente, tipo o ubicación...",
             label_visibility="collapsed"
         )
-
-    # Panel desplegable en Portafolio: Plantilla de Cotización e Importador Inteligente
-    if st.session_state.get("show_cot_portafolio", False):
-        with st.container(border=True):
-            ch_c1, ch_c2 = st.columns([8.5, 1.5])
-            with ch_c1:
-                st.markdown("#### 📄 FORMATO DE COTIZACIÓN E IMPORTADOR DE PRESUPUESTO")
-                st.caption("Descarga la plantilla oficial de cotización para que el cliente o el estudio la llene, e impórtala directamente a un proyecto para cargar automáticamente Partidas, Tareas, Presupuestos asignados, Gastos Generales y Utilidades.")
-            with ch_c2:
-                if st.button("✖ Cerrar", key="btn_close_cot_portafolio", use_container_width=True):
-                    st.session_state["show_cot_portafolio"] = False
-                    st.rerun()
-
-            col_dl_p, col_imp_p = st.columns([1, 1.4])
-            with col_dl_p:
-                st.markdown("##### 1. Descargar Plantilla de Cotización")
-                dl_p_nom = st.text_input("Nombre del Proyecto (opcional para cabecera)", placeholder="", key="dl_p_nom_port")
-                dl_c_nom = st.text_input("Cliente (opcional para cabecera)", placeholder="", key="dl_c_nom_port")
-
-                c_p1, c_p2, c_p3 = st.columns([1.1, 1.3, 1.3])
-                with c_p1:
-                    dl_tc = st.number_input("Tipo de Cambio (TC)", value=3.42, step=0.01, format="%.2f", key="dl_tc_port")
-                with c_p2:
-                    modo_gg_dl = st.radio(
-                        "Gastos Generales:",
-                        options=["pct", "monto"],
-                        format_func=lambda x: "% Casco" if x == "pct" else "Monto exacto (S/)",
-                        horizontal=True,
-                        key="rad_modo_gg_dl_port",
-                    )
-                    if modo_gg_dl == "pct":
-                        dl_gg_pct = st.number_input("% Gastos Gen.", value=2.0, min_value=0.0, max_value=100.0, step=0.5, format="%.1f", key="dl_gg_pct_port", help="Redondeo hacia arriba al múltiplo de 10")
-                        val_gg_export = dl_gg_pct / 100.0
-                    else:
-                        dl_gg_monto = st.number_input("Monto GG (S/)", value=0.0, min_value=0.0, step=10.0, format="%.2f", key="dl_gg_monto_port", help="Redondeo hacia arriba al múltiplo de 10")
-                        val_gg_export = dl_gg_monto
-                with c_p3:
-                    modo_util_dl = st.radio(
-                        "Gestión y Supervisión:",
-                        options=["pct", "monto"],
-                        format_func=lambda x: "% Casco" if x == "pct" else "Monto exacto (S/)",
-                        horizontal=True,
-                        key="rad_modo_util_dl_port",
-                    )
-                    if modo_util_dl == "pct":
-                        dl_ges_pct = st.number_input("% Gestión / Util.", value=15.0, min_value=0.0, max_value=100.0, step=0.5, format="%.1f", key="dl_ges_pct_port", help="Redondeo hacia arriba al múltiplo de 100")
-                        val_util_export = dl_ges_pct / 100.0
-                    else:
-                        dl_ges_monto = st.number_input("Monto Util. (S/)", value=0.0, min_value=0.0, step=100.0, format="%.2f", key="dl_ges_monto_port", help="Redondeo hacia arriba al múltiplo de 100")
-                        val_util_export = dl_ges_monto
-
-                dl_igv = st.checkbox("Incluir IGV (18%)", value=False, help="Si se marca, la plantilla aplicará 18% de IGV; si no, quedará en 0%.", key="dl_igv_port")
-
-                xlsx_template_bytes = generar_plantilla_cotizacion_venti(
-                    proyecto=dl_p_nom,
-                    cliente=dl_c_nom,
-                    tc=dl_tc,
-                    gg_pct=val_gg_export,
-                    gestion_pct=val_util_export,
-                    incluir_igv=dl_igv,
-                )
-                fname_clean = dl_p_nom.strip().replace(" ", "_") if dl_p_nom.strip() else "COTA"
-                st.download_button(
-                    "📥 DESCARGAR FORMATO COTIZACIÓN (.XLSX)",
-                    data=xlsx_template_bytes,
-                    file_name=f"Formato_Cotizacion_{fname_clean}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    use_container_width=True,
-                    key="btn_dl_template_portafolio",
-                )
-
-            with col_imp_p:
-                st.markdown("##### 2. Importar Presupuesto (Excel / CSV / Pegar Tabla)")
-                modo_imp_port = st.radio(
-                    "Fuente del presupuesto:",
-                    options=["archivo", "texto"],
-                    format_func=lambda x: "📁 Subir archivo (.xlsx / .csv)" if x == "archivo" else "📋 Pegar Tabla",
-                    horizontal=True,
-                    key="rad_fuente_imp_port",
-                )
-                parsed_p = None
-                if modo_imp_port == "archivo":
-                    up_port_file = st.file_uploader(
-                        "Sube el archivo de presupuesto llenado:",
-                        type=["xlsx", "xls", "csv"],
-                        key="up_cot_file_portafolio",
-                    )
-                    if up_port_file is not None:
-                        parsed_p = parsear_presupuesto_flexible(up_port_file)
-                else:
-                    txt_spark_port = st.text_area(
-                        "Pega aquí la tabla del presupuesto (con Partidas, Tareas, Unidad, Metraje, V. Unitario, Valor Parcial):",
-                        height=150,
-                        placeholder="| Item | Descripción | Unidad | Metraje | V. Unitario | Valor Parcial |\n|---|---|---|---|---|---|\n| 1.0 | OBRAS PROVISIONALES | | | | |\n| 1.01 | Desmontaje y limpieza | glb | 1 | 1500 | 1500 |",
-                        key="txt_spark_portafolio",
-                    )
-                    if txt_spark_port and txt_spark_port.strip():
-                        parsed_p = parsear_presupuesto_flexible(txt_spark_port)
-
-                if parsed_p is not None and parsed_p.get("partidas"):
-                    st.markdown("---")
-                    st.markdown("###### ⚙️ Ajustar Parámetros de Gastos Generales y Utilidades")
-                    c_adj1, c_adj2, c_adj3, c_adj4 = st.columns([1.2, 1.2, 1.2, 1.0])
-                    with c_adj1:
-                        modo_gg_imp = st.radio(
-                            "Gastos Generales:",
-                            options=["pct", "monto"],
-                            format_func=lambda x: "% Casco" if x == "pct" else "Monto Fijo (S/)",
-                            horizontal=True,
-                            key="rad_modo_gg_imp_port",
-                        )
-                        if modo_gg_imp == "pct":
-                            val_gg_in = st.number_input("% GG", value=float(parsed_p.get("gg_pct", 2.0)), min_value=0.0, max_value=100.0, step=0.5, format="%.1f", key="val_gg_pct_imp_port")
-                            m_gg_calc = redondear_arriba_10(parsed_p["subtotal_casco"] * (val_gg_in / 100.0))
-                            pct_gg_calc = round((m_gg_calc / parsed_p["subtotal_casco"] * 100.0) if parsed_p["subtotal_casco"] > 0 else val_gg_in, 2)
-                            monto_fijo_gg_in = 0.0
-                        else:
-                            val_gg_monto = st.number_input("Monto GG (S/)", value=float(parsed_p.get("gg_monto", 0.0)), min_value=0.0, step=10.0, format="%.2f", key="val_gg_monto_imp_port")
-                            m_gg_calc = redondear_arriba_10(val_gg_monto)
-                            pct_gg_calc = round((m_gg_calc / parsed_p["subtotal_casco"] * 100.0) if parsed_p["subtotal_casco"] > 0 else 0.0, 2)
-                            monto_fijo_gg_in = m_gg_calc
-                    with c_adj2:
-                        modo_util_imp = st.radio(
-                            "Gestión y Supervisión:",
-                            options=["pct", "monto"],
-                            format_func=lambda x: "% Casco" if x == "pct" else "Monto Fijo (S/)",
-                            horizontal=True,
-                            key="rad_modo_util_imp_port",
-                        )
-                        if modo_util_imp == "pct":
-                            val_util_in = st.number_input("% Util.", value=float(parsed_p.get("utilidades_pct", 15.0)), min_value=0.0, max_value=100.0, step=0.5, format="%.1f", key="val_util_pct_imp_port")
-                            m_util_calc = redondear_arriba_100(parsed_p["subtotal_casco"] * (val_util_in / 100.0))
-                            pct_util_calc = round((m_util_calc / parsed_p["subtotal_casco"] * 100.0) if parsed_p["subtotal_casco"] > 0 else val_util_in, 2)
-                            monto_fijo_util_in = 0.0
-                        else:
-                            val_util_monto = st.number_input("Monto Util. (S/)", value=float(parsed_p.get("utilidades_monto", 0.0)), min_value=0.0, step=100.0, format="%.2f", key="val_util_monto_imp_port")
-                            m_util_calc = redondear_arriba_100(val_util_monto)
-                            pct_util_calc = round((m_util_calc / parsed_p["subtotal_casco"] * 100.0) if parsed_p["subtotal_casco"] > 0 else 0.0, 2)
-                            monto_fijo_util_in = m_util_calc
-                    with c_adj3:
-                        val_tc_imp = st.number_input("TC", value=float(parsed_p.get("tc", 3.42)), min_value=1.0, max_value=10.0, step=0.01, format="%.2f", key="val_tc_imp_port")
-                    with c_adj4:
-                        st.markdown("<div style='padding-top: 26px;'></div>", unsafe_allow_html=True)
-                        val_igv_imp = st.checkbox("IGV (18%)", value=bool(parsed_p.get("igv_pct", 0.0) > 0 or parsed_p.get("incluir_igv", False)), key="chk_igv_imp_port")
-
-                    # Recalcular valores según ajustes
-                    parsed_p["modo_gg"] = modo_gg_imp
-                    parsed_p["monto_fijo_gg"] = monto_fijo_gg_in
-                    parsed_p["gg_monto"] = m_gg_calc
-                    parsed_p["gg_pct"] = pct_gg_calc
-
-                    parsed_p["modo_util"] = modo_util_imp
-                    parsed_p["monto_fijo_util"] = monto_fijo_util_in
-                    parsed_p["utilidades_monto"] = m_util_calc
-                    parsed_p["utilidades_pct"] = pct_util_calc
-
-                    parsed_p["tc"] = val_tc_imp
-                    base_imp_p = parsed_p["subtotal_casco"] + m_gg_calc + m_util_calc
-                    parsed_p["igv_monto"] = round(base_imp_p * 0.18, 2) if val_igv_imp else 0.0
-                    parsed_p["igv_pct"] = 18.0 if val_igv_imp else 0.0
-                    parsed_p["incluir_igv"] = val_igv_imp
-                    parsed_p["presupuesto_total"] = round(base_imp_p + parsed_p["igv_monto"], 2)
-                    parsed_p["presupuesto_dolares"] = round(parsed_p["presupuesto_total"] / val_tc_imp, 2) if val_tc_imp > 0 else 0.0
-
-                    st.markdown(
-                        f"**Resumen detectado:** Sub Total Casco: `{format_currency(parsed_p['subtotal_casco'])}` · "
-                        f"Gastos Generales: `{format_currency(parsed_p['gg_monto'])}` ({parsed_p['gg_pct']:g}%) · "
-                        f"Gestión/Utilidades: `{format_currency(parsed_p['utilidades_monto'])}` ({parsed_p['utilidades_pct']:g}%) · "
-                        f"**TOTAL: `{format_currency(parsed_p['presupuesto_total'])}`** (USD {parsed_p['presupuesto_dolares']:,.2f})"
-                    )
-
-                    destino_opt = st.radio(
-                        "Destino de la importación:",
-                        options=["existente", "nuevo"] if nombres_act else ["nuevo"],
-                        format_func=lambda x: "🔄 Importar en un proyecto existente" if x == "existente" else "➕ Crear un proyecto nuevo con este presupuesto",
-                        horizontal=True,
-                        key="rad_dest_imp_port",
-                    )
-
-                    if destino_opt == "existente" and nombres_act:
-                        proy_dest = st.selectbox("Selecciona el Proyecto:", nombres_act, key="sel_proy_dest_port")
-                    else:
-                        proy_dest = st.text_input(
-                            "Nombre del Nuevo Proyecto:",
-                            value=parsed_p.get("proyecto") or "",
-                            placeholder="ej. Proyecto Galeon 129",
-                            key="txt_new_proy_dest_port",
-                        ).strip()
-                        cli_dest = st.text_input(
-                            "Cliente:",
-                            value=parsed_p.get("cliente") or "",
-                            key="txt_new_cli_dest_port",
-                        ).strip()
-
-                    # Permitir nombrar las partidas detectadas antes de importar
-                    nombres_ov_port = {}
-                    for p_it in parsed_p["partidas"]:
-                        p_c = p_it["codigo"]
-                        nombres_ov_port[p_c] = st.text_input(
-                            f"Partida {p_c} ({format_currency(p_it['monto_pactado'])} · {len(p_it['tareas'])} tareas):",
-                            value=p_it["nombre_completo"],
-                            key=f"port_pnom_{p_c}",
-                        )
-
-                    todas_vac_p = all(
-                        (not p["tareas"] and p["monto_pactado"] == 0)
-                        for p in parsed_p["partidas"]
-                    ) if parsed_p["partidas"] else True
-
-                    if st.button("✅ IMPORTAR PRESUPUESTO AHORA", type="primary", use_container_width=True, key="btn_exec_imp_port"):
-                        if not proy_dest:
-                            st.error("Indica el nombre del proyecto para importar el presupuesto.")
-                        else:
-                            if destino_opt == "nuevo" or proy_dest not in st.session_state.proyectos["Nombre"].tolist():
-                                n_proy_dict = {
-                                    "Nombre": proy_dest,
-                                    "Encargado": lista_socios[0] if lista_socios else "Alvaro",
-                                    "Ubicación": "Lima",
-                                    "Estado": STATUS_PROYECTOS[0],
-                                    "Inicio": parsed_p.get("fecha") or fecha_hoy.strftime("%Y-%m-%d"),
-                                    "Fin": (fecha_hoy + datetime.timedelta(days=90)).strftime("%Y-%m-%d"),
-                                    "Color": "#C85A32",
-                                    "Presupuesto": parsed_p["presupuesto_total"],
-                                    "Utilidades": parsed_p["utilidades_monto"],
-                                    "GG_Presupuesto": parsed_p["gg_monto"],
-                                    "Archivado": False,
-                                    "Metodologia": "Diseño Interior",
-                                    "Division": "General",
-                                    "Tipo_Proyecto": TIPOS_PROYECTO[0],
-                                    "Num_Pisos": 0,
-                                    "Num_Sotanos": 0,
-                                    "Presupuesto_FFE": 0.0,
-                                    "Honorarios_Diseno": 0.0,
-                                    "Cliente": cli_dest if destino_opt == "nuevo" else parsed_p.get("cliente", ""),
-                                    "Notas": "",
-                                    "TC_Presupuesto": parsed_p.get("tc", 3.42),
-                                    "GG_Pct": parsed_p.get("gg_pct", 2.0),
-                                    "Utilidades_Pct": parsed_p.get("utilidades_pct", 15.0),
-                                    "Modo_GG": parsed_p.get("modo_gg", "pct"),
-                                    "Monto_Fijo_GG": parsed_p.get("monto_fijo_gg", 0.0),
-                                    "Modo_Utilidades": parsed_p.get("modo_util", "pct"),
-                                    "Monto_Fijo_Utilidades": parsed_p.get("monto_fijo_util", 0.0),
-                                    "Incluir_IGV": parsed_p.get("incluir_igv", False),
-                                }
-                                for col in COLS_PROY:
-                                    if col not in n_proy_dict:
-                                        n_proy_dict[col] = False if col in ['Archivado', 'Incluir_IGV'] else 0.0
-                                n_proy_df = pd.DataFrame([n_proy_dict])
-                                st.session_state.proyectos = pd.concat([st.session_state.proyectos, n_proy_df[COLS_PROY]], ignore_index=True)
-                                nuevas_f = sembrar_fases_default(proy_dest, fases_seleccionadas=nombres_banco_def)
-                                if "fases" not in st.session_state or st.session_state.fases.empty:
-                                    st.session_state.fases = nuevas_f
-                                else:
-                                    st.session_state.fases = pd.concat([st.session_state.fases, nuevas_f], ignore_index=True)
-
-                            res_p = aplicar_cotizacion_a_proyecto(
-                                proy_name=proy_dest,
-                                parsed_data=parsed_p,
-                                modo="reemplazar",
-                                actualizar_ficha=True,
-                                nombres_partidas_override=nombres_ov_port,
-                                incluir_partidas_vacias=todas_vac_p,
-                            )
-                            st.session_state["show_cot_portafolio"] = False
-                            st.session_state.proy_activo = proy_dest
-                            st.session_state.vista_actual = "proyecto"
-                            st.success(
-                                f"Presupuesto importado en '{proy_dest}': {res_p['partidas_importadas']} partidas y {res_p['tareas_importadas']} tareas."
-                            )
-                            st.rerun()
 
     p_vis = p_kpi_df.copy()
 
