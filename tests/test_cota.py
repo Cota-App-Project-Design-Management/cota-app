@@ -71,6 +71,8 @@ def test_sembrar_fases_default():
     assert "Cambios_Realizados" in df_fases.columns
     assert "Fecha_Ultimo_Cambio" in df_fases.columns
     assert all(df_fases['Proyecto'] == "Casa Prueba")
+    assert all(df_fases['Inicio'] == "")
+    assert all(df_fases['Fin'] == "")
 
 
 def test_parse_resumen_meet():
@@ -964,11 +966,21 @@ def test_gantt_hidden_by_default_code():
 def test_dnd_column_compact_width():
     with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f:
         code = f.read()
-    assert '"⠿": st.column_config.TextColumn(' in code
-    assert 'width=30' in code
-    assert 'alignment="center"' in code
-    # Verificar que no tenga help="..." que forzaba un icono "?" de ayuda ensanchando la cabecera
-    assert 'help="Mantén presionado el click en ⠿' not in code
+    tab_ppto_code = code.split("def _render_tab_presupuesto")[1].split("def _render_tab_entregables")[0]
+    assert '"Sel": st.column_config.CheckboxColumn(' in tab_ppto_code
+    assert 'width=48' in tab_ppto_code
+    assert '"##### ⚙️ Configuración de Presupuesto"' in tab_ppto_code
+    assert '"➕ Agregar Partida"' in tab_ppto_code
+    assert '"🗑️ Eliminar"' in tab_ppto_code
+    assert '"📋 Pegar Tabla"' in tab_ppto_code
+    assert '"⠿ Mover"' not in tab_ppto_code
+    assert 'Configuración de Estructura y Parámetros Financieros' not in tab_ppto_code
+    assert 'Gemini Spark' not in tab_ppto_code
+
+    with open("D:/cota-app/cota/ui/views_main.py", "r", encoding="utf-8") as f:
+        main_code = f.read()
+    assert '"📋 Pegar Tabla"' in main_code
+    assert 'Gemini Spark' not in main_code
 
 
 def test_redondeo_gg_y_utilidades():
@@ -1193,6 +1205,115 @@ def test_mover_tarea_presupuesto_y_edicion_tabla():
     aplicar_edicion_tabla_presupuesto_partida(base_k, widget_k, p_test, 1, part_nom)
     t_after3 = st.session_state["tasks"][st.session_state["tasks"]["Proyecto"] == p_test].reset_index(drop=True)
     assert "Demolición pisos" in t_after3.at[0, "Tarea"]
+
+
+def test_presupuesto_seleccion_partidas_y_tareas():
+    import streamlit as st
+    from cota.cotizacion import (
+        agregar_partida_presupuesto,
+        aplicar_edicion_tabla_presupuesto_partida,
+        deshacer_presupuesto,
+        eliminar_partida_presupuesto,
+        eliminar_tareas_seleccionadas_presupuesto,
+        mover_tareas_seleccionadas_presupuesto,
+    )
+
+    p_test = "Proy Sel Partidas Test"
+    p1 = "01. Obras Preliminares"
+    p2 = "02. Arquitectura"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": p_test,
+        "TC_Presupuesto": 3.42,
+        "Modo_GG": "pct",
+        "GG_Presupuesto": 2.0,
+        "Modo_Utilidades": "pct",
+        "Utilidades": 15.0,
+        "Incluir_IGV": False,
+        "Pagos_Semanales_JSON": "",
+    }])
+    st.session_state["partidas"] = pd.DataFrame([
+        {"Proyecto": p_test, "Nombre_Partida": p1},
+        {"Proyecto": p_test, "Nombre_Partida": p2},
+    ])
+    st.session_state["p_info"] = pd.DataFrame([
+        {"Proyecto": p_test, "Nombre_Partida": p1, "Monto_Pactado": 100.0, "Contratista": ""},
+        {"Proyecto": p_test, "Nombre_Partida": p2, "Monto_Pactado": 200.0, "Contratista": ""},
+    ])
+    st.session_state["tasks"] = pd.DataFrame([
+        {"Proyecto": p_test, "Partida": p1, "Orden": 1, "Codigo_Item": "1.01", "Tarea": "1.01 Limpieza", "Moneda": "Soles", "Unidad": "glb", "Metrado": 1.0, "Valor_Unitario": 100.0, "Presupuesto": 100.0},
+        {"Proyecto": p_test, "Partida": p1, "Orden": 2, "Codigo_Item": "1.02", "Tarea": "1.02 Trazo", "Moneda": "Soles", "Unidad": "glb", "Metrado": 1.0, "Valor_Unitario": 150.0, "Presupuesto": 150.0},
+        {"Proyecto": p_test, "Partida": p1, "Orden": 3, "Codigo_Item": "1.03", "Tarea": "1.03 Demolicion", "Moneda": "Soles", "Unidad": "glb", "Metrado": 1.0, "Valor_Unitario": 200.0, "Presupuesto": 200.0},
+        {"Proyecto": p_test, "Partida": p2, "Orden": 1, "Codigo_Item": "2.01", "Tarea": "2.01 Pintura", "Moneda": "Soles", "Unidad": "m2", "Metrado": 10.0, "Valor_Unitario": 20.0, "Presupuesto": 200.0},
+    ])
+    st.session_state["pagos"] = pd.DataFrame(columns=["Proyecto", "Partida", "Fecha", "Monto", "Tipo", "Notas"])
+    st.session_state.pop(f"ppto_undo_{p_test}", None)
+
+    # 1. Solo marcar casilla 'Sel' no debe alterar c_key ni crear snapshot en Undo
+    base_k = f"base_df_ppto_{p_test}_1"
+    c_k = f"c_{base_k}"
+    widget_k = f"ed_ppto_{p_test}_1_0"
+    st.session_state[c_k] = 0
+    st.session_state[base_k] = pd.DataFrame([
+        {"Sel": False, "Item": "1.01", "Descripcion": "Limpieza", "Moneda": "Soles", "Unidad": "glb", "Metrado": 1.0, "Valor_Unitario": 100.0, "Valor_Parcial": 100.0},
+        {"Sel": False, "Item": "1.02", "Descripcion": "Trazo", "Moneda": "Soles", "Unidad": "glb", "Metrado": 1.0, "Valor_Unitario": 150.0, "Valor_Parcial": 150.0},
+        {"Sel": False, "Item": "1.03", "Descripcion": "Demolicion", "Moneda": "Soles", "Unidad": "glb", "Metrado": 1.0, "Valor_Unitario": 200.0, "Valor_Parcial": 200.0},
+    ])
+    st.session_state[widget_k] = {"edited_rows": {"1": {"Sel": True}}}
+    aplicar_edicion_tabla_presupuesto_partida(base_k, widget_k, p_test, 1, p1)
+    assert st.session_state[c_k] == 0
+    assert not st.session_state.get(f"ppto_undo_{p_test}")
+
+    # 2. Edición de Metrado junto con casilla Sel marcada preserva selección en sel_saved_ppto_
+    st.session_state[widget_k] = {"edited_rows": {"1": {"Sel": True}, "0": {"Metrado": 2.0}}}
+    aplicar_edicion_tabla_presupuesto_partida(base_k, widget_k, p_test, 1, p1)
+    assert st.session_state[c_k] == 1
+    assert st.session_state.get(f"sel_saved_ppto_{p_test}_1") == [1]
+
+    # 3. Mover múltiples tareas seleccionadas [1, 2] hacia arriba -> quedan en [0, 1]
+    movido, nuevos_idx = mover_tareas_seleccionadas_presupuesto(p_test, 1, p1, [1, 2], "subir")
+    assert movido is True
+    assert nuevos_idx == [0, 1]
+    t_p1 = st.session_state["tasks"][(st.session_state["tasks"]["Proyecto"] == p_test) & (st.session_state["tasks"]["Partida"] == p1)].reset_index(drop=True)
+    assert [t_p1.at[0, "Codigo_Item"], t_p1.at[1, "Codigo_Item"], t_p1.at[2, "Codigo_Item"]] == ["1.01", "1.02", "1.03"]
+    assert "Trazo" in t_p1.at[0, "Tarea"] and "Demolicion" in t_p1.at[1, "Tarea"] and "Limpieza" in t_p1.at[2, "Tarea"]
+
+    # Boundary no-op cuando ya están arriba
+    movido_nop, nuevos_nop = mover_tareas_seleccionadas_presupuesto(p_test, 1, p1, [0, 1], "subir")
+    assert movido_nop is False
+    assert nuevos_nop == [0, 1]
+
+    # 4. Eliminar tarea seleccionada índice 1 (Demolicion) y verificar renumeración
+    assert eliminar_tareas_seleccionadas_presupuesto(p_test, 1, p1, [1]) is True
+    t_p1 = st.session_state["tasks"][(st.session_state["tasks"]["Proyecto"] == p_test) & (st.session_state["tasks"]["Partida"] == p1)].reset_index(drop=True)
+    assert len(t_p1) == 2
+    assert "Trazo" in t_p1.at[0, "Tarea"] and t_p1.at[0, "Codigo_Item"] == "1.01"
+    assert "Limpieza" in t_p1.at[1, "Tarea"] and t_p1.at[1, "Codigo_Item"] == "1.02"
+
+    # Eliminar todas deja 1 tarea base vacía 1.01
+    assert eliminar_tareas_seleccionadas_presupuesto(p_test, 1, p1, [0, 1]) is True
+    t_p1 = st.session_state["tasks"][(st.session_state["tasks"]["Proyecto"] == p_test) & (st.session_state["tasks"]["Partida"] == p1)].reset_index(drop=True)
+    assert len(t_p1) == 1
+    assert t_p1.at[0, "Codigo_Item"] == "1.01"
+    assert t_p1.at[0, "Tarea"] == "1.01"
+
+    # 5. Agregar partida con botón único y eliminar partida desde su tarjeta con renumeración
+    assert agregar_partida_presupuesto(p_test) == 3
+    assert len(st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == p_test]) == 3
+
+    # Eliminar la Partida 1 -> Arquitectura pasa a 01. Arquitectura y su tarea 2.01 -> 1.01
+    assert eliminar_partida_presupuesto(p_test, 1, p1) is True
+    parts_rem = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == p_test].reset_index(drop=True)
+    assert len(parts_rem) == 2
+    assert parts_rem.at[0, "Nombre_Partida"] == "01. Arquitectura"
+    assert parts_rem.at[1, "Nombre_Partida"] == "02. Partida 3"
+    t_arq = st.session_state["tasks"][(st.session_state["tasks"]["Proyecto"] == p_test) & (st.session_state["tasks"]["Partida"] == "01. Arquitectura")].reset_index(drop=True)
+    assert t_arq.at[0, "Codigo_Item"] == "1.01"
+    assert "Pintura" in t_arq.at[0, "Tarea"]
+
+    # Eliminar la última partida restante está protegido (mínimo 1)
+    assert eliminar_partida_presupuesto(p_test, 2) is True
+    assert eliminar_partida_presupuesto(p_test, 1) is False
+    assert deshacer_presupuesto(p_test) is True
 
 
 def test_etiquetas_y_exportacion_cuadro_pagos_arcilla_y_rojo():
@@ -1600,3 +1721,131 @@ def test_render_header_signatures():
     render_header(title="COTA APP", subtitle="PROJECT", logo_path=None)
     render_header("COTA APP", "PROJECT")
     render_header(app_title="COTA APP", app_subtitle="PROJECT", studio_name="LB Studio")
+
+
+def test_diseno_entregables_sin_cronograma():
+    import streamlit as st
+    from cota.config import STATUS_FASES
+    from cota.db import (
+        COLS_ENTREGABLES,
+        on_table_edit,
+        registrar_cambio_diseno,
+        sembrar_fases_default,
+        sincronizar_fases_proyecto,
+    )
+    from cota.ui.views_project import _contar_estados_diseno
+
+    proy = "Proy Diseno Entregables"
+    st.session_state["fases"] = sembrar_fases_default(proy)
+    st.session_state["entregables_planos"] = pd.DataFrame(columns=COLS_ENTREGABLES)
+
+    df_f = st.session_state["fases"]
+    assert not df_f.empty
+    assert all(df_f["Inicio"] == "")
+    assert all(df_f["Fin"] == "")
+
+    sincronizar_fases_proyecto(proy, ["01. Levantamiento & Brief", "Etapa Extra Sin Fechas"])
+    df_sync = st.session_state["fases"][st.session_state["fases"]["Proyecto"] == proy]
+    assert len(df_sync) == 2
+    assert all(df_sync["Inicio"] == "")
+    assert all(df_sync["Fin"] == "")
+
+    # 1. Entregable inicial en revisión (0 cambios) no suma Cambios_Realizados ni asigna Fecha_Limite
+    ent1 = registrar_cambio_diseno(
+        proy_name=proy,
+        fase_diseno="01. Levantamiento & Brief",
+        tipo_entregable="Plano Preliminar / Layout",
+        nombre_entregable="Plano Sala Principal",
+        fecha_cambio="2026-11-11",
+        estado="🔵 En revisión cliente",
+        nro_cambios=0,
+    )
+    assert ent1["Fecha_Limite"] == ""
+    f_row1 = st.session_state["fases"][
+        (st.session_state["fases"]["Proyecto"] == proy)
+        & (st.session_state["fases"]["Fase"] == "01. Levantamiento & Brief")
+    ].iloc[0]
+    assert int(f_row1["Cambios_Realizados"]) == 0
+
+    # 2. Entregable con observaciones suma cambios y se contabiliza en _contar_estados_diseno
+    ent2 = registrar_cambio_diseno(
+        proy_name=proy,
+        fase_diseno="01. Levantamiento & Brief",
+        tipo_entregable="Renders 3D",
+        nombre_entregable="Render Cocina V2",
+        fecha_cambio="2026-11-12",
+        estado="🟠 Con cambios / Observado",
+        nro_cambios=2,
+    )
+    assert ent2["Estado"] == "🟠 Con cambios / Observado"
+    f_row2 = st.session_state["fases"][
+        (st.session_state["fases"]["Proyecto"] == proy)
+        & (st.session_state["fases"]["Fase"] == "01. Levantamiento & Brief")
+    ].iloc[0]
+    assert int(f_row2["Cambios_Realizados"]) == 2
+
+    resumen = _contar_estados_diseno(
+        st.session_state["fases"],
+        st.session_state["entregables_planos"],
+    )
+    assert set(STATUS_FASES).issubset(set(resumen.keys()))
+    assert resumen["⚪ Pendiente"]["etapas"] == 2
+    assert resumen["🔵 En revisión cliente"]["entregables"] == 1
+    assert resumen["🟠 Con cambios / Observado"]["entregables"] == 1
+
+    # 3. Edición en tabla de fases sincroniza Estado <-> Aprobado_Cliente sin requerir Inicio/Fin
+    base_f_k = f"base_df_fases_{proy}"
+    w_f_k = f"ed_fases_{proy}_0"
+    st.session_state[base_f_k] = df_sync.drop(columns=["Proyecto", "Inicio", "Fin"]).reset_index(drop=True)
+    st.session_state[w_f_k] = {"edited_rows": {"0": {"Estado": "🟢 Aprobado"}}}
+    on_table_edit(
+        base_f_k, w_f_k, "fases", ["Proyecto"], [proy],
+        ["Fecha_Ultimo_Cambio"], ["Fase", "Etapa", "Estado", "Responsable", "Notas"],
+        ["Aprobado_Cliente"], ["Orden", "Avance_Pct", "Cambios_Realizados"], "ID",
+    )
+    f_aprob = st.session_state["fases"].iloc[0]
+    assert bool(f_aprob["Aprobado_Cliente"]) is True
+    assert int(f_aprob["Avance_Pct"]) == 100
+
+    # Cambiar de Aprobado a En revisión cliente desmarca Aprobado_Cliente
+    w_f_k2 = f"ed_fases_{proy}_1"
+    st.session_state[w_f_k2] = {"edited_rows": {"0": {"Estado": "🔵 En revisión cliente"}}}
+    on_table_edit(
+        base_f_k, w_f_k2, "fases", ["Proyecto"], [proy],
+        ["Fecha_Ultimo_Cambio"], ["Fase", "Etapa", "Estado", "Responsable", "Notas"],
+        ["Aprobado_Cliente"], ["Orden", "Avance_Pct", "Cambios_Realizados"], "ID",
+    )
+    f_rev = st.session_state["fases"].iloc[0]
+    assert bool(f_rev["Aprobado_Cliente"]) is False
+
+    # 4. Edición sobre vista filtrada de entregables no borra los entregables ocultos por el filtro
+    base_e_k = f"base_df_ent_{proy}"
+    w_e_k = f"ed_ent_{proy}_0"
+    df_ent_fil = st.session_state["entregables_planos"][
+        st.session_state["entregables_planos"]["Estado"] == "🔵 En revisión cliente"
+    ].copy()
+    st.session_state[base_e_k] = df_ent_fil[[
+        "ID", "Fase", "Especialidad", "Nombre_Entregable", "Estado",
+        "Revision", "Nro_Cambios", "Fecha_Cambio", "Detalle_Cambio", "Responsable", "Link",
+    ]].reset_index(drop=True)
+    st.session_state[w_e_k] = {"edited_rows": {"0": {"Estado": "🟢 Aprobado"}}}
+    on_table_edit(
+        base_e_k, w_e_k, "entregables_planos", ["Proyecto"], [proy],
+        ["Fecha_Cambio"], ["Fase", "Especialidad", "Nombre_Entregable", "Revision", "Estado", "Detalle_Cambio", "Responsable", "Link"],
+        None, ["Nro_Cambios"], "ID",
+    )
+    assert len(st.session_state["entregables_planos"]) == 2
+    estados_ent = st.session_state["entregables_planos"]["Estado"].tolist()
+    assert "🟢 Aprobado" in estados_ent and "🟠 Con cambios / Observado" in estados_ent
+
+    # 5. Código de UI de 02. Diseño no planifica cronograma Gantt ni columnas Inicio/Entrega
+    with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f:
+        vp_code = f.read()
+    tab_diseno = vp_code.split("def _render_tab_fases")[1].split("def _render_table_dnd_controller")[0]
+    assert "Cronograma de Gestión del Diseño" not in tab_diseno
+    assert "Cronograma Gantt" not in tab_diseno
+    assert "Duración estimada (días)" not in tab_diseno
+    assert "Inicio_DT" not in tab_diseno
+    assert "Fin_DT" not in tab_diseno
+    assert '"Entrega"' not in tab_diseno
+    assert "_contar_estados_diseno" in tab_diseno

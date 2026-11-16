@@ -58,6 +58,10 @@ try:
         not hasattr(cota.cotizacion, "deshacer_presupuesto")
         or not hasattr(cota.cotizacion, "mover_partida_presupuesto")
         or not hasattr(cota.cotizacion, "aplicar_edicion_inline_cuadro_pagos")
+        or not hasattr(cota.cotizacion, "agregar_partida_presupuesto")
+        or not hasattr(cota.cotizacion, "eliminar_partida_presupuesto")
+        or not hasattr(cota.cotizacion, "mover_tareas_seleccionadas_presupuesto")
+        or not hasattr(cota.cotizacion, "eliminar_tareas_seleccionadas_presupuesto")
     ):
         importlib.reload(cota.cotizacion)
     if not hasattr(cota.pdf, "generar_pdf_minuta"):
@@ -65,6 +69,7 @@ try:
 except Exception:
     pass
 from cota.cotizacion import (
+    agregar_partida_presupuesto,
     ajustar_cantidad_partidas_proyecto,
     ajustar_cantidad_tareas_partida,
     aplicar_cotizacion_a_proyecto,
@@ -73,6 +78,8 @@ from cota.cotizacion import (
     asegurar_estructura_presupuesto_proyecto,
     calcular_resumen_cuadro_pagos_semanales,
     deshacer_presupuesto,
+    eliminar_partida_presupuesto,
+    eliminar_tareas_seleccionadas_presupuesto,
     etiqueta_corta_columna_pago,
     etiqueta_export_columna_pago,
     exportar_cuadro_pagos_semanales_excel,
@@ -86,6 +93,7 @@ from cota.cotizacion import (
     limpiar_nombre_partida,
     mover_partida_presupuesto,
     mover_tarea_presupuesto,
+    mover_tareas_seleccionadas_presupuesto,
     obtener_columnas_pago_semanal,
     obtener_cuadro_pagos_semanales_proyecto,
     obtener_pagado_por_partida_proyecto,
@@ -175,11 +183,11 @@ def render_proyecto_view(proy_name):
     # Asegurar inicialización y sanitización de fases para este proyecto
     sanitizar_fases_estudio()
     if 'fases' not in st.session_state or st.session_state.fases.empty:
-        st.session_state.fases = sembrar_fases_default(proy_name, proy_data.get('Inicio'))
+        st.session_state.fases = sembrar_fases_default(proy_name)
     else:
         fases_p = st.session_state.fases[st.session_state.fases['Proyecto'] == proy_name]
         if fases_p.empty:
-            nuevas_f = sembrar_fases_default(proy_name, proy_data.get('Inicio'))
+            nuevas_f = sembrar_fases_default(proy_name)
             st.session_state.fases = pd.concat([st.session_state.fases, nuevas_f], ignore_index=True)
 
     # Tabs especializadas del proyecto
@@ -343,14 +351,14 @@ def _render_tab_resumen(proy_name, proy_data):
                         options=opciones_res_f,
                         default=fases_activas_actuales,
                     )
-                    nueva_f_res = st.text_input("➕ Nueva etapa de diseño (opcional):", placeholder="ej. 08. Renders Nocturnos Terraza")
+                    nueva_f_res = st.text_input("➕ Nueva etapa de diseño (opcional):", placeholder="")
                     if st.form_submit_button("APLICAR ETAPAS DE DISEÑO", type="primary", use_container_width=True):
                         fases_aplicar = list(sel_res_f)
                         if nueva_f_res.strip():
                             nf = agregar_fase_banco(nueva_f_res.strip())
                             if nf["Fase"] not in fases_aplicar:
                                 fases_aplicar.append(nf["Fase"])
-                        sincronizar_fases_proyecto(proy_name, fases_aplicar, proy_data.get('Inicio'))
+                        sincronizar_fases_proyecto(proy_name, fases_aplicar)
                         st.success("Etapas de diseño actualizadas.")
                         st.rerun()
 
@@ -387,12 +395,33 @@ def _render_tab_resumen(proy_name, proy_data):
             st.info("No hay etapas de diseño activas para este proyecto. Usa el botón '🎨 ETAPAS DE DISEÑO' para activar las que correspondan.")
 
 
+def _contar_estados_diseno(fases_df: pd.DataFrame, df_ent_proy: pd.DataFrame) -> dict[str, dict[str, int]]:
+    """Agrupa las etapas y entregables de diseño según su estado de avance y revisión."""
+    resumen = {est: {"etapas": 0, "entregables": 0, "total": 0} for est in STATUS_FASES}
+    if isinstance(fases_df, pd.DataFrame) and not fases_df.empty:
+        for _, r_f in fases_df.iterrows():
+            aprob_f = to_bool(r_f.get('Aprobado_Cliente', False)) or ('aprob' in str(r_f.get('Estado', '')).lower())
+            est_eff = "🟢 Aprobado" if aprob_f else _normalizar_estado_diseno(r_f.get('Estado', '⚪ Pendiente'))
+            if est_eff not in resumen:
+                resumen[est_eff] = {"etapas": 0, "entregables": 0, "total": 0}
+            resumen[est_eff]["etapas"] += 1
+            resumen[est_eff]["total"] += 1
+    if isinstance(df_ent_proy, pd.DataFrame) and not df_ent_proy.empty:
+        for _, r_e in df_ent_proy.iterrows():
+            est_e = _normalizar_estado_diseno(r_e.get('Estado', '⚪ Pendiente'))
+            if est_e not in resumen:
+                resumen[est_e] = {"etapas": 0, "entregables": 0, "total": 0}
+            resumen[est_e]["entregables"] += 1
+            resumen[est_e]["total"] += 1
+    return resumen
+
+
 def _render_tab_fases(proy_name, proy_data):
-    """Pestaña 2: Gestión exclusiva del Diseño (02. Diseño) — Drive vinculado, Moodboard, Plano Preliminar, 3D, Renders y Conteo de Cambios por Fecha."""
-    st.markdown("### 🎨 02. DISEÑO — GESTIÓN DE PLANOS, RENDERS Y 3D")
+    """Pestaña 2: Gestión exclusiva del Diseño (02. Diseño) — Entregables por estado (pendiente, en proceso, en revisión, observado, aprobado), control de cambios y Drive vinculado."""
+    st.markdown("### 🎨 02. DISEÑO — GESTIÓN DE ENTREGABLES (PLANOS, RENDERS Y 3D)")
     st.caption(
-        "Gestión exclusiva del proceso de diseño: Moodboard, Plano Preliminar, Modelado 3D, Renders y Planos Técnicos, "
-        "conteo de cambios realizados por fecha y acceso directo al diseño vinculado en Google Drive."
+        "Gestión de entregables de diseño (Moodboard, Plano Preliminar, Modelado 3D, Renders y Planos Técnicos) "
+        "según su estado (Pendiente, En proceso, En revisión cliente, Con cambios / Observado, Aprobado), historial de revisiones y enlace a Google Drive."
     )
 
     # 1. Conectar con la presentación / carpeta de diseño en Google Drive / Slides / Figma (manteniendo lo existente)
@@ -565,66 +594,58 @@ def _render_tab_fases(proy_name, proy_data):
                         checks_seleccionados.append(nom_f)
 
                 if st.form_submit_button("💾 ACTUALIZAR ETAPAS DE DISEÑO", type="primary", use_container_width=True):
-                    sincronizar_fases_proyecto(proy_name, checks_seleccionados, proy_data.get('Inicio'))
+                    sincronizar_fases_proyecto(proy_name, checks_seleccionados)
                     st.success(f"Etapas de diseño actualizadas ({len(checks_seleccionados)} activas en '{proy_name}').")
                     st.rerun()
 
         with cb_right:
             with st.form(f"form_nueva_fase_banco_{proy_name}", clear_on_submit=True):
-                st.markdown("##### ➕ Nueva Etapa de Diseño")
-                st.caption("Agrega una etapa personalizada al banco de diseño del estudio.")
-                nf_nombre = st.text_input("Nombre de la Etapa", placeholder="")
+                st.markdown("##### ➕ Nueva Etapa / Entregable")
+                st.caption("Agrega una etapa o categoría de entregable al banco de diseño del estudio.")
+                nf_nombre = st.text_input("Nombre del Entregable / Etapa", placeholder="")
                 nf_etapa = st.selectbox("Categoría de Diseño", ETAPAS_DISENO)
-                nf_dias = st.number_input("Duración estimada (días)", min_value=1, max_value=365, value=7)
                 nf_activar = st.checkbox("Activar inmediatamente en este proyecto", value=True)
-                if st.form_submit_button("AGREGAR ETAPA DE DISEÑO", use_container_width=True) and nf_nombre.strip():
-                    nueva_f = agregar_fase_banco(nf_nombre.strip(), etapa=nf_etapa, dias=int(nf_dias))
+                if st.form_submit_button("AGREGAR AL BANCO DE DISEÑO", use_container_width=True) and nf_nombre.strip():
+                    nueva_f = agregar_fase_banco(nf_nombre.strip(), etapa=nf_etapa)
                     if nf_activar:
                         nuevas_act = list(dict.fromkeys(fases_activas_actuales + [nueva_f["Fase"]]))
-                        sincronizar_fases_proyecto(proy_name, nuevas_act, proy_data.get('Inicio'))
+                        sincronizar_fases_proyecto(proy_name, nuevas_act)
                     st.success(f"Etapa '{nueva_f['Fase']}' añadida al Banco de Diseño.")
                     st.rerun()
 
-    # 4. Cronograma Gantt de Etapas de Diseño
-    df_chart = fases_df.copy()
-    df_chart['Inicio_DT'] = df_chart['Inicio'].apply(lambda x: pd.to_datetime(parse_date(x)))
-    df_chart['Fin_DT'] = df_chart['Fin'].apply(lambda x: pd.to_datetime(parse_date(x)))
-    df_chart = df_chart.dropna(subset=['Inicio_DT', 'Fin_DT'])
-
-    if not df_chart.empty:
-        mask_same = df_chart['Inicio_DT'].dt.date == df_chart['Fin_DT'].dt.date
-        df_chart.loc[mask_same, 'Fin_DT'] = df_chart['Fin_DT'] + datetime.timedelta(days=1)
-
-        color_scale = alt.Scale(
-            domain=STATUS_FASES,
-            range=['#9A9187', '#D98A2B', '#3B82F6', '#C85A32', '#4A7C59']
-        )
-
-        chart_fases = alt.Chart(df_chart).mark_bar(cornerRadius=4, height=18).encode(
-            x=alt.X('Inicio_DT:T', title='Cronograma de Gestión del Diseño', axis=alt.Axis(gridColor='#DFD9CE', domainColor='#DFD9CE', labelColor='#6E665E', titleColor='#262320', format='%d %b')),
-            x2='Fin_DT:T',
-            y=alt.Y('Fase:N', sort=alt.SortField(field='Orden', order='ascending'), title='', axis=alt.Axis(labelColor='#262320', labelFontWeight='bold', labelLimit=250)),
-            color=alt.Color('Estado:N', scale=color_scale, legend=alt.Legend(title="Estado de Diseño", orient="top", labelColor='#262320', titleColor='#6E665E')),
-            tooltip=[
-                alt.Tooltip('Fase:N', title='Etapa de Diseño'),
-                alt.Tooltip('Etapa:N', title='Categoría'),
-                alt.Tooltip('Estado:N', title='Estado'),
-                alt.Tooltip('Avance_Pct:Q', title='Avance %'),
-                alt.Tooltip('Cambios_Realizados:Q', title='N° Cambios'),
-                alt.Tooltip('Fecha_Ultimo_Cambio:N', title='Último Cambio'),
-                alt.Tooltip('Responsable:N', title='Responsable'),
-            ]
-        ).properties(height=max(210, min(320, len(df_chart) * 36 + 50))).configure_view(strokeOpacity=0).configure_axis(grid=True)
-
-        st.altair_chart(chart_fases, use_container_width=True)
+    # 4. Tablero de Estados de Entregables (sin cronograma de hitos con fechas)
+    resumen_est = _contar_estados_diseno(fases_df, df_ent_proy)
+    estado_colors = {
+        "⚪ Pendiente": "#9A9187",
+        "🟡 En proceso": "#D98A2B",
+        "🔵 En revisión cliente": "#3B82F6",
+        "🟠 Con cambios / Observado": "#C85A32",
+        "🟢 Aprobado": "#4A7C59",
+    }
+    cards_est_html = "".join(
+        f"<div style='background:#FFFFFF; border:1px solid #DFD9CE; border-top:3px solid {estado_colors.get(est, '#6E665E')}; "
+        f"border-radius:8px; padding:10px 12px;'>"
+        f"<div style='font-size:11px; font-weight:700; color:#6E665E; text-transform:uppercase;'>{est}</div>"
+        f"<div style='font-size:22px; font-weight:700; color:{estado_colors.get(est, '#262320')}; margin:2px 0;'>"
+        f"{resumen_est.get(est, {}).get('total', 0)}</div>"
+        f"<div style='font-size:11px; color:#6E665E;'>"
+        f"{resumen_est.get(est, {}).get('etapas', 0)} etapa(s) · {resumen_est.get(est, {}).get('entregables', 0)} entregable(s)</div>"
+        f"</div>"
+        for est in STATUS_FASES
+    )
+    st.markdown(
+        f"<div style='display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin:8px 0 6px 0;'>"
+        f"{cards_est_html}</div>",
+        unsafe_allow_html=True,
+    )
 
     st.divider()
 
     # 5. Tabla Editable de Etapas de Diseño (Moodboard, Plano Preliminar, 3D, Renders, Planos) + Conteo de Cambios
-    st.markdown("#### 🎨 ETAPAS DE DISEÑO, APROBACIONES Y CONTEO DE CAMBIOS")
+    st.markdown("#### 🎨 ETAPAS DE DISEÑO, ESTADOS Y APROBACIONES")
     st.caption(
-        "Controla el estado de cada etapa (Moodboard, Plano Preliminar, Modelado 3D, Renders y Planos), "
-        "si está **Aprobado** o **En proceso**, el **conteo de cambios realizados** y la **fecha del último cambio**."
+        "Controla el estado de cada etapa de diseño (Pendiente, En proceso, En revisión cliente, Con cambios / Observado, Aprobado), "
+        "su aprobación y el conteo de cambios realizados."
     )
 
     base_fases_key = f"base_df_fases_{proy_name}"
@@ -636,11 +657,9 @@ def _render_tab_fases(proy_name, proy_data):
 
     display_fases = fases_df[[
         'ID', 'Orden', 'Fase', 'Etapa', 'Estado', 'Avance_Pct',
-        'Cambios_Realizados', 'Fecha_Ultimo_Cambio', 'Inicio', 'Fin',
+        'Cambios_Realizados', 'Fecha_Ultimo_Cambio',
         'Aprobado_Cliente', 'Responsable', 'Notas'
     ]].copy()
-    display_fases['Inicio'] = display_fases['Inicio'].apply(lambda x: parse_date(x))
-    display_fases['Fin'] = display_fases['Fin'].apply(lambda x: parse_date(x))
     display_fases['Fecha_Ultimo_Cambio'] = display_fases['Fecha_Ultimo_Cambio'].apply(lambda x: parse_date(x))
     display_fases['Avance_Pct'] = pd.to_numeric(display_fases['Avance_Pct'], errors='coerce').fillna(0).astype(int)
     display_fases['Cambios_Realizados'] = pd.to_numeric(display_fases['Cambios_Realizados'], errors='coerce').fillna(0).astype(int)
@@ -663,8 +682,6 @@ def _render_tab_fases(proy_name, proy_data):
             "Avance_Pct": st.column_config.NumberColumn("Avance %", min_value=0, max_value=100, step=5, format="%d%%", width="small"),
             "Cambios_Realizados": st.column_config.NumberColumn("N° Cambios", min_value=0, max_value=100, step=1, format="%d", width="small", help="Cantidad de cambios realizados en esta etapa de diseño."),
             "Fecha_Ultimo_Cambio": st.column_config.DateColumn("Último Cambio", format="DD/MM/YYYY", width="small", help="Fecha en que se realizó el último cambio de esta etapa."),
-            "Inicio": st.column_config.DateColumn("Inicio", format="DD/MM/YYYY", width="small"),
-            "Fin": st.column_config.DateColumn("Entrega", format="DD/MM/YYYY", width="small"),
             "Aprobado_Cliente": st.column_config.CheckboxColumn("Aprobado", width="small"),
             "Responsable": st.column_config.TextColumn("Responsable", width="small"),
             "Notas": st.column_config.TextColumn("Notas / Observaciones de Diseño", width="medium"),
@@ -676,7 +693,7 @@ def _render_tab_fases(proy_name, proy_data):
             'fases',
             ['Proyecto'],
             [proy_name],
-            ['Inicio', 'Fin', 'Fecha_Ultimo_Cambio'],
+            ['Fecha_Ultimo_Cambio'],
             ['Fase', 'Etapa', 'Estado', 'Responsable', 'Notas'],
             ['Aprobado_Cliente'],
             ['Orden', 'Avance_Pct', 'Cambios_Realizados'],
@@ -686,33 +703,33 @@ def _render_tab_fases(proy_name, proy_data):
 
     st.divider()
 
-    # 6. Bitácora y Control Detallado de Cambios por Fecha: Planos, Renders, 3D y Moodboard
-    c_bit_tit, c_bit_btn, c_bit_fil = st.columns([4.6, 3.0, 2.4])
+    # 6. Entregables de Diseño y Control de Revisiones: Planos, Renders, 3D y Moodboard
+    c_bit_tit, c_bit_btn, c_bit_fil, c_bit_fil_est = st.columns([3.8, 2.4, 1.9, 1.9])
     with c_bit_tit:
-        st.markdown("#### 📐 CONTROL DE CAMBIOS POR FECHA — PLANOS, RENDERS Y 3D")
-        st.caption("Registra cada cambio o versión de planos preliminares, detalles, modelado 3D y renders indicando la fecha exacta y el conteo de cambios.")
+        st.markdown("#### 📐 ENTREGABLES DE DISEÑO Y REVISIONES — PLANOS, RENDERS Y 3D")
+        st.caption("Gestiona cada entregable (Moodboard, Plano Preliminar, Modelado 3D, Renders y Planos Técnicos) según su estado (Pendiente, En proceso, En revisión cliente, Con cambios / Observado, Aprobado), versión y control de cambios.")
 
     opciones_fases_select = fases_activas_actuales if fases_activas_actuales else [f["Fase"] for f in banco_fases]
     socios_disp_dis = obtener_catalogo_estudio("socios") or ["Alvaro", "Socio 1", "Socio 2"]
 
     with c_bit_btn:
         st.markdown("<div style='padding-top: 6px;'></div>", unsafe_allow_html=True)
-        with st.popover("➕ REGISTRAR CAMBIO / ENTREGABLE", use_container_width=True):
+        with st.popover("➕ NUEVO ENTREGABLE / REVISIÓN", use_container_width=True):
             with st.form(f"f_new_cambio_diseno_{proy_name}", clear_on_submit=True):
-                st.markdown("##### Registrar Cambio o Entregable de Diseño")
+                st.markdown("##### Registrar Entregable o Revisión de Diseño")
                 cd_fase = st.selectbox("Etapa de Diseño vinculada", opciones_fases_select)
                 cd_tipo = st.selectbox("Tipo (Plano / Render / 3D / Moodboard)", TIPOS_ENTREGABLE_DISENO)
-                cd_nom = st.text_input("Plano / Vista 3D / Ambiente", placeholder="")
+                cd_nom = st.text_input("Entregable (Plano / Vista 3D / Ambiente)", placeholder="")
                 col_c1, col_c2 = st.columns(2)
-                cd_fecha = col_c1.date_input("Fecha del Cambio / Revisión", value=datetime.date.today())
-                cd_ncambios = col_c2.number_input("N° de Cambios realizados", min_value=0, max_value=50, value=1, step=1)
+                cd_est = col_c1.selectbox("Estado", STATUS_FASES, index=0)
+                cd_resp = col_c2.selectbox("Responsable", socios_disp_dis)
                 col_c3, col_c4 = st.columns(2)
-                cd_est = col_c3.selectbox("Estado", STATUS_FASES, index=1)
-                cd_resp = col_c4.selectbox("Responsable", socios_disp_dis)
-                cd_det = st.text_area("Detalle del cambio realizado / solicitado", height=72, placeholder="")
+                cd_ncambios = col_c3.number_input("N° de Cambios", min_value=0, max_value=50, value=0, step=1)
+                cd_fecha = col_c4.date_input("Fecha de Registro / Revisión", value=datetime.date.today())
+                cd_det = st.text_area("Observaciones / Detalle de Revisión", height=72, placeholder="")
                 cd_link = st.text_input("Enlace a Plano / Render en Drive (opcional)", placeholder="https://drive.google.com/...")
 
-                if st.form_submit_button("GUARDAR CAMBIO DE DISEÑO", type="primary", use_container_width=True):
+                if st.form_submit_button("GUARDAR ENTREGABLE", type="primary", use_container_width=True):
                     if not cd_nom.strip():
                         st.error("Indica el nombre del plano, render, vista 3D o ambiente.")
                     else:
@@ -728,7 +745,7 @@ def _render_tab_fases(proy_name, proy_data):
                             nro_cambios=int(cd_ncambios),
                             link=cd_link.strip(),
                         )
-                        st.success("Cambio registrado y conteo actualizado en la etapa de diseño.")
+                        st.success("Entregable guardado y estado de diseño actualizado.")
                         st.rerun()
 
     with c_bit_fil:
@@ -739,12 +756,22 @@ def _render_tab_fases(proy_name, proy_data):
             key=f"fil_tipo_diseno_{proy_name}",
         )
 
-    # Resumen visual de conteo de cambios agrupados por fecha y por etapa
+    with c_bit_fil_est:
+        filtro_est_ent = st.selectbox(
+            "Filtrar por estado:",
+            options=["🌐 Todos los estados"] + STATUS_FASES,
+            index=0,
+            key=f"fil_est_diseno_{proy_name}",
+        )
+
+    # Resumen visual de conteo de cambios agrupados por fecha y por etapa (solo items con cambios > 0)
     fechas_resumen = {}
     if not df_ent_proy.empty:
         for _, r_e in df_ent_proy.iterrows():
             f_str = format_date(r_e.get('Fecha_Cambio') or r_e.get('Fecha_Limite'), default="Sin fecha")
-            n_c = max(1, int(safe_float(r_e.get('Nro_Cambios', 1), 1)))
+            n_c = int(safe_float(r_e.get('Nro_Cambios', 0), 0))
+            if n_c <= 0:
+                continue
             nom_e = safe_str(r_e.get('Nombre_Entregable', 'Diseño'))
             entry = fechas_resumen.setdefault(f_str, {"cambios": 0, "items": []})
             entry["cambios"] += n_c
@@ -776,6 +803,8 @@ def _render_tab_fases(proy_name, proy_data):
     df_ent_view = df_ent_proy.copy()
     if not df_ent_view.empty and not str(filtro_cat_ent).startswith("🌐"):
         df_ent_view = df_ent_view[df_ent_view['Especialidad'].astype(str) == filtro_cat_ent].copy()
+    if not df_ent_view.empty and not str(filtro_est_ent).startswith("🌐"):
+        df_ent_view = df_ent_view[df_ent_view['Estado'].astype(str) == filtro_est_ent].copy()
 
     opciones_esp_ent = list(dict.fromkeys(
         TIPOS_ENTREGABLE_DISENO
@@ -788,8 +817,9 @@ def _render_tab_fases(proy_name, proy_data):
     ))
 
     cols_ent_editor = [
-        'ID', 'Fecha_Cambio', 'Fase', 'Especialidad', 'Nombre_Entregable',
-        'Nro_Cambios', 'Revision', 'Estado', 'Detalle_Cambio', 'Responsable', 'Link'
+        'ID', 'Fase', 'Especialidad', 'Nombre_Entregable',
+        'Estado', 'Revision', 'Nro_Cambios', 'Fecha_Cambio',
+        'Detalle_Cambio', 'Responsable', 'Link'
     ]
     display_ent = (
         df_ent_view[cols_ent_editor].copy()
@@ -814,14 +844,14 @@ def _render_tab_fases(proy_name, proy_data):
         key=w_ent_key,
         column_config={
             "ID": None,
-            "Fecha_Cambio": st.column_config.DateColumn("Fecha Cambio", format="DD/MM/YYYY", width="small"),
             "Fase": st.column_config.SelectboxColumn("Etapa de Diseño", options=opciones_fase_ent, width="medium"),
             "Especialidad": st.column_config.SelectboxColumn("Tipo (Plano / Render / 3D)", options=opciones_esp_ent, width="medium"),
-            "Nombre_Entregable": st.column_config.TextColumn("Plano / Vista / Ambiente", width="medium", required=True),
-            "Nro_Cambios": st.column_config.NumberColumn("N° Cambios", min_value=0, max_value=100, step=1, format="%d", width="small"),
-            "Revision": st.column_config.TextColumn("Versión / Rev.", width="small"),
+            "Nombre_Entregable": st.column_config.TextColumn("Entregable (Plano / Vista / Ambiente)", width="medium", required=True),
             "Estado": st.column_config.SelectboxColumn("Estado", options=STATUS_FASES, width="medium"),
-            "Detalle_Cambio": st.column_config.TextColumn("Detalle del Cambio Realizado", width="large"),
+            "Revision": st.column_config.TextColumn("Versión / Rev.", width="small"),
+            "Nro_Cambios": st.column_config.NumberColumn("N° Cambios", min_value=0, max_value=100, step=1, format="%d", width="small"),
+            "Fecha_Cambio": st.column_config.DateColumn("Última Revisión", format="DD/MM/YYYY", width="small"),
+            "Detalle_Cambio": st.column_config.TextColumn("Observaciones / Detalle de Revisión", width="large"),
             "Responsable": st.column_config.TextColumn("Responsable", width="small"),
             "Link": st.column_config.LinkColumn("Link Drive / Archivo", width="small"),
         },
@@ -1101,14 +1131,13 @@ def _render_tab_presupuesto(proy_name, proy_data):
     Pestaña 3: Constructor y Editor de Presupuesto All-in-One dentro de COTA.
     Permite definir dinámicamente la cantidad de Partidas (1, 2, 3, 4...), sus nombres,
     y la cantidad de Tareas por cada Partida (1.01, 1.02, 1.03...), reordenarlas verticalmente,
-    asignar Especialidad y Contratista (uso interno), o importar presupuestos de Gemini Spark / Excel / CSV.
+    asignar Especialidad y Contratista (uso interno), o importar presupuestos de tablas / Excel / CSV.
     """
     asegurar_estructura_presupuesto_proyecto(proy_name, n_partidas_default=3, n_tareas_default=3)
     totales = recalcular_totales_presupuesto_proyecto(proy_name)
     params = obtener_parametros_presupuesto_proyecto(proy_name)
 
     parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
-    n_partidas_actual = max(1, len(parts_proy))
 
     col_tit_p, col_undo, col_imp_top, col_exp_p = st.columns([4.2, 1.8, 2.0, 2.0])
     with col_tit_p:
@@ -1167,7 +1196,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
             fuente_imp = st.radio(
                 "Método de importación:",
                 options=["texto", "archivo"],
-                format_func=lambda x: "📋 Pegar tabla de Gemini Spark / Excel / Markdown" if x == "texto" else "📁 Subir archivo (.xlsx / .xls / .csv)",
+                format_func=lambda x: "📋 Pegar Tabla" if x == "texto" else "📁 Subir archivo (.xlsx / .xls / .csv)",
                 horizontal=True,
                 key=f"rad_fuente_ppto_{proy_name}",
             )
@@ -1175,7 +1204,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
             parsed_imp = None
             if fuente_imp == "texto":
                 txt_spark = st.text_area(
-                    "Pega aquí el presupuesto de Gemini Spark o Excel:",
+                    "Pega aquí la tabla del presupuesto:",
                     height=165,
                     placeholder=(
                         "| Item | Partida / Tarea | Unidad | Metraje | V. Unitario | Valor Parcial |\n"
@@ -1294,10 +1323,9 @@ def _render_tab_presupuesto(proy_name, proy_data):
 
     # Panel de Configuración Global del Presupuesto (incluye Honorarios de Diseño, % o Monto Exacto con redondeo)
     with st.container(border=True):
-        st.markdown("##### ⚙️ Configuración de Estructura y Parámetros Financieros")
-        c_cfg1, c_cfg2, c_cfg3, c_cfg4, c_cfg_hon, c_cfg5 = st.columns([1.3, 1.2, 2.2, 2.2, 1.6, 1.1])
+        st.markdown("##### ⚙️ Configuración de Presupuesto")
+        c_cfg1, c_cfg2, c_cfg3, c_cfg4, c_cfg_hon, c_cfg5 = st.columns([1.5, 1.2, 2.1, 2.1, 1.6, 1.1])
 
-        key_n_part = f"cfg_n_partidas_{proy_name}"
         key_tc = f"cfg_tc_ppto_{proy_name}"
         key_modo_gg = f"cfg_modo_gg_{proy_name}"
         key_gg_pct = f"cfg_gg_pct_{proy_name}"
@@ -1308,12 +1336,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
         key_hon = f"cfg_hon_diseno_{proy_name}"
         key_igv = f"cfg_igv_chk_{proy_name}"
 
-        st.session_state[key_n_part] = n_partidas_actual
         hon_actual = safe_float(proy_data.get("Honorarios_Diseno", 0.0), 0.0)
-
-        def _on_change_cant_partidas():
-            nueva_cant = st.session_state.get(key_n_part, n_partidas_actual)
-            ajustar_cantidad_partidas_proyecto(proy_name, int(nueva_cant), n_tareas_default=3)
 
         def _on_change_params_ppto():
             modo_gg_val = st.session_state.get(key_modo_gg, params.get("modo_gg", "pct"))
@@ -1344,15 +1367,15 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     st.session_state.proyectos.loc[idx_p_m, "Honorarios_Diseno"] = float(safe_float(st.session_state.get(key_hon, 0.0), 0.0))
 
         with c_cfg1:
-            st.number_input(
-                "N° Partidas",
-                min_value=1,
-                max_value=40,
-                step=1,
-                key=key_n_part,
-                on_change=_on_change_cant_partidas,
-                help="Indica cuántas partidas principales (1, 2, 3, 4...) tendrá el presupuesto.",
-            )
+            st.markdown("<div style='padding-top: 27px;'></div>", unsafe_allow_html=True)
+            if st.button(
+                "➕ Agregar Partida",
+                key=f"btn_add_partida_{proy_name}",
+                use_container_width=True,
+                help="Agrega una nueva partida principal al presupuesto con sus tareas iniciales.",
+            ):
+                agregar_partida_presupuesto(proy_name, n_tareas_default=3)
+                st.rerun()
         with c_cfg2:
             st.number_input(
                 "Tipo de Cambio",
@@ -1532,8 +1555,15 @@ def _render_tab_presupuesto(proy_name, proy_data):
         })
 
         with st.container(border=True):
-            # Cabecera de la Partida: Nombre editable + N° de Tareas editable + Sub Total, Mix y Mover Partida
-            cp_nom, cp_cnt, cp_sub, cp_mix, cp_mv = st.columns([4.0, 1.8, 1.9, 1.3, 1.0])
+            base_ppto_key = f"base_df_ppto_{proy_name}_{idx_p}"
+            c_ppto_key = f"c_{base_ppto_key}"
+            c_ppto_val = st.session_state.get(c_ppto_key, 0)
+            w_ppto_key = f"ed_ppto_{proy_name}_{idx_p}_{c_ppto_val}"
+            sel_saved_key = f"sel_saved_ppto_{proy_name}_{idx_p}"
+            sel_ver_key = f"sel_ver_ppto_{proy_name}_{idx_p}"
+
+            # Cabecera de la Partida: Nombre editable + N° de Tareas editable + Sub Total, Mix, Mover y Eliminar Partida
+            cp_nom, cp_cnt, cp_sub, cp_mix, cp_mv = st.columns([3.5, 1.6, 1.8, 1.1, 2.0])
 
             key_pnom = f"ppto_pnom_{proy_name}_{idx_p}"
             key_ntasks = f"ppto_ntasks_{proy_name}_{idx_p}"
@@ -1548,10 +1578,13 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     renombrar_partida_presupuesto(proy_name, p_idx_1b, curr_full, nuevo_val)
                 return _cb
 
-            def _make_on_cant_tasks(p_idx_1b, curr_full, k_cnt):
+            def _make_on_cant_tasks(p_idx_1b, curr_full, k_cnt, k_base, k_c):
                 def _cb():
                     nueva_c = st.session_state.get(k_cnt, 1)
                     ajustar_cantidad_tareas_partida(proy_name, p_idx_1b, curr_full, int(nueva_c))
+                    if k_base in st.session_state:
+                        del st.session_state[k_base]
+                    st.session_state[k_c] = st.session_state.get(k_c, 0) + 1
                 return _cb
 
             with cp_nom:
@@ -1568,7 +1601,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     max_value=100,
                     step=1,
                     key=key_ntasks,
-                    on_change=_make_on_cant_tasks(idx_p, p_nom_completo, key_ntasks),
+                    on_change=_make_on_cant_tasks(idx_p, p_nom_completo, key_ntasks, base_ppto_key, c_ppto_key),
                 )
             with cp_sub:
                 st.markdown(
@@ -1588,7 +1621,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 )
             with cp_mv:
                 st.markdown("<div style='padding-top: 26px;'></div>", unsafe_allow_html=True)
-                c_u, c_d = st.columns(2)
+                c_u, c_d, c_del = st.columns([1, 1, 2.0])
                 with c_u:
                     if st.button("⬆", key=f"btn_mv_up_p_{proy_name}_{idx_p}", disabled=(idx_p == 1), help="Subir Partida completa", use_container_width=True):
                         mover_partida_presupuesto(proy_name, idx_p, "subir")
@@ -1597,10 +1630,23 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     if st.button("⬇", key=f"btn_mv_dn_p_{proy_name}_{idx_p}", disabled=(idx_p == len(parts_proy)), help="Bajar Partida completa", use_container_width=True):
                         mover_partida_presupuesto(proy_name, idx_p, "bajar")
                         st.rerun()
+                with c_del:
+                    with st.popover("🗑️ Eliminar", use_container_width=True):
+                        if len(parts_proy) <= 1:
+                            st.info("El presupuesto debe conservar al menos 1 partida.")
+                        else:
+                            st.warning(f"¿Eliminar **Partida {idx_p}: {p_nom_limpio}** y sus {len(df_t_p)} tarea(s)?")
+                            if st.button(
+                                "CONFIRMAR",
+                                key=f"btn_del_p_{proy_name}_{idx_p}",
+                                type="primary",
+                                use_container_width=True,
+                            ):
+                                eliminar_partida_presupuesto(proy_name, idx_p, p_nom_completo)
+                                st.rerun()
 
             # Construir DataFrame editable para las tareas de esta partida (incluye Especialidad y Contratista para uso interno)
             rows_ed = []
-            opciones_orden_t = []
             for pos_t, (_, t_r) in enumerate(df_t_p.iterrows(), start=1):
                 cod_item = f"{idx_p}.{pos_t:02d}"
                 desc_t = extraer_descripcion_tarea(t_r.get("Tarea", ""), cod_item)
@@ -1622,9 +1668,8 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 if con_t and con_t not in contratistas_cat:
                     contratistas_cat.append(con_t)
 
-                opciones_orden_t.append((pos_t - 1, f"{cod_item} — {desc_t or '(Sin descripción)'}"))
                 rows_ed.append({
-                    "⠿": "⠿",
+                    "Sel": False,
                     "Item": str(cod_item),
                     "Descripcion": str(desc_t),
                     "Especialidad": str(esp_t),
@@ -1641,54 +1686,110 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 if c_num in df_ed_p.columns:
                     df_ed_p[c_num] = pd.to_numeric(df_ed_p[c_num], errors="coerce").fillna(0.0).astype(float)
 
-            base_ppto_key = f"base_df_ppto_{proy_name}_{idx_p}"
-            c_ppto_key = f"c_{base_ppto_key}"
-            c_ppto_val = st.session_state.get(c_ppto_key, 0)
-            w_ppto_key = f"ed_ppto_{proy_name}_{idx_p}_{c_ppto_val}"
+            prev_base = st.session_state.get(base_ppto_key)
+            if (
+                st.session_state.get(sel_ver_key) == c_ppto_val
+                and isinstance(prev_base, pd.DataFrame)
+                and len(prev_base) == len(df_ed_p)
+                and "Sel" in prev_base.columns
+            ):
+                base_sel = [bool(v) for v in prev_base["Sel"].tolist()]
+            else:
+                saved_sel = {int(i) for i in st.session_state.get(sel_saved_key, []) if 0 <= int(i) < len(df_ed_p)}
+                base_sel = [i in saved_sel for i in range(len(df_ed_p))]
+                st.session_state[sel_ver_key] = c_ppto_val
 
+            df_ed_p["Sel"] = pd.Series(base_sel, index=df_ed_p.index, dtype=bool)
             st.session_state[base_ppto_key] = df_ed_p.copy()
 
-            if len(rows_ed) > 1:
-                col_mv_info, col_mv_sel, col_mv_u, col_mv_d = st.columns([2.5, 4.3, 1.6, 1.6])
-                with col_mv_info:
+            eff_sel = list(base_sel)
+            ed_state = st.session_state.get(w_ppto_key)
+            if isinstance(ed_state, dict):
+                for r_s, ch in ed_state.get("edited_rows", {}).items():
+                    try:
+                        r_idx = int(r_s)
+                        if 0 <= r_idx < len(eff_sel) and isinstance(ch, dict) and "Sel" in ch:
+                            eff_sel[r_idx] = bool(ch["Sel"])
+                    except (TypeError, ValueError):
+                        pass
+            selected_indices = [i for i, checked in enumerate(eff_sel) if checked]
+
+            if rows_ed:
+                n_sel_t = len(selected_indices)
+                sel_set_t = set(selected_indices)
+                can_move_up_t = (
+                    n_sel_t > 0
+                    and len(rows_ed) > 1
+                    and any((i - 1) >= 0 and (i - 1) not in sel_set_t for i in selected_indices)
+                )
+                can_move_dn_t = (
+                    n_sel_t > 0
+                    and len(rows_ed) > 1
+                    and any((i + 1) < len(rows_ed) and (i + 1) not in sel_set_t for i in selected_indices)
+                )
+
+                col_act_info, col_act_u, col_act_d, col_act_del = st.columns([5.2, 1.6, 1.6, 1.6])
+                with col_act_info:
+                    lbl_sel = (
+                        f"☑ {n_sel_t} tarea(s) seleccionada(s)"
+                        if n_sel_t > 0
+                        else "☐ Marca casillas (☑) en las tareas para moverlas o borrarlas"
+                    )
+                    color_sel = "#C85A32" if n_sel_t > 0 else "#6E665E"
                     st.markdown(
-                        f"<div style='font-size:12px; font-weight:700; color:#6E665E; padding-top:6px;'>↕️ MOVER TAREA:</div>",
+                        f"<div style='font-size:12px; font-weight:700; color:{color_sel}; padding-top:6px;'>{lbl_sel}</div>",
                         unsafe_allow_html=True,
                     )
-                with col_mv_sel:
-                    idx_t_sel = st.selectbox(
-                        f"Seleccionar tarea de {p_nom_limpio}",
-                        options=list(range(len(rows_ed))),
-                        format_func=lambda i: opciones_orden_t[i][1] if i < len(opciones_orden_t) else f"Tarea {i+1}",
-                        key=f"sel_mv_task_{proy_name}_{idx_p}",
-                        label_visibility="collapsed",
-                    )
-                with col_mv_u:
+                with col_act_u:
                     if st.button(
                         "⬆ Subir",
                         key=f"btn_up_t_{proy_name}_{idx_p}",
-                        disabled=(idx_t_sel == 0),
+                        disabled=not can_move_up_t,
                         use_container_width=True,
-                        help="Sube la tarea seleccionada una posición",
+                        help="Sube la(s) tarea(s) seleccionada(s) una posición",
                     ):
-                        mover_tarea_presupuesto(proy_name, idx_p, p_nom_completo, idx_t_sel, "subir")
-                        st.session_state[c_ppto_key] = c_ppto_val + 1
-                        st.rerun()
-                with col_mv_d:
+                        movido, nuevos_idx = mover_tareas_seleccionadas_presupuesto(
+                            proy_name, idx_p, p_nom_completo, selected_indices, "subir"
+                        )
+                        if movido:
+                            st.session_state[sel_saved_key] = nuevos_idx
+                            if base_ppto_key in st.session_state:
+                                del st.session_state[base_ppto_key]
+                            st.session_state[c_ppto_key] = c_ppto_val + 1
+                            st.rerun()
+                with col_act_d:
                     if st.button(
                         "⬇ Bajar",
                         key=f"btn_dn_t_{proy_name}_{idx_p}",
-                        disabled=(idx_t_sel == len(rows_ed) - 1),
+                        disabled=not can_move_dn_t,
                         use_container_width=True,
-                        help="Baja la tarea seleccionada una posición",
+                        help="Baja la(s) tarea(s) seleccionada(s) una posición",
                     ):
-                        mover_tarea_presupuesto(proy_name, idx_p, p_nom_completo, idx_t_sel, "bajar")
-                        st.session_state[c_ppto_key] = c_ppto_val + 1
-                        st.rerun()
-
-            safe_proy_id = re.sub(r"[^a-zA-Z0-9_]", "_", proy_name)
-            # Ancla invisible para que el controlador de Drag & Drop ubique la tabla en el DOM
-            st.markdown(f'<div id="anchor_ppto_{safe_proy_id}_{idx_p}" style="display:none;" data-partida="{idx_p}" data-n-rows="{len(rows_ed)}"></div>', unsafe_allow_html=True)
+                        movido, nuevos_idx = mover_tareas_seleccionadas_presupuesto(
+                            proy_name, idx_p, p_nom_completo, selected_indices, "bajar"
+                        )
+                        if movido:
+                            st.session_state[sel_saved_key] = nuevos_idx
+                            if base_ppto_key in st.session_state:
+                                del st.session_state[base_ppto_key]
+                            st.session_state[c_ppto_key] = c_ppto_val + 1
+                            st.rerun()
+                with col_act_del:
+                    if st.button(
+                        "🗑️ Borrar",
+                        key=f"btn_del_t_{proy_name}_{idx_p}",
+                        disabled=(n_sel_t == 0),
+                        use_container_width=True,
+                        help="Elimina la(s) tarea(s) seleccionada(s) y renumera las restantes",
+                    ):
+                        if eliminar_tareas_seleccionadas_presupuesto(
+                            proy_name, idx_p, p_nom_completo, selected_indices
+                        ):
+                            st.session_state[sel_saved_key] = []
+                            if base_ppto_key in st.session_state:
+                                del st.session_state[base_ppto_key]
+                            st.session_state[c_ppto_key] = c_ppto_val + 1
+                            st.rerun()
 
             st.data_editor(
                 st.session_state[base_ppto_key],
@@ -1697,7 +1798,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 num_rows="fixed",
                 disabled=["Item", "Valor_Parcial"],
                 column_order=[
-                    "⠿",
+                    "Sel",
                     "Item",
                     "Descripcion",
                     "Especialidad",
@@ -1710,12 +1811,11 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 ],
                 key=w_ppto_key,
                 column_config={
-                    "⠿": st.column_config.SelectboxColumn(
-                        "⠿ Mover",
-                        options=["⠿", "⬆ Subir", "⬇ Bajar"],
-                        default="⠿",
-                        width=65,
-                        help="Haz click en ⠿ para subir o bajar esta tarea de posición",
+                    "Sel": st.column_config.CheckboxColumn(
+                        "☑",
+                        default=False,
+                        width=48,
+                        help="Selecciona una o varias tareas para moverlas o borrarlas",
                     ),
                     "Item": st.column_config.TextColumn("Ítem", width="small", disabled=True),
                     "Descripcion": st.column_config.TextColumn("Descripción de la Tarea / Sub-partida", width="large"),
@@ -1747,18 +1847,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 ),
             )
 
-            # Reordenamiento Drag & Drop integrado en la misma tabla (click sostenido en ⠿ o Ítem)
-            if len(rows_ed) > 1:
-                _render_table_dnd_controller(
-                    proy_name=proy_name,
-                    idx_p=idx_p,
-                    p_nom_completo=p_nom_completo,
-                    rows_ed=rows_ed,
-                    c_ppto_key=c_ppto_key,
-                    c_ppto_val=c_ppto_val,
-                )
-            else:
-                st.caption("🔒 *Especialidad y Contratista son internos (no se exportan al cliente).*")
+            st.caption("🔒 *Especialidad y Contratista son internos (no se exportan al cliente).*")
 
     # Cuadro Resumen de Cierre del Presupuesto + Exportación a Excel
     st.divider()

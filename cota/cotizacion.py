@@ -226,6 +226,23 @@ def puede_rehacer_presupuesto(proy_name: str) -> bool:
     return bool(st.session_state.get(k_redo))
 
 
+def _limpiar_estado_widgets_ppto(proy_name: str):
+    """Limpia claves efímeras de widgets de 03. PRESUPUESTO para forzar recarga limpia."""
+    prefijos = (
+        f"base_df_ppto_{proy_name}",
+        f"c_base_df_ppto_{proy_name}",
+        f"ed_ppto_{proy_name}",
+        f"cfg_n_partidas_{proy_name}",
+        f"ppto_ntasks_{proy_name}",
+        f"ppto_pnom_{proy_name}",
+        f"sel_saved_ppto_{proy_name}",
+        f"sel_ver_ppto_{proy_name}",
+    )
+    for k in list(st.session_state.keys()):
+        if str(k).startswith(prefijos):
+            del st.session_state[k]
+
+
 def _restaurar_snapshot_presupuesto(proy_name: str, snap: dict):
     """Restaura en session_state los datos guardados en un snapshot."""
     # 1. Restaurar tareas
@@ -256,11 +273,7 @@ def _restaurar_snapshot_presupuesto(proy_name: str, snap: dict):
 
     # 5. Invalidar estados de data_editor para forzar recarga limpia en la UI
     clear_base_dfs()
-    for k in list(st.session_state.keys()):
-        if str(k).startswith(f"base_df_ppto_{proy_name}") or str(k).startswith(f"c_base_df_ppto_{proy_name}") or str(k).startswith(f"ed_ppto_{proy_name}"):
-            del st.session_state[k]
-        elif str(k).startswith(f"cfg_n_partidas_{proy_name}") or str(k).startswith(f"ppto_ntasks_{proy_name}") or str(k).startswith(f"ppto_pnom_{proy_name}"):
-            del st.session_state[k]
+    _limpiar_estado_widgets_ppto(proy_name)
 
     recalcular_totales_presupuesto_proyecto(proy_name)
 
@@ -637,6 +650,155 @@ def ajustar_cantidad_partidas_proyecto(proy_name: str, nueva_cantidad: int, n_ta
     recalcular_totales_presupuesto_proyecto(proy_name)
 
 
+def agregar_partida_presupuesto(proy_name: str, n_tareas_default: int = 3) -> int:
+    """Agrega una nueva Partida al final del presupuesto del proyecto con sus tareas iniciales."""
+    parts_proy = (
+        st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name]
+        if "partidas" in st.session_state and not st.session_state.partidas.empty
+        else pd.DataFrame()
+    )
+    nueva_cant = len(parts_proy) + 1
+    ajustar_cantidad_partidas_proyecto(proy_name, nueva_cant, n_tareas_default=n_tareas_default)
+    return nueva_cant
+
+
+def _crear_fila_tarea_ppto(
+    proy_name: str,
+    nombre_partida_completo: str,
+    idx_partida_1based: int,
+    pos_tarea_1based: int,
+) -> dict:
+    """Construye el diccionario base de una nueva tarea en el presupuesto."""
+    cod_t = f"{idx_partida_1based}.{pos_tarea_1based:02d}"
+    hoy = datetime.date.today().strftime("%Y-%m-%d")
+    return {
+        "Proyecto": proy_name,
+        "Partida": nombre_partida_completo,
+        "Orden": pos_tarea_1based,
+        "Codigo_Item": cod_t,
+        "Tarea": cod_t,
+        "Especialidad": "Ninguna",
+        "Contratista": "",
+        "Estado": "🟡 Planificado",
+        "Supervisado": "No",
+        "Inicio": hoy,
+        "Fin": hoy,
+        "Causa_Cumplimiento": "",
+        "Culpa_Contratista": False,
+        "Permitir_Cruce": False,
+        "Dependencia": "",
+        "Notas": "",
+        "Moneda": "Soles",
+        "Unidad": "glb",
+        "Metrado": 1.0,
+        "Valor_Unitario": 0.0,
+        "Presupuesto": 0.0,
+    }
+
+
+def _renumerar_df_tareas_partida(df_t_p: pd.DataFrame, idx_partida_1based: int) -> pd.DataFrame:
+    """Renumera Orden, Codigo_Item y el prefijo numérico de Tarea de una Partida conservando descripciones."""
+    df_out = df_t_p.copy().reset_index(drop=True)
+    n = len(df_out)
+    descs = [
+        extraer_descripcion_tarea(
+            df_out.at[i, "Tarea"],
+            safe_str(df_out.at[i, "Codigo_Item"]) or f"{idx_partida_1based}.{i + 1:02d}",
+        )
+        for i in range(n)
+    ]
+    for i_new in range(n):
+        cod_new = f"{idx_partida_1based}.{i_new + 1:02d}"
+        d_limp = descs[i_new]
+        df_out.at[i_new, "Orden"] = i_new + 1
+        df_out.at[i_new, "Codigo_Item"] = cod_new
+        df_out.at[i_new, "Tarea"] = f"{cod_new} {d_limp}".strip() if d_limp else cod_new
+    return df_out
+
+
+def eliminar_partida_presupuesto(
+    proy_name: str,
+    idx_partida_1based: int,
+    nombre_partida_completo: str = None,
+) -> bool:
+    """
+    Elimina una Partida específica (conservando al menos 1 partida en el proyecto) y renumera
+    las Partidas restantes junto con sus tareas (1.01, 2.01...).
+    """
+    if "partidas" not in st.session_state or st.session_state.partidas.empty:
+        return False
+
+    parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
+    n = len(parts_proy)
+    if n <= 1:
+        return False
+
+    curr_pos = int(idx_partida_1based) - 1
+    if nombre_partida_completo and (
+        not (0 <= curr_pos < n) or parts_proy.at[curr_pos, "Nombre_Partida"] != nombre_partida_completo
+    ):
+        matches = parts_proy[parts_proy["Nombre_Partida"] == nombre_partida_completo].index.tolist()
+        if matches:
+            curr_pos = int(matches[0])
+
+    if not (0 <= curr_pos < n):
+        return False
+
+    guardar_snapshot_presupuesto(proy_name)
+    _sanitizar_dtypes_tasks_y_proyectos()
+
+    p_lista = parts_proy["Nombre_Partida"].tolist()
+    partida_a_eliminar = p_lista[curr_pos]
+    p_restantes = [p for i, p in enumerate(p_lista) if i != curr_pos]
+
+    map_renombre = {}
+    for i_new, old_p_name in enumerate(p_restantes, start=1):
+        limp = limpiar_nombre_partida(old_p_name, i_new)
+        nuevo_nom = formatear_nombre_partida(i_new, limp)
+        map_renombre[old_p_name] = (i_new, nuevo_nom)
+
+    nuevas_partidas_proy = [
+        {"Proyecto": proy_name, "Nombre_Partida": map_renombre[old_p][1]}
+        for old_p in p_restantes
+    ]
+    st.session_state.partidas = st.session_state.partidas[st.session_state.partidas["Proyecto"] != proy_name].reset_index(drop=True)
+    st.session_state.partidas = pd.concat([st.session_state.partidas, pd.DataFrame(nuevas_partidas_proy)], ignore_index=True)
+
+    if "p_info" in st.session_state and not st.session_state.p_info.empty:
+        st.session_state.p_info = st.session_state.p_info[
+            ~((st.session_state.p_info["Proyecto"] == proy_name) & (st.session_state.p_info["Nombre_Partida"] == partida_a_eliminar))
+        ].reset_index(drop=True)
+        mask_pi = st.session_state.p_info["Proyecto"] == proy_name
+        for old_p, (_, nuevo_nom) in map_renombre.items():
+            st.session_state.p_info.loc[mask_pi & (st.session_state.p_info["Nombre_Partida"] == old_p), "Nombre_Partida"] = nuevo_nom
+
+    if "tasks" in st.session_state and not st.session_state.tasks.empty:
+        mask_t = st.session_state.tasks["Proyecto"] == proy_name
+        df_proy_t = st.session_state.tasks[mask_t & (st.session_state.tasks["Partida"] != partida_a_eliminar)].copy()
+        for old_p, (i_new, nuevo_nom) in map_renombre.items():
+            m_tp = df_proy_t["Partida"] == old_p
+            if m_tp.any():
+                df_sub = _renumerar_df_tareas_partida(df_proy_t[m_tp], i_new)
+                df_sub["Partida"] = nuevo_nom
+                indices_sub = df_proy_t[m_tp].index.tolist()
+                for pos_s, idx_orig in enumerate(indices_sub):
+                    for col_r in ("Partida", "Orden", "Codigo_Item", "Tarea"):
+                        df_proy_t.at[idx_orig, col_r] = df_sub.at[pos_s, col_r]
+
+        st.session_state.tasks = st.session_state.tasks[~mask_t].reset_index(drop=True)
+        st.session_state.tasks = pd.concat([st.session_state.tasks, df_proy_t], ignore_index=True)
+
+    if "pagos" in st.session_state and not st.session_state.pagos.empty:
+        mask_pag = st.session_state.pagos["Proyecto"] == proy_name
+        for old_p, (_, nuevo_nom) in map_renombre.items():
+            st.session_state.pagos.loc[mask_pag & (st.session_state.pagos["Partida"] == old_p), "Partida"] = nuevo_nom
+
+    clear_base_dfs()
+    _limpiar_estado_widgets_ppto(proy_name)
+    recalcular_totales_presupuesto_proyecto(proy_name)
+    return True
+
+
 def renombrar_partida_presupuesto(
     proy_name: str,
     idx_partida_1based,
@@ -860,6 +1022,88 @@ def reordenar_tareas_partida_por_indices(
     return True
 
 
+def mover_tareas_seleccionadas_presupuesto(
+    proy_name: str,
+    idx_partida_1based: int,
+    nombre_partida_completo: str,
+    selected_indices_0based: list[int],
+    direccion: str,
+) -> tuple[bool, list[int]]:
+    """
+    Mueve verticalmente una o varias tareas seleccionadas ('subir' o 'bajar') dentro de su Partida,
+    preservando su orden relativo, renumerando Codigo_Item y Orden, y devolviendo (movido, nuevos_indices).
+    """
+    if "tasks" not in st.session_state or st.session_state.tasks.empty:
+        return False, []
+    mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
+    df_t_p = st.session_state.tasks[mask_t].copy().reset_index(drop=True)
+    n = len(df_t_p)
+    valid_sel = sorted({int(i) for i in (selected_indices_0based or []) if 0 <= int(i) < n})
+    if n <= 1 or not valid_sel:
+        return False, valid_sel
+
+    sel_set = set(valid_sel)
+    perm = list(range(n))
+    if direccion == "subir":
+        for i in range(1, n):
+            if perm[i] in sel_set and perm[i - 1] not in sel_set:
+                perm[i], perm[i - 1] = perm[i - 1], perm[i]
+    elif direccion == "bajar":
+        for i in range(n - 2, -1, -1):
+            if perm[i] in sel_set and perm[i + 1] not in sel_set:
+                perm[i], perm[i + 1] = perm[i + 1], perm[i]
+    else:
+        return False, valid_sel
+
+    if perm == list(range(n)):
+        return False, valid_sel
+
+    guardar_snapshot_presupuesto(proy_name)
+    _sanitizar_dtypes_tasks_y_proyectos()
+    df_reord = _renumerar_df_tareas_partida(df_t_p.iloc[perm], idx_partida_1based)
+    _reemplazar_tareas_partida_in_place(proy_name, nombre_partida_completo, df_reord)
+    clear_base_dfs()
+    recalcular_totales_presupuesto_proyecto(proy_name)
+    nuevos_indices = [pos for pos, orig_idx in enumerate(perm) if orig_idx in sel_set]
+    return True, nuevos_indices
+
+
+def eliminar_tareas_seleccionadas_presupuesto(
+    proy_name: str,
+    idx_partida_1based: int,
+    nombre_partida_completo: str,
+    selected_indices_0based: list[int],
+) -> bool:
+    """
+    Elimina las tareas seleccionadas dentro de una Partida y renumera las restantes.
+    Si se seleccionan todas las tareas de la Partida, deja 1 tarea base vacía ({idx_p}.01).
+    """
+    if "tasks" not in st.session_state or st.session_state.tasks.empty:
+        return False
+    mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
+    df_t_p = st.session_state.tasks[mask_t].copy().reset_index(drop=True)
+    n = len(df_t_p)
+    valid_sel = sorted({int(i) for i in (selected_indices_0based or []) if 0 <= int(i) < n})
+    if n == 0 or not valid_sel:
+        return False
+
+    guardar_snapshot_presupuesto(proy_name)
+    _sanitizar_dtypes_tasks_y_proyectos()
+
+    sel_set = set(valid_sel)
+    keep_idx = [i for i in range(n) if i not in sel_set]
+    if keep_idx:
+        df_keep = _renumerar_df_tareas_partida(df_t_p.iloc[keep_idx], idx_partida_1based)
+    else:
+        fila_base = _crear_fila_tarea_ppto(proy_name, nombre_partida_completo, idx_partida_1based, 1)
+        df_keep = pd.DataFrame([fila_base])[COLS_TASKS]
+
+    _reemplazar_tareas_partida_in_place(proy_name, nombre_partida_completo, df_keep)
+    clear_base_dfs()
+    recalcular_totales_presupuesto_proyecto(proy_name)
+    return True
+
+
 def mover_partida_presupuesto(
     proy_name: str,
     idx_partida_1based: int,
@@ -928,6 +1172,7 @@ def mover_partida_presupuesto(
             st.session_state.pagos.loc[mask_pag & (st.session_state.pagos["Partida"] == old_p), "Partida"] = nuevo_nom
 
     clear_base_dfs()
+    _limpiar_estado_widgets_ppto(proy_name)
     recalcular_totales_presupuesto_proyecto(proy_name)
     return True
 
@@ -950,6 +1195,15 @@ def aplicar_edicion_tabla_presupuesto_partida(
     edits = st.session_state[widget_key]
     edited_rows = edits.get("edited_rows", {})
     if not edited_rows:
+        return
+
+    # Ignorar ediciones que solo marcan/desmarcan casillas 'Sel' para no recargar la tabla ni ensuciar Undo
+    has_non_sel_edit = any(
+        any(col_k != "Sel" for col_k in changes.keys())
+        for changes in edited_rows.values()
+        if isinstance(changes, dict)
+    )
+    if not has_non_sel_edit:
         return
 
     # Si el usuario hizo click en ⠿ y seleccionó Subir o Bajar, mover la fila inmediatamente
@@ -978,12 +1232,16 @@ def aplicar_edicion_tabla_presupuesto_partida(
     for c_txt_b in ["⠿", "Item", "Descripcion", "Especialidad", "Contratista", "Moneda", "Unidad"]:
         if c_txt_b in df_base.columns and df_base[c_txt_b].dtype != object:
             df_base[c_txt_b] = df_base[c_txt_b].fillna("").astype(str).astype(object)
+    if "Sel" in df_base.columns:
+        df_base["Sel"] = df_base["Sel"].map(to_bool).astype(bool)
 
     for r_str, changes in edited_rows.items():
         r_i = int(r_str)
         if r_i in df_base.index:
             for col_k, val in changes.items():
-                if col_k in ("Metrado", "Valor_Unitario", "Valor_Parcial"):
+                if col_k == "Sel":
+                    df_base.at[r_i, col_k] = to_bool(val)
+                elif col_k in ("Metrado", "Valor_Unitario", "Valor_Parcial"):
                     df_base.at[r_i, col_k] = safe_float(val, 0.0)
                 else:
                     if col_k in df_base.columns and df_base[col_k].dtype != object:
@@ -1027,6 +1285,13 @@ def aplicar_edicion_tabla_presupuesto_partida(
         if "Contratista" in row_ed:
             con_v = safe_str(row_ed.get("Contratista", "")).strip()
             st.session_state.tasks.at[t_idx_global, "Contratista"] = con_v
+
+    if "Sel" in df_base.columns:
+        st.session_state[f"sel_saved_ppto_{proy_name}_{idx_partida_1based}"] = [
+            int(pos_s)
+            for pos_s, (_, r_s) in enumerate(df_base.iterrows())
+            if to_bool(r_s.get("Sel", False))
+        ]
 
     if base_key in st.session_state:
         del st.session_state[base_key]
