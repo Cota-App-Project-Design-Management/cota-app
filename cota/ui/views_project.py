@@ -63,6 +63,9 @@ try:
         or not hasattr(cota.cotizacion, "mover_tareas_seleccionadas_presupuesto")
         or not hasattr(cota.cotizacion, "eliminar_tareas_seleccionadas_presupuesto")
         or not hasattr(cota.cotizacion, "exportar_presupuesto_pdf")
+        or not hasattr(cota.cotizacion, "resumen_contratistas_semana")
+        or not hasattr(cota.cotizacion, "registrar_pago_en_fila_dict")
+        or not hasattr(cota.cotizacion, "obtener_utilidades_gestion_pagadas_proyecto")
     ):
         importlib.reload(cota.cotizacion)
     if not hasattr(cota.pdf, "generar_pdf_minuta"):
@@ -110,16 +113,37 @@ from cota.cotizacion import (
     redondear_arriba_100,
     rehacer_presupuesto,
     renombrar_partida_presupuesto,
+    TIPOS_PAGO_CUADRO,
+    _extraer_contratista_de_notas,
+    obtener_contratistas_disponibles_proyecto,
+    obtener_pagos_semana,
+    obtener_utilidades_gestion_pagadas_proyecto,
+    registrar_pago_en_fila_dict,
     reordenar_tareas_partida_por_indices,
 )
 from cota.pdf import generar_pdf_minuta
+import cota.ui.cuadro_pagos
+try:
+    if not hasattr(cota.ui.cuadro_pagos, "build_pagos_floating_ui_js"):
+        importlib.reload(cota.ui.cuadro_pagos)
+except Exception:
+    pass
+from cota.ui.cuadro_pagos import (
+    build_cell_payments_badge_and_tooltip,
+    build_pagos_floating_ui_js,
+    render_pagos_realizados_por_semana_panel,
+    resolver_semana_activa_cuadro,
+)
 import cota.ui.components
 try:
-    if not hasattr(cota.ui.components, "render_chat_notas_proyecto"):
+    if (
+        not hasattr(cota.ui.components, "render_chat_notas_proyecto")
+        or not hasattr(cota.ui.components, "render_alertas_cruce_contratistas")
+    ):
         importlib.reload(cota.ui.components)
 except Exception:
     pass
-from cota.ui.components import render_chat_notas_proyecto, render_metric_card
+from cota.ui.components import render_alertas_cruce_contratistas, render_alertas_cruce_partida, render_chat_notas_proyecto, render_metric_card
 from cota.utils import (
     analizar_tareas_proyecto,
     extraer_esp,
@@ -275,7 +299,9 @@ def _render_tab_resumen(proy_name, proy_data):
     with c3:
         render_metric_card("Pagos Contratistas", format_currency(total_pagado_maestros), "Ejecución de obra")
     with c4:
-        render_metric_card("Utilidades / Superv.", format_currency(util_proy), f"Honorarios: {format_currency(hon_diseno)}", border_color="#4A7C59", text_color="#4A7C59")
+        util_ges_recibida = obtener_utilidades_gestion_pagadas_proyecto(proy_name)
+        sub_util_res = f"Recibido: {format_currency(util_ges_recibida)} · Hon.: {format_currency(hon_diseno)}" if util_ges_recibida > 0 else f"Honorarios: {format_currency(hon_diseno)}"
+        render_metric_card("Utilidades / Superv.", format_currency(util_proy), sub_util_res, border_color="#4A7C59", text_color="#4A7C59")
     with c5:
         col_caja = "#4A7C59" if caja_restante >= 0 else "#C93B2B"
         render_metric_card("Caja Chica Saldo", format_currency(caja_restante), f"Gastado: {format_currency(caja_gastada)}", border_color=col_caja, text_color=col_caja)
@@ -2158,6 +2184,7 @@ def _render_tab_obra(proy_name, proy_data):
                     clear_base_dfs()
                     st.rerun()
 
+    render_alertas_cruce_contratistas(proy_name)
     with st.expander("📊 CRONOGRAMA GANTT POR PARTIDA Y TAREAS (INICIO → FIN Y ESTADOS)", expanded=False):
         if not df_all_t_proy.empty:
             df_gantt_raw = df_all_t_proy.copy()
@@ -2493,7 +2520,7 @@ def _render_tab_obra(proy_name, proy_data):
         cols_task_ed = [
             'Codigo_Item', 'Tarea', 'Moneda', 'Unidad', 'Metrado', 'Valor_Unitario', 'Presupuesto',
             'Especialidad', 'Contratista', 'Estado', 'Supervisado', 'Inicio', 'Fin',
-            'Causa_Cumplimiento', 'Dependencia', 'Notas'
+            'Causa_Cumplimiento', 'Dependencia', 'Permitir_Cruce', 'Notas'
         ]
         for c_req in cols_task_ed:
             if c_req not in df_tasks_p.columns:
@@ -2522,6 +2549,7 @@ def _render_tab_obra(proy_name, proy_data):
         if 'Supervisado' in display_t.columns:
             display_t['Supervisado'] = display_t['Supervisado'].apply(_normalizar_supervisado)
 
+        display_t['Permitir_Cruce'] = display_t['Permitir_Cruce'].apply(to_bool) if 'Permitir_Cruce' in display_t.columns else False
         st.session_state[base_t_key] = display_t.copy()
 
         st.data_editor(
@@ -2537,6 +2565,7 @@ def _render_tab_obra(proy_name, proy_data):
                 "Contratista",
                 "Estado",
                 "Supervisado",
+                "Permitir_Cruce",
                 "Inicio",
                 "Fin",
                 "Notas",
@@ -2553,6 +2582,7 @@ def _render_tab_obra(proy_name, proy_data):
                 "Contratista": st.column_config.SelectboxColumn("Contratista", options=contratistas_obra),
                 "Estado": st.column_config.SelectboxColumn("Estado", options=STATUS_TASKS),
                 "Supervisado": st.column_config.SelectboxColumn("Supervisado ✓", options=["No", "Sí"], default="No", width="small"),
+                "Permitir_Cruce": st.column_config.CheckboxColumn("Permitir cruce", default=False, width="small", help="Autoriza que este contratista tenga tareas simultáneas en la misma fecha en distintos proyectos o tareas"),
                 "Inicio": st.column_config.DateColumn("Inicio", format="DD/MM/YYYY"),
                 "Fin": st.column_config.DateColumn("Fin", format="DD/MM/YYYY"),
                 "Notas": st.column_config.TextColumn("Notas")
@@ -2572,6 +2602,7 @@ def _render_tab_obra(proy_name, proy_data):
             )
         )
 
+        render_alertas_cruce_partida(proy_name, p_nom)
         # Barra rápida: Selector de Rango de Fechas (Inicio → Fin en el mismo calendario con resaltado) + Sugerir Contratista
         if not df_tasks_p.empty:
             opciones_t_obra = [
@@ -2641,11 +2672,22 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
     if tc_val <= 0:
         tc_val = 3.60
     cols_por_pagar = list(data_cuadro.get("cols_por_pagar", []))
+    contratistas_disp = obtener_contratistas_disponibles_proyecto(proy_name, data_cuadro)
+    pagos_todos = obtener_pagos_semana(data_cuadro, "ALL")
+    col_labels = {c: etiqueta_corta_columna_pago(c) for c in cols_pago}
+    col_export_labels = {c: etiqueta_export_columna_pago(c) for c in cols_pago}
+    floating_ui_js = build_pagos_floating_ui_js()
 
     import time
     payload_json = json.dumps({
         "safeId": safe_proy_id,
         "bridgeLabel": f"PAGOS_BRIDGE_{safe_proy_id}",
+        "colLabels": col_labels,
+        "colExportLabels": col_export_labels,
+        "contractors": contratistas_disp,
+        "paymentTypes": list(TIPOS_PAGO_CUADRO),
+        "payments": pagos_todos,
+        "todayIso": datetime.date.today().strftime("%Y-%m-%d"),
         "colsPago": cols_pago,
         "colsPorPagar": cols_por_pagar,
         "tc": tc_val,
@@ -2659,7 +2701,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
     <body style="margin:0; padding:0; overflow:hidden; background:transparent;">
     <script>
     (function() {{
-        const payload = {payload_json};
+        const payload = {payload_json.replace("</", "<\\/")};
         const parentWin = window.parent;
         const parentDoc = parentWin.document;
         const safeId = payload.safeId;
@@ -2822,12 +2864,12 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
             const tooltip = getOrCreateTooltip();
             tooltip.innerHTML = `
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; border-bottom:1px solid rgba(255,255,255,0.18); padding-bottom:5px;">
-                    <span style="background:#C85A32; color:#FFFFFF; font-size:10px; font-weight:800; text-transform:uppercase; padding:2px 7px; border-radius:4px; letter-spacing:0.5px;">💬 NOTA DE PAGO</span>
+                    <span style="background:#C85A32; color:#FFFFFF; font-size:10px; font-weight:800; text-transform:uppercase; padding:2px 7px; border-radius:4px; letter-spacing:0.5px;">💳 DETALLE DE PAGO</span>
                     <span style="font-size:11.5px; font-weight:700; color:#EFECE6;">${{semana}}</span>
                 </div>
                 <div style="font-size:13px; font-weight:700; color:#FFFFFF; margin-bottom:2px;">${{partida}}</div>
                 <div style="font-size:11.5px; font-weight:700; color:#78C288; background:rgba(74,124,89,0.25); display:inline-block; padding:2px 6px; border-radius:4px; margin-bottom:7px;">Monto: ${{monto}}</div>
-                <div style="font-size:12.5px; color:#EFECE6; line-height:1.4; font-style:italic; border-left:3px solid #C85A32; padding-left:8px; margin-top:2px;">"${{nota}}"</div>
+                <div style="font-size:12px; color:#EFECE6; line-height:1.45; border-left:3px solid #C85A32; padding-left:8px; margin-top:2px;">${{escHtml(nota).replace(/\\n/g, '<br>')}}</div>
             `;
             tooltip.style.display = 'block';
             tooltip.style.opacity = '1';
@@ -2992,6 +3034,8 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
             }}
         }}
 
+        {floating_ui_js}
+
         const iconExpand = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>';
         const iconCollapse = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:5px;"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>';
 
@@ -3047,6 +3091,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
         function startCellEditing(cell, fsWrap) {{
             if (cell.classList.contains('cota-cell-editing')) return;
             commitAnyActiveEdit(fsWrap);
+            closeCellPopover();
             hideTooltip();
 
             const rType = cell.getAttribute('data-row-type');
@@ -3148,6 +3193,10 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
             const curVal = parseFloat(cell.getAttribute('data-raw-val')) || 0;
             const curNote = cell.getAttribute('data-cota-note-text') || '';
             const isPaymentCol = colField !== 'TOTAL';
+            if (isPaymentCol) {{
+                openCellPopover(cell, fsWrap);
+                return;
+            }}
 
             cell.classList.add('cota-cell-editing');
             const initStr = curVal !== 0 ? String(curVal) : '';
@@ -3249,7 +3298,17 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
                 return;
             }}
 
-            if (!fsWrap.contains(ev.target)) return;
+            if (
+                ev.target.closest('#cota_pagos_registro_modal')
+                || ev.target.closest('#cota_pagos_semana_modal')
+                || ev.target.closest('#cota_pagos_cell_popover')
+            ) {{
+                return;
+            }}
+            if (!fsWrap.contains(ev.target)) {{
+                closeCellPopover();
+                return;
+            }}
 
             // 2. Botón para agregar fila
             const btnAdd = ev.target.closest('[data-cota-action="add-row"]');
@@ -3273,13 +3332,26 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
             }}
 
             // 4. Cabeceras de semanas: Por Pagar
-            const thPp = ev.target.closest('th[data-cota-toggle-pp]');
+            const thPp = ev.target.closest('[data-cota-toggle-pp-pill]') || ev.target.closest('th[data-cota-toggle-pp]');
             if (thPp) {{
                 ev.preventDefault();
                 ev.stopPropagation();
-                const colName = thPp.getAttribute('data-cota-toggle-pp');
+                const colName = thPp.getAttribute('data-cota-toggle-pp-pill') || thPp.getAttribute('data-cota-toggle-pp');
                 if (colName) {{
                     sendBridgePayload({{ action: 'toggle_por_pagar', col: colName }});
+                }}
+                return;
+            }}
+
+            // 4b. Clic en columna de semana -> abrir ventana de Pagos realizados esa semana
+            const thWeek = ev.target.closest('th[data-cota-week-header]');
+            if (thWeek) {{
+                ev.preventDefault();
+                ev.stopPropagation();
+                closeCellPopover();
+                const colWk = thWeek.getAttribute('data-cota-week-header');
+                if (colWk) {{
+                    openSemanaPagosModal(colWk, fsWrap);
                 }}
                 return;
             }}
@@ -3296,6 +3368,18 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
             if (ev.key === 'Escape') {{
                 const fsWrap = parentDoc.getElementById('cota_cuadro_pagos_fs_wrap_' + safeId);
                 if (!fsWrap) return;
+                if (parentDoc.getElementById('cota_pagos_registro_modal')) {{
+                    closeRegistroModal();
+                    return;
+                }}
+                if (parentDoc.getElementById('cota_pagos_semana_modal')) {{
+                    closeSemanaModal();
+                    return;
+                }}
+                if (parentDoc.getElementById('cota_pagos_cell_popover')) {{
+                    closeCellPopover();
+                    return;
+                }}
                 if (fsWrap.querySelector('.cota-cell-editing')) return;
                 if (fsWrap.classList.contains('cota-pagos-fs-active')) {{
                     parentWin.__cotaPagosFsState[safeId] = false;
@@ -3336,6 +3420,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
         parentWin.__cotaPagosControllers[safeId] = {{
             cleanup: function() {{
                 try {{
+                    closeAllPagosPopups();
                     parentDoc.removeEventListener('click', onDocClick, true);
                     parentDoc.removeEventListener('keydown', onDocKeyDown, true);
                     parentDoc.removeEventListener('pointermove', onDocPointerMove, true);
@@ -3463,8 +3548,11 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                         st.error("No se detectó la estructura del cuadro de pagos en el archivo.")
 
     safe_fn = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in proy_name).strip("_") or "Proyecto"
+    sem_activa_ui = resolver_semana_activa_cuadro(proy_name, data_cuadro, cols_pago)
+    data_cuadro_export = dict(data_cuadro)
+    data_cuadro_export["semana_resumen"] = sem_activa_ui
     with b_act3:
-        xlsx_bytes = exportar_cuadro_pagos_semanales_excel(proy_name, data_cuadro)
+        xlsx_bytes = exportar_cuadro_pagos_semanales_excel(proy_name, data_cuadro_export)
         st.download_button(
             label="📥 EXPORTAR EXCEL (.XLSX)",
             data=xlsx_bytes,
@@ -3476,7 +3564,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         )
 
     with b_act4:
-        pdf_bytes = exportar_cuadro_pagos_semanales_pdf(proy_name, data_cuadro)
+        pdf_bytes = exportar_cuadro_pagos_semanales_pdf(proy_name, data_cuadro_export)
         st.download_button(
             label="📄 EXPORTAR PDF (.PDF)",
             data=pdf_bytes,
@@ -3504,7 +3592,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         render_metric_card(
             "Total Pagado",
             format_currency(tot_soles["PAGADO"]),
-            f"USD $ {tot_usd['PAGADO']:,.2f} ({pct_pag:.1f}% desembolsado)",
+            f"USD $ {tot_usd['PAGADO']:,.2f} ({pct_pag:.1f}% desembolsado)" + (f" · Gestión rec.: {format_currency(safe_float(res_calc.get('fila_gestion', {}).get('PAGADO', 0.0), 0.0))}" if safe_float(res_calc.get("fila_gestion", {}).get("PAGADO", 0.0), 0.0) > 0 else ""),
             border_color="#4A7C59",
             text_color="#4A7C59",
         )
@@ -3571,8 +3659,8 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
 
     tb_col1, tb_col2, tb_col3 = st.columns([3.4, 3.2, 3.4])
     with tb_col1:
-        with st.popover("✏️ Registrar / Modificar Pago Rápido", use_container_width=True):
-            st.markdown("##### ✏️ Registrar o Modificar Desembolso")
+        with st.popover("➕ Ingresar Nuevo Pago", use_container_width=True):
+            st.markdown("##### 💳 Registro de Pago")
             st.caption("Ingresa rápidamente un monto de pago (y su nota opcional) para cualquier contratista o semana.")
             fila_qp_lbl = st.selectbox(
                 "Partida / Contratista / Concepto:",
@@ -3586,7 +3674,29 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                 format_func=etiqueta_corta_columna_pago,
                 key=f"sel_col_qp_{proy_name}",
             )
-            val_qp_actual = safe_float(obj_qp.get(col_qp_sel, 0.0), 0.0)
+            def_con_qp = _extraer_contratista_de_notas(obj_qp.get("Notas", ""))
+            contratistas_qp_list = obtener_contratistas_disponibles_proyecto(proy_name, data_cuadro)
+            opts_con_qp = list(dict.fromkeys(([def_con_qp] if def_con_qp else []) + contratistas_qp_list + ["+ Escribir otro contratista..."]))
+            con_qp_sel = st.selectbox(
+                "Contratista:",
+                options=opts_con_qp,
+                key=f"sel_con_qp_{proy_name}_{fila_qp_lbl}",
+            )
+            if con_qp_sel == "+ Escribir otro contratista...":
+                con_qp_final = st.text_input("Nombre del Contratista:", key=f"txt_con_qp_{proy_name}").strip()
+            else:
+                con_qp_final = safe_str(con_qp_sel).strip()
+            c_tp_f1, c_tp_f2 = st.columns(2)
+            with c_tp_f1:
+                tipo_qp_pago = st.selectbox(
+                    "Tipo de Pago:",
+                    options=TIPOS_PAGO_CUADRO,
+                    index=0 if "ADELANTO" in col_qp_sel else 1,
+                    key=f"sel_tipo_qp_{proy_name}_{col_qp_sel}",
+                )
+            with c_tp_f2:
+                fecha_qp_sel = st.date_input("Fecha:", value=datetime.date.today(), key=f"dt_qp_{proy_name}")
+            val_qp_actual = 0.0
             nota_qp_actual = (obj_qp.get("Notas_Pagos", {}) or {}).get(col_qp_sel, "") if isinstance(obj_qp.get("Notas_Pagos"), dict) else ""
             nuevo_monto_qp = st.number_input(
                 f"Monto para {etiqueta_corta_columna_pago(col_qp_sel)}:",
@@ -3602,12 +3712,12 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                 placeholder="",
                 key=f"txt_qp_{proy_name}_{fila_qp_lbl}_{col_qp_sel}",
             )
-            if st.button("💾 Guardar Pago", key=f"btn_save_qp_{proy_name}", type="primary", use_container_width=True):
+            if st.button("💾 Guardar Pago", key=f"btn_save_qp_{proy_name}", type="primary", use_container_width=True) and nuevo_monto_qp > 0 and con_qp_final:
                 d_cur_qp = obtener_cuadro_pagos_semanales_proyecto(proy_name)
                 if tipo_qp == "contratista":
                     fc_list = list(d_cur_qp.get("filas_contratistas", []))
                     if idx_qp < len(fc_list):
-                        fc_list[idx_qp][col_qp_sel] = round(float(nuevo_monto_qp), 2)
+                        registrar_pago_en_fila_dict(fc_list[idx_qp], col_qp_sel, con_qp_final, tipo_qp_pago, fecha_qp_sel, nuevo_monto_qp, nota=nueva_nota_qp)
                         np_d = dict(fc_list[idx_qp].get("Notas_Pagos", {}))
                         if nueva_nota_qp.strip():
                             np_d[col_qp_sel] = nueva_nota_qp.strip()
@@ -3617,7 +3727,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                         d_cur_qp["filas_contratistas"] = fc_list
                 elif tipo_qp == "gestion":
                     fg_d = dict(d_cur_qp.get("fila_gestion", {}))
-                    fg_d[col_qp_sel] = round(float(nuevo_monto_qp), 2)
+                    registrar_pago_en_fila_dict(fg_d, col_qp_sel, con_qp_final, tipo_qp_pago, fecha_qp_sel, nuevo_monto_qp, nota=nueva_nota_qp)
                     np_d = dict(fg_d.get("Notas_Pagos", {}))
                     if nueva_nota_qp.strip():
                         np_d[col_qp_sel] = nueva_nota_qp.strip()
@@ -3627,7 +3737,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                     d_cur_qp["fila_gestion"] = fg_d
                 elif tipo_qp == "gg":
                     fgg_d = dict(d_cur_qp.get("fila_gg", {}))
-                    fgg_d[col_qp_sel] = round(float(nuevo_monto_qp), 2)
+                    registrar_pago_en_fila_dict(fgg_d, col_qp_sel, con_qp_final, tipo_qp_pago, fecha_qp_sel, nuevo_monto_qp, nota=nueva_nota_qp)
                     np_d = dict(fgg_d.get("Notas_Pagos", {}))
                     if nueva_nota_qp.strip():
                         np_d[col_qp_sel] = nueva_nota_qp.strip()
@@ -3635,6 +3745,8 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                         np_d.pop(col_qp_sel, None)
                     fgg_d["Notas_Pagos"] = np_d
                     d_cur_qp["fila_gg"] = fgg_d
+                d_cur_qp["semana_activa"] = col_qp_sel
+                st.session_state[f"sel_sem_resumen_{proy_name}"] = col_qp_sel
                 guardar_cuadro_pagos_semanales_proyecto(proy_name, d_cur_qp)
                 st.session_state[cnt_cont_key] = st.session_state.get(cnt_cont_key, 0) + 1
                 st.session_state[cnt_ges_key] = st.session_state.get(cnt_ges_key, 0) + 1
@@ -3855,22 +3967,25 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
     border_grid = "1px solid #B8B0A4"
     border_clay = "1px solid rgba(255,255,255,0.22)"
 
+    cnt_pagos_sem = {c: len(obtener_pagos_semana(data_cuadro, c)) for c in cols_pago}
     ths_semanas_list = []
     for c_s in cols_pago:
         lbl_short = html_lib.escape(etiqueta_corta_columna_pago(c_s))
         esc_col_attr = html_lib.escape(c_s, quote=True)
+        n_p_wk = cnt_pagos_sem.get(c_s, 0)
+        wk_cnt_tag = f" <span style='font-size:9.5px; background:rgba(255,255,255,0.22); border-radius:99px; padding:0 5px;'>{n_p_wk}</span>" if n_p_wk > 0 else ""
         if c_s in cols_por_pagar_actual:
             ths_semanas_list.append(
-                f"<th data-cota-toggle-pp='{esc_col_attr}' title='Haz clic para marcar {lbl_short} como Pagado (Rojo)' "
+                f"<th class='cota-week-hdr-clickable' data-cota-week-header='{esc_col_attr}' title='Haz clic para ver pagos realizados en {lbl_short}' "
                 f"style='padding:7px 9px; text-align:center; border:{border_clay}; min-width:86px; cursor:pointer;'>"
-                f"<div>{lbl_short}</div>"
-                f"<div style='font-size:10px; font-weight:800; color:#FFE066; margin-top:2px; letter-spacing:0.2px;'>Por Pagar</div>"
+                f"<div>{lbl_short}{wk_cnt_tag}</div>"
+                f"<div><span class='cota-pp-pill-btn is-pp' data-cota-toggle-pp-pill='{esc_col_attr}' title='Clic para marcar como Pagado (Rojo)'>⏳ Por Pagar</span></div>"
                 f"</th>"
             )
         else:
             ths_semanas_list.append(
-                f"<th data-cota-toggle-pp='{esc_col_attr}' title='Haz clic si deseas marcar {lbl_short} como Por Pagar' "
-                f"style='padding:8px 9px; text-align:center; border:{border_clay}; min-width:82px; cursor:pointer;'>{lbl_short}</th>"
+                f"<th class='cota-week-hdr-clickable' data-cota-week-header='{esc_col_attr}' title='Haz clic para ver pagos realizados en {lbl_short}' "
+                f"style='padding:7px 9px; text-align:center; border:{border_clay}; min-width:82px; cursor:pointer;'><div>{lbl_short}{wk_cnt_tag}</div><div><span class='cota-pp-pill-btn' data-cota-toggle-pp-pill='{esc_col_attr}' title='Clic para marcar {lbl_short} como Por Pagar'>⏳</span></div></th>"
             )
     ths_semanas_html = "".join(ths_semanas_list)
 
@@ -3886,22 +4001,29 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             # Pagos realizados de semanas pasadas en ROJO (#D92B2B); semanas "Por Pagar" en negro/carbón (#262320)
             color_txt = "#262320" if is_pp else "#D92B2B"
             val_str = "" if is_zero else f"{pref_m}{v_num:,.2f}"
-            nota_txt = safe_str(np_dict_r.get(c_s, "")).strip()
+            nota_manual_txt = safe_str(np_dict_r.get(c_s, "")).strip()
+            disp_inner_c, corner_dot_c, tooltip_full_c, pagos_celda_c, def_con_c = build_cell_payments_badge_and_tooltip(
+                fila_d, c_s, pref_m, v_num
+            )
+            esc_pay_json = html_lib.escape(json.dumps(pagos_celda_c, ensure_ascii=False), quote=True)
+            esc_def_con = html_lib.escape(def_con_c, quote=True)
+            esc_nota_man = html_lib.escape(nota_manual_txt, quote=True)
+            nota_txt = tooltip_full_c
             esc_sem_short = html_lib.escape(etiqueta_corta_columna_pago(c_s), quote=True)
             esc_col_f = html_lib.escape(c_s, quote=True)
             esc_mon = html_lib.escape(f"{pref_m}{v_num:,.2f}", quote=True)
 
             if nota_txt:
                 esc_not = html_lib.escape(nota_txt, quote=True)
-                disp_inner = val_str if val_str else "<span style='color:#C85A32; font-size:11px;'>💬</span>"
+                disp_inner = disp_inner_c
                 tds.append(
                     f"<td class='cota-editable-cell' data-row-type='{r_type}' data-row-idx='{r_idx}' "
                     f"data-col-field='{esc_col_f}' data-raw-val='{v_num:.2f}' data-is-pp='{'1' if is_pp else '0'}' data-pref='{esc_pref}' "
                     f"data-cota-note-partida='{esc_part}' data-cota-note-semana='{esc_sem_short}' "
-                    f"data-cota-note-monto='{esc_mon}' data-cota-note-text='{esc_not}' "
+                    f"data-cota-note-monto='{esc_mon}' data-cota-note-text='{esc_not}' data-cota-payments-json='{esc_pay_json}' data-cota-default-contractor='{esc_def_con}' data-cota-note-manual='{esc_nota_man}' "
                     f"style='position:relative; padding:6px 9px; text-align:right; border:{border_grid}; color:{color_txt}; font-weight:600; font-variant-numeric:tabular-nums; background:#FFFDF9;'>"
                     f"{disp_inner}"
-                    f"<span style='position:absolute; top:0; right:0; width:0; height:0; border-top:8px solid #C85A32; border-left:8px solid transparent;'></span>"
+                    f"{corner_dot_c}"
                     f"</td>"
                 )
             else:
@@ -3909,6 +4031,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                     f"<td class='cota-editable-cell' data-row-type='{r_type}' data-row-idx='{r_idx}' "
                     f"data-col-field='{esc_col_f}' data-raw-val='{v_num:.2f}' data-is-pp='{'1' if is_pp else '0'}' data-pref='{esc_pref}' "
                     f"data-cota-note-partida='{esc_part}' data-cota-note-semana='{esc_sem_short}' "
+                    f"data-cota-payments-json='{esc_pay_json}' data-cota-default-contractor='{esc_def_con}' "
                     f"style='position:relative; padding:6px 9px; text-align:right; border:{border_grid}; color:{color_txt}; font-weight:600; font-variant-numeric:tabular-nums;'>{val_str}</td>"
                 )
         return "".join(tds)
@@ -4052,7 +4175,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         f"<div style='font-size:12.5px; color:#FAF8F5; opacity:0.95;'>Cliente: {esc_cli_banner} &nbsp;·&nbsp; TC: S/ {tc_actual:.2f}</div>"
         f"</div>"
         f"<div style='display:flex; align-items:center; gap:10px; flex-wrap:wrap;'>"
-        f"<span style='font-size:11px; color:#FAF8F5; background:rgba(38,35,32,0.18); padding:4px 9px; border-radius:5px;'>✏️ Haz clic en cualquier celda para editar monto o nota &nbsp;·&nbsp; 🔴 Rojo = Pagado</span>"
+        f"<span style='font-size:11px; color:#FAF8F5; background:rgba(38,35,32,0.18); padding:4px 9px; border-radius:5px;'>💳 Clic en celda para registrar pagos &nbsp;·&nbsp; 📅 Clic en semana para ver pagos &nbsp;·&nbsp; 🔴 Rojo = Pagado</span>"
         f"<button id='btn_fs_pagos_{safe_proy_id}' type='button' title='Ver y editar Cuadro en Pantalla Completa (como en YouTube / Excel)' "
         f"style='background:rgba(38,35,32,0.28); color:#FFFFFF; border:1px solid rgba(255,255,255,0.45); border-radius:6px; padding:6px 12px; font-size:12px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; transition:background 0.15s ease;'>"
         f"<svg width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round' style='vertical-align:middle; margin-right:5px;'><path d='M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3'/></svg>"
@@ -4078,6 +4201,28 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         f"</div>"
     )
     st.markdown(html_cuadro_unificado, unsafe_allow_html=True)
+
+    opciones_sem_panel = list(cols_pago) + ["ALL"]
+    sel_sem_key_ui = f"sel_sem_resumen_{proy_name}"
+    if sel_sem_key_ui not in st.session_state or st.session_state[sel_sem_key_ui] not in opciones_sem_panel:
+        st.session_state[sel_sem_key_ui] = sem_activa_ui
+
+    def _on_sem_panel_change():
+        new_w = safe_str(st.session_state.get(sel_sem_key_ui, "")).strip()
+        if new_w:
+            d_upd = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+            d_upd["semana_activa"] = new_w
+            guardar_cuadro_pagos_semanales_proyecto(proy_name, d_upd)
+
+    sem_sel_panel = st.radio(
+        "📅 Selecciona una semana para ver sus pagos realizados (y el resumen incluido al exportar):",
+        options=opciones_sem_panel,
+        format_func=lambda c: "Todas las semanas" if c == "ALL" else etiqueta_export_columna_pago(c),
+        horizontal=True,
+        key=sel_sem_key_ui,
+        on_change=_on_sem_panel_change,
+    )
+    render_pagos_realizados_por_semana_panel(proy_name, data_cuadro, cols_pago, sem_sel_panel)
 
     # 2. Sección de Notas Registradas (Expander visible con tarjetas para acceso directo)
     todas_las_notas = []

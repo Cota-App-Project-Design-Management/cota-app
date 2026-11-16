@@ -688,5 +688,54 @@ def get_app_css(brand_color: str = None) -> str:
             box-shadow: 0 8px 20px rgba(200, 90, 50, 0.14) !important;
             border-color: var(--clay-primary) !important;
         }
+        /* 13. CHIP DESPLEGABLE PARA SOCIO ACTIVO EN SIDEBAR */
+        .st-key-sb_socio_activo_sidebar div[data-testid="stWidgetLabel"] p {
+            font-size: 11px !important;
+            font-weight: 700 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.06em !important;
+            color: var(--text-taupe) !important;
+        }
+
+        .st-key-sb_socio_activo_sidebar div[data-baseweb="select"] {
+            width: fit-content !important;
+            min-width: 152px !important;
+            max-width: 100% !important;
+        }
+
+        .st-key-sb_socio_activo_sidebar div[data-baseweb="select"] > div {
+            border-radius: 999px !important;
+            background-color: var(--bg-white) !important;
+            border: 1.5px solid var(--clay-border) !important;
+            min-height: 34px !important;
+            height: 34px !important;
+            padding: 0 10px 0 6px !important;
+            box-shadow: 0 1px 4px rgba(38, 35, 32, 0.05) !important;
+            cursor: pointer !important;
+            transition: all 0.15s ease !important;
+        }
+
+        .st-key-sb_socio_activo_sidebar div[data-baseweb="select"] > div:hover,
+        .st-key-sb_socio_activo_sidebar div[data-baseweb="select"] > div:focus-within {
+            border-color: var(--clay-primary) !important;
+            background-color: var(--bg-card) !important;
+            box-shadow: 0 0 0 3px var(--clay-soft) !important;
+        }
+
+        .st-key-sb_socio_activo_sidebar div[data-baseweb="select"] span,
+        .st-key-sb_socio_activo_sidebar div[data-baseweb="select"] div[value] {
+            font-family: 'Plus Jakarta Sans', sans-serif !important;
+            font-size: 12.5px !important;
+            font-weight: 700 !important;
+            color: var(--text-charcoal) !important;
+            white-space: nowrap !important;
+        }
+
+        .st-key-sb_socio_activo_sidebar div[data-baseweb="select"] input {
+            min-height: 0 !important;
+            height: 24px !important;
+            padding: 0 !important;
+            cursor: pointer !important;
+        }
     </style>
     """

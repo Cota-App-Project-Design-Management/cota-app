@@ -1196,6 +1196,45 @@ def aplicar_accion_chat_notas_proyecto(proy_name: str, payload_raw: str) -> bool
 
 
 
+def establecer_permitir_cruce_tarea(task_indices, permitir: bool = True) -> bool:
+    """
+    Activa o desactiva la bandera `Permitir_Cruce` para uno o varios índices de `st.session_state.tasks`,
+    limpia cachés base y reinicia claves de editores en 05. Partidas y Tareas para reflejar el cambio en vivo.
+    """
+    df_t = st.session_state.get("tasks")
+    if df_t is None or not isinstance(df_t, pd.DataFrame) or df_t.empty:
+        return False
+    if "Permitir_Cruce" not in df_t.columns:
+        df_t["Permitir_Cruce"] = False
+
+    if isinstance(task_indices, (list, tuple, set)):
+        idxs = list(task_indices)
+    else:
+        idxs = [task_indices]
+
+    cambiado = False
+    proys_afectados = set()
+    for idx in idxs:
+        if idx in df_t.index:
+            df_t.at[idx, "Permitir_Cruce"] = bool(permitir)
+            proy_val = str(df_t.at[idx, "Proyecto"] or "").strip() if "Proyecto" in df_t.columns else ""
+            if proy_val:
+                proys_afectados.add(proy_val)
+            cambiado = True
+
+    if not cambiado:
+        return False
+
+    st.session_state.tasks = df_t
+    clear_base_dfs()
+    for k in list(st.session_state.keys()):
+        k_s = str(k)
+        if k_s.startswith("c_base_df_tasks_"):
+            if not proys_afectados or any(f"c_base_df_tasks_{p}_" in k_s for p in proys_afectados):
+                st.session_state[k] = st.session_state.get(k, 0) + 1
+    return True
+
+
 def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group_vals=None,
                   date_cols=None, text_cols=None, bool_cols=None, num_cols=None, id_col=None):
     """
@@ -1339,6 +1378,8 @@ def on_table_edit(base_key, widget_key, master_state_key, group_cols=None, group
         if master_state_key == 'tasks':
             if 'Supervisado' in df_new.columns:
                 df_new['Supervisado'] = df_new['Supervisado'].apply(_normalizar_supervisado)
+            if 'Permitir_Cruce' in df_new.columns:
+                df_new['Permitir_Cruce'] = df_new['Permitir_Cruce'].apply(to_bool)
             if 'Moneda' in df_new.columns:
                 df_new['Moneda'] = df_new['Moneda'].fillna("Soles").replace("", "Soles").replace("None", "Soles")
             if 'Unidad' in df_new.columns:

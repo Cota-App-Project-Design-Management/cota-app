@@ -29,6 +29,7 @@ import pandas as pd
 import streamlit as st
 
 from cota.db import COLS_P_INFO, COLS_PROY, COLS_TASKS, clear_base_dfs
+import uuid
 from cota.utils import safe_float, safe_str, to_bool
 
 
@@ -925,6 +926,24 @@ def ajustar_cantidad_tareas_partida(
 
     clear_base_dfs()
     recalcular_totales_presupuesto_proyecto(proy_name)
+
+
+def agregar_tarea_presupuesto(
+    proy_name: str,
+    idx_partida_1based: int,
+    nombre_partida_completo: str,
+) -> int:
+    """Agrega una nueva tarea al final de una Partida del presupuesto y retorna la nueva cantidad."""
+    mask_t = (
+        (st.session_state.tasks["Proyecto"] == proy_name)
+        & (st.session_state.tasks["Partida"] == nombre_partida_completo)
+        if "tasks" in st.session_state and not st.session_state.tasks.empty
+        else pd.Series(dtype=bool)
+    )
+    actual_cant = int(mask_t.sum()) if len(mask_t) else 0
+    nueva_cant = actual_cant + 1
+    ajustar_cantidad_tareas_partida(proy_name, idx_partida_1based, nombre_partida_completo, nueva_cant)
+    return nueva_cant
 
 
 def mover_tarea_presupuesto(
@@ -3435,6 +3454,516 @@ def aplicar_cotizacion_a_proyecto(
 # 4. CUADRO DE PAGOS SEMANALES POR PARTIDA / CONTRATISTA (06. COBROS & FINANZAS)
 # ==========================================
 
+TIPOS_PAGO_CUADRO = ["Adelanto", "Valorización", "Liquidación"]
+
+
+def _normalizar_tipo_pago_cuadro(tipo_raw: str, col_name: str = "") -> str:
+    """Normaliza el tipo de pago del cuadro a Adelanto, Valorización o Liquidación."""
+    s = safe_str(tipo_raw).strip().lower()
+    if "adelant" in s:
+        return "Adelanto"
+    if "liquid" in s:
+        return "Liquidación"
+    if "valoriz" in s:
+        return "Valorización"
+    if "adelanto" in safe_str(col_name).lower():
+        return "Adelanto"
+    return "Valorización"
+
+
+def _normalizar_fecha_pago_iso(fecha_raw) -> str:
+    """Convierte una fecha a formato ISO YYYY-MM-DD (o fecha de hoy si está vacía)."""
+    if isinstance(fecha_raw, datetime.datetime):
+        return fecha_raw.date().strftime("%Y-%m-%d")
+    if isinstance(fecha_raw, datetime.date):
+        return fecha_raw.strftime("%Y-%m-%d")
+    s = safe_str(fecha_raw).strip()
+    if s:
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+            return s
+        for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%Y-%m-%d"):
+            try:
+                return datetime.datetime.strptime(s, fmt).date().strftime("%Y-%m-%d")
+            except Exception:
+                pass
+    return datetime.date.today().strftime("%Y-%m-%d")
+
+
+def _formatear_fecha_ddmmyyyy(fecha_raw) -> str:
+    """Formatea una fecha a DD/MM/YYYY."""
+    iso_s = _normalizar_fecha_pago_iso(fecha_raw)
+    try:
+        return datetime.datetime.strptime(iso_s, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except Exception:
+        return iso_s
+
+
+def _normalizar_col_pago_name(col_raw: str, cols_pago: list[str] | None = None) -> str:
+    """Normaliza nombres de columnas semanales ('S1'/'Semana 1' -> 'SEMANA 1', 'ADELANTO 1' -> 'ADELANTO 1')."""
+    s = safe_str(col_raw).strip()
+    if not s:
+        return ""
+    s_up = s.upper()
+    if cols_pago and s_up in cols_pago:
+        return s_up
+    if "adelanto" in s.lower():
+        m_a = re.search(r"(\d+)", s)
+        return f"ADELANTO {int(m_a.group(1))}" if m_a else "ADELANTO 1"
+    m = re.match(r"^(?:SEMANA|SEM\.?|S)\s*(\d+)$", s, flags=re.IGNORECASE)
+    if m:
+        return f"SEMANA {int(m.group(1))}"
+    if cols_pago:
+        for c in cols_pago:
+            if c.upper() == s_up:
+                return c
+    return s_up
+
+
+def _normalizar_detalle_pagos_celda(raw_list, col_name: str = "") -> list[dict]:
+    """Normaliza la lista de pagos registrados en una celda (contratista, tipo, fecha, monto, nota)."""
+    if not isinstance(raw_list, list):
+        return []
+    out = []
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        monto_v = round(max(0.0, safe_float(item.get("monto", item.get("Monto", 0.0)), 0.0)), 2)
+        contra_v = safe_str(item.get("contratista", item.get("Contratista", ""))).strip()
+        if monto_v <= 0.0 and not contra_v:
+            continue
+        pid = safe_str(item.get("id", "")).strip() or f"pg_{uuid.uuid4().hex[:8]}"
+        tipo_v = _normalizar_tipo_pago_cuadro(item.get("tipo", item.get("Tipo", "")), col_name)
+        fecha_v = _normalizar_fecha_pago_iso(item.get("fecha", item.get("Fecha", "")))
+        nota_v = safe_str(item.get("nota", item.get("Nota", ""))).strip()
+        out.append({
+            "id": pid,
+            "contratista": contra_v,
+            "tipo": tipo_v,
+            "fecha": fecha_v,
+            "monto": monto_v,
+            "nota": nota_v,
+        })
+    return out
+
+
+def _extraer_contratista_de_notas(notas_txt: str) -> str:
+    """Extrae el contratista sugerido desde notas tipo 'Contratista: Nombre'."""
+    s = safe_str(notas_txt).strip()
+    m = re.search(r"Contratista\s*:\s*([^|\n]+)", s, flags=re.IGNORECASE)
+    return m.group(1).strip() if m else ""
+
+
+def obtener_contratistas_disponibles_proyecto(proy_name: str, data_cuadro: dict | None = None) -> list[str]:
+    """Retorna la lista ordenada y sin duplicados de contratistas disponibles para el proyecto."""
+    candidatos = []
+    df_m = st.session_state.get("maestro", pd.DataFrame())
+    if df_m is not None and not df_m.empty and "ID_Contratista" in df_m.columns:
+        candidatos.extend(df_m["ID_Contratista"].dropna().astype(str).tolist())
+
+    df_t = st.session_state.get("tasks", pd.DataFrame())
+    if df_t is not None and not df_t.empty and "Proyecto" in df_t.columns and "Contratista" in df_t.columns:
+        candidatos.extend(df_t[df_t["Proyecto"] == proy_name]["Contratista"].dropna().astype(str).tolist())
+
+    df_pi = st.session_state.get("p_info", pd.DataFrame())
+    if df_pi is not None and not df_pi.empty and "Proyecto" in df_pi.columns and "Contratista" in df_pi.columns:
+        candidatos.extend(df_pi[df_pi["Proyecto"] == proy_name]["Contratista"].dropna().astype(str).tolist())
+
+    if isinstance(data_cuadro, dict):
+        for f_d in list(data_cuadro.get("filas_contratistas", [])) + [
+            data_cuadro.get("fila_gestion", {}),
+            data_cuadro.get("fila_gg", {}),
+        ]:
+            if not isinstance(f_d, dict):
+                continue
+            c_not = _extraer_contratista_de_notas(f_d.get("Notas", ""))
+            if c_not:
+                candidatos.append(c_not)
+            pd_map = f_d.get("Pagos_Detalle", {})
+            if isinstance(pd_map, dict):
+                for lst_p in pd_map.values():
+                    if isinstance(lst_p, list):
+                        for p in lst_p:
+                            if isinstance(p, dict) and safe_str(p.get("contratista", "")).strip():
+                                candidatos.append(safe_str(p.get("contratista", "")).strip())
+
+    vistos = set()
+    resultado = []
+    for raw_c in candidatos:
+        c_s = safe_str(raw_c).strip()
+        if not c_s or c_s.lower() in ("none", "nan", "ninguno", "ninguna", "sin contratistas"):
+            continue
+        k = c_s.lower()
+        if k not in vistos:
+            vistos.add(k)
+            resultado.append(c_s)
+    return resultado
+
+
+def obtener_pagos_semana(data_cuadro: dict, col_semana: str | None = None) -> list[dict]:
+    """
+    Retorna la lista plana de pagos registrados en el Cuadro de Pagos para una semana específica
+    o para todas las semanas si `col_semana` es None o 'ALL'.
+    """
+    if not isinstance(data_cuadro, dict):
+        return []
+    num_sem = max(1, min(30, int(data_cuadro.get("num_semanas", 5) or 5)))
+    cols_pago = obtener_columnas_pago_semanal(num_sem)
+
+    if col_semana and str(col_semana).strip().upper() != "ALL":
+        c_norm = _normalizar_col_pago_name(col_semana, cols_pago)
+        target_cols = [c_norm] if c_norm else []
+    else:
+        target_cols = list(cols_pago)
+
+    filas_iter = []
+    for idx_f, f_c in enumerate(data_cuadro.get("filas_contratistas", [])):
+        if isinstance(f_c, dict):
+            part_s = safe_str(f_c.get("Partida", "")).strip()
+            desc_s = safe_str(f_c.get("Descripcion", "")).strip()
+            lbl = (
+                f"{part_s} — {desc_s}"
+                if (part_s and desc_s and part_s.upper() not in desc_s.upper())
+                else (desc_s or part_s or f"Partida {idx_f + 1}")
+            )
+            filas_iter.append(("contratista", idx_f, lbl, f_c))
+    if isinstance(data_cuadro.get("fila_gestion"), dict):
+        filas_iter.append(("gestion", 0, "Gestión y supervisión de obras", data_cuadro["fila_gestion"]))
+    if isinstance(data_cuadro.get("fila_gg"), dict):
+        filas_iter.append(("gg", 0, "Gastos Generales", data_cuadro["fila_gg"]))
+
+    pagos_out = []
+    for r_type, r_idx, lbl_row, f_d in filas_iter:
+        mon_s = safe_str(f_d.get("Moneda", "Soles")) or "Soles"
+        es_usd = any(d in mon_s.lower() for d in ("dolar", "dólar", "usd", "$"))
+        mon_canon = "Dólares" if es_usd else "Soles"
+        pref = "$ " if es_usd else "S/ "
+        pd_map = f_d.get("Pagos_Detalle", {})
+        if not isinstance(pd_map, dict):
+            continue
+        for c_k in target_cols:
+            lst = _normalizar_detalle_pagos_celda(pd_map.get(c_k, []), c_k)
+            for p in lst:
+                pagos_out.append({
+                    "row_type": r_type,
+                    "row_idx": r_idx,
+                    "partida": lbl_row,
+                    "semana": c_k,
+                    "semana_label": etiqueta_export_columna_pago(c_k),
+                    "semana_short": etiqueta_corta_columna_pago(c_k),
+                    "moneda": mon_canon,
+                    "pref": pref,
+                    "id": p["id"],
+                    "contratista": p["contratista"],
+                    "tipo": p["tipo"],
+                    "fecha": p["fecha"],
+                    "fecha_fmt": _formatear_fecha_ddmmyyyy(p["fecha"]),
+                    "monto": float(p["monto"]),
+                    "nota": p["nota"],
+                })
+    return pagos_out
+
+
+def resumen_contratistas_semana(data_cuadro: dict, col_semana: str | None = None) -> list[dict]:
+    """
+    Agrupa los pagos de la semana (o de todas las semanas) por contratista y moneda
+    para el resumen 'a quién hacer los pagos' (solo contratista y monto).
+    """
+    pagos = obtener_pagos_semana(data_cuadro, col_semana)
+    if not pagos:
+        return []
+
+    monedas_por_contratista: dict[str, set[str]] = {}
+    agrupado: dict[tuple[str, str], float] = {}
+    orden: list[tuple[str, str]] = []
+
+    for p in pagos:
+        c_nom = safe_str(p.get("contratista", "")).strip() or "Sin contratista asignado"
+        mon = p.get("moneda", "Soles")
+        key = (c_nom, mon)
+        monedas_por_contratista.setdefault(c_nom, set()).add(mon)
+        if key not in agrupado:
+            agrupado[key] = 0.0
+            orden.append(key)
+        agrupado[key] = round(agrupado[key] + safe_float(p.get("monto", 0.0), 0.0), 2)
+
+    res = []
+    for c_nom, mon in orden:
+        m_val = agrupado[(c_nom, mon)]
+        if m_val <= 0:
+            continue
+        pref = "$ " if mon == "Dólares" else "S/ "
+        etq_con = f"{c_nom} ({'USD' if mon == 'Dólares' else 'S/'})" if len(monedas_por_contratista.get(c_nom, set())) > 1 else c_nom
+        res.append({
+            "contratista": etq_con,
+            "moneda": mon,
+            "pref": pref,
+            "monto": m_val,
+        })
+    return res
+
+
+def _resolver_semanas_resumen_export(data_cuadro: dict, semana_resumen: str | None = None) -> list[str]:
+    """Determina qué semana(s) mostrar en el bloque de resumen al exportar a Excel/PDF."""
+    num_sem = max(1, min(30, int(data_cuadro.get("num_semanas", 5) or 5)))
+    cols_pago = obtener_columnas_pago_semanal(num_sem)
+    semanas_con_pagos = [c for c in cols_pago if obtener_pagos_semana(data_cuadro, c)]
+
+    sem_req = semana_resumen if semana_resumen is not None else safe_str(data_cuadro.get("semana_resumen", "")).strip()
+    if sem_req:
+        if sem_req.upper() == "ALL":
+            return semanas_con_pagos
+        c_norm = _normalizar_col_pago_name(sem_req, cols_pago)
+        if c_norm in cols_pago:
+            return [c_norm]
+
+    sem_act = safe_str(data_cuadro.get("semana_activa", "")).strip()
+    if sem_act:
+        if sem_act.upper() == "ALL":
+            return semanas_con_pagos
+        c_norm = _normalizar_col_pago_name(sem_act, cols_pago)
+        if c_norm in semanas_con_pagos:
+            return [c_norm]
+
+    return semanas_con_pagos
+
+
+def _resolver_fila_target_cuadro(
+    filas_c: list[dict], fila_ges: dict, fila_gg: dict, r_type: str, r_idx: int
+) -> dict | None:
+    """Retorna el diccionario de la fila destino en el Cuadro de Pagos."""
+    if r_type == "contratista":
+        if 0 <= r_idx < len(filas_c):
+            return filas_c[r_idx]
+        return None
+    if r_type == "gestion":
+        return fila_ges
+    if r_type == "gg":
+        return fila_gg
+    return None
+
+
+def registrar_pago_en_fila_dict(
+    target: dict,
+    col_w: str,
+    contratista: str,
+    tipo: str,
+    fecha,
+    monto: float,
+    nota: str = "",
+    preserve_legacy: bool = True,
+    replace_all: bool = False,
+    payment_id: str = "",
+) -> dict | None:
+    """Agrega un pago detallado en una celda de fila del cuadro y actualiza la suma de esa celda."""
+    monto_v = round(max(0.0, safe_float(monto, 0.0)), 2)
+    if target is None or not col_w or monto_v <= 0:
+        return None
+    pago_new = {
+        "id": safe_str(payment_id).strip() or f"pg_{uuid.uuid4().hex[:8]}",
+        "contratista": safe_str(contratista).strip(),
+        "tipo": _normalizar_tipo_pago_cuadro(tipo, col_w),
+        "fecha": _normalizar_fecha_pago_iso(fecha),
+        "monto": monto_v,
+        "nota": safe_str(nota).strip(),
+    }
+    pd_map = dict(target.get("Pagos_Detalle", {}) if isinstance(target.get("Pagos_Detalle"), dict) else {})
+    cur_list = _normalizar_detalle_pagos_celda(pd_map.get(col_w, []), col_w)
+    prev_val = round(safe_float(target.get(col_w, 0.0), 0.0), 2)
+    if not replace_all and not cur_list and prev_val > 0 and preserve_legacy:
+        cur_list.append({
+            "id": f"pg_{uuid.uuid4().hex[:8]}",
+            "contratista": _extraer_contratista_de_notas(target.get("Notas", "")) or "Registro previo",
+            "tipo": _normalizar_tipo_pago_cuadro("", col_w),
+            "fecha": _normalizar_fecha_pago_iso(""),
+            "monto": prev_val,
+            "nota": "",
+        })
+    if replace_all:
+        cur_list = [pago_new]
+    else:
+        cur_list.append(pago_new)
+    pd_map[col_w] = cur_list
+    target["Pagos_Detalle"] = pd_map
+    target[col_w] = round(sum(p["monto"] for p in cur_list), 2)
+    return pago_new
+
+
+def _agregar_resumen_pagos_semanal_excel(
+    ws,
+    row_usd: int,
+    data_cuadro: dict,
+    fill_header,
+    fill_subhdr,
+    f_header,
+    f_subhdr,
+    f_row,
+    f_total,
+    border_cell,
+    border_closing,
+    align_left,
+    align_right,
+    align_center,
+    fmt_soles: str,
+    fmt_usd: str,
+    semana_resumen: str | None = None,
+):
+    """Agrega al Excel exportado la tabla resumen semanal por contratista (solo Contratista y Monto)."""
+    semanas_target = _resolver_semanas_resumen_export(data_cuadro, semana_resumen=semana_resumen)
+    if not semanas_target:
+        return
+
+    explicit_sem = bool(semana_resumen or safe_str(data_cuadro.get("semana_resumen", "")).strip())
+    curr_r = row_usd + 2
+    for col_w in semanas_target:
+        items = resumen_contratistas_semana(data_cuadro, col_w)
+        if not items and not explicit_sem:
+            continue
+
+        lbl_w = etiqueta_export_columna_pago(col_w).upper()
+        ws.merge_cells(f"B{curr_r}:C{curr_r}")
+        ws.row_dimensions[curr_r].height = 22
+        ws[f"B{curr_r}"] = f"RESUMEN DE PAGOS — {lbl_w}"
+        for c_i in (2, 3):
+            c_let = get_column_letter(c_i)
+            ws[f"{c_let}{curr_r}"].fill = fill_header
+            ws[f"{c_let}{curr_r}"].font = f_header
+            ws[f"{c_let}{curr_r}"].alignment = align_center
+            ws[f"{c_let}{curr_r}"].border = border_cell
+
+        curr_r += 1
+        ws.row_dimensions[curr_r].height = 20
+        ws[f"B{curr_r}"] = "Contratista"
+        ws[f"C{curr_r}"] = "Monto"
+        for c_i, aln in ((2, align_left), (3, align_right)):
+            c_let = get_column_letter(c_i)
+            ws[f"{c_let}{curr_r}"].fill = fill_subhdr
+            ws[f"{c_let}{curr_r}"].font = f_subhdr
+            ws[f"{c_let}{curr_r}"].alignment = aln
+            ws[f"{c_let}{curr_r}"].border = border_cell
+
+        if not items:
+            curr_r += 1
+            ws.merge_cells(f"B{curr_r}:C{curr_r}")
+            ws[f"B{curr_r}"] = "Sin pagos registrados en esta semana"
+            ws[f"B{curr_r}"].font = f_row
+            ws[f"B{curr_r}"].alignment = align_center
+            ws[f"B{curr_r}"].border = border_closing
+            ws[f"C{curr_r}"].border = border_closing
+            curr_r += 2
+            continue
+
+        first_item_r = curr_r + 1
+        monedas_set = set()
+        for it in items:
+            curr_r += 1
+            mon_i = it.get("moneda", "Soles")
+            monedas_set.add(mon_i)
+            fmt_i = fmt_usd if mon_i == "Dólares" else fmt_soles
+            ws[f"B{curr_r}"] = it["contratista"]
+            ws[f"B{curr_r}"].font = f_row
+            ws[f"B{curr_r}"].alignment = align_left
+            ws[f"B{curr_r}"].border = border_cell
+
+            ws[f"C{curr_r}"] = float(it["monto"])
+            ws[f"C{curr_r}"].font = f_row
+            ws[f"C{curr_r}"].alignment = align_right
+            ws[f"C{curr_r}"].number_format = fmt_i
+            ws[f"C{curr_r}"].border = border_cell
+
+        last_item_r = curr_r
+        if len(monedas_set) == 1:
+            curr_r += 1
+            only_mon = next(iter(monedas_set))
+            fmt_tot = fmt_usd if only_mon == "Dólares" else fmt_soles
+            ws[f"B{curr_r}"] = "TOTAL SEMANA"
+            ws[f"B{curr_r}"].font = f_header
+            ws[f"B{curr_r}"].fill = fill_header
+            ws[f"B{curr_r}"].alignment = align_left
+            ws[f"B{curr_r}"].border = border_closing
+
+            ws[f"C{curr_r}"] = f"=SUM(C{first_item_r}:C{last_item_r})"
+            ws[f"C{curr_r}"].font = f_total
+            ws[f"C{curr_r}"].fill = fill_header
+            ws[f"C{curr_r}"].alignment = align_right
+            ws[f"C{curr_r}"].number_format = fmt_tot
+            ws[f"C{curr_r}"].border = border_closing
+
+        curr_r += 2
+
+
+def _agregar_resumen_pagos_semanal_pdf(
+    pdf,
+    data_cuadro: dict,
+    brand_rgb: tuple[int, int, int],
+    dark_rgb: tuple[int, int, int],
+    semana_resumen: str | None = None,
+):
+    """Agrega al PDF exportado el resumen semanal por contratista (solo Contratista y Monto)."""
+    from cota.pdf import safe_pdf_str
+
+    semanas_target = _resolver_semanas_resumen_export(data_cuadro, semana_resumen=semana_resumen)
+    if not semanas_target:
+        return
+
+    explicit_sem = bool(semana_resumen or safe_str(data_cuadro.get("semana_resumen", "")).strip())
+    b_r, b_g, b_b = brand_rgb
+    d_r, d_g, d_b = dark_rgb
+    w_con = 85.0
+    w_mto = 40.0
+    w_tot_blk = w_con + w_mto
+
+    for col_w in semanas_target:
+        items = resumen_contratistas_semana(data_cuadro, col_w)
+        if not items and not explicit_sem:
+            continue
+
+        need_h = 18.0 + max(1, len(items)) * 5.8
+        if pdf.get_y() + need_h > 195.0:
+            pdf.add_page()
+        else:
+            pdf.ln(5)
+
+        lbl_w = etiqueta_export_columna_pago(col_w).upper()
+        pdf.set_fill_color(b_r, b_g, b_b)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_draw_color(d_r, d_g, d_b)
+        pdf.set_font("Helvetica", "B", 8.5)
+        pdf.cell(w_tot_blk, 6.5, safe_pdf_str(f"RESUMEN DE PAGOS - {lbl_w}"), border=1, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+        pdf.set_fill_color(38, 35, 32)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", 8.0)
+        pdf.cell(w_con, 5.5, safe_pdf_str("Contratista"), border=1, align="L", fill=True)
+        pdf.cell(w_mto, 5.5, safe_pdf_str("Monto"), border=1, align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+        if not items:
+            pdf.set_fill_color(255, 255, 255)
+            pdf.set_text_color(110, 102, 94)
+            pdf.set_font("Helvetica", "I", 8.0)
+            pdf.cell(w_tot_blk, 5.5, safe_pdf_str("Sin pagos registrados en esta semana"), border=1, align="C", fill=True, new_x="LMARGIN", new_y="NEXT")
+            continue
+
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_text_color(38, 35, 32)
+        pdf.set_font("Helvetica", "", 8.0)
+        monedas_set = set()
+        sum_uniq = 0.0
+        for it in items:
+            mon_i = it.get("moneda", "Soles")
+            monedas_set.add(mon_i)
+            sum_uniq += float(it["monto"])
+            pdf.cell(w_con, 5.5, safe_pdf_str(it["contratista"])[:52], border=1, align="L", fill=True)
+            pdf.cell(w_mto, 5.5, safe_pdf_str(f"{it['pref']}{it['monto']:,.2f}"), border=1, align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+        if len(monedas_set) == 1:
+            pref_u = "$ " if next(iter(monedas_set)) == "Dólares" else "S/ "
+            pdf.set_fill_color(b_r, b_g, b_b)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Helvetica", "B", 8.0)
+            pdf.cell(w_con, 5.8, safe_pdf_str("TOTAL SEMANA"), border=1, align="L", fill=True)
+            pdf.cell(w_mto, 5.8, safe_pdf_str(f"{pref_u}{sum_uniq:,.2f}"), border=1, align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
+
+
 PARTIDAS_PAGOS_DEFAULT = [
     "OBRAS CIVILES",
     "INSTALACIONES E&S",
@@ -3483,6 +4012,20 @@ def _normalizar_fila_pago(fila: dict, cols_pago: list[str], desc_default: str = 
     for c in cols_pago:
         res[c] = round(safe_float(fila.get(c, 0.0), 0.0), 2)
     res["Notas"] = safe_str(fila.get("Notas", "")).strip()
+    raw_pd = fila.get("Pagos_Detalle", {})
+    pagos_detalle = {}
+    if isinstance(raw_pd, dict):
+        for k_raw, lst_raw in raw_pd.items():
+            k_norm = _normalizar_col_pago_name(k_raw, cols_pago)
+            if not k_norm:
+                continue
+            lst_norm = _normalizar_detalle_pagos_celda(lst_raw, k_norm)
+            if lst_norm:
+                pagos_detalle[k_norm] = lst_norm
+    res["Pagos_Detalle"] = pagos_detalle
+    for c in cols_pago:
+        if c in pagos_detalle and pagos_detalle[c]:
+            res[c] = round(sum(safe_float(p.get("monto", 0.0), 0.0) for p in pagos_detalle[c]), 2)
     raw_np = fila.get("Notas_Pagos", {})
     if isinstance(raw_np, dict):
         res["Notas_Pagos"] = {safe_str(k).strip(): safe_str(v).strip() for k, v in raw_np.items() if safe_str(v).strip()}
@@ -3660,6 +4203,7 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
             "filas_contratistas": filas_c,
             "fila_gestion": fila_ges,
             "fila_gg": fila_gg,
+            "semana_activa": safe_str(data_guardada.get("semana_activa", "")).strip(),
         }
         if sincronizar_partidas:
             guardar_cuadro_pagos_semanales_proyecto(proy_name, res_data)
@@ -3691,6 +4235,7 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
         "filas_contratistas": filas_c,
         "fila_gestion": _normalizar_fila_pago({"TOTAL": util_proy}, cols_pago, "Gestión y supervisión de obras"),
         "fila_gg": _normalizar_fila_pago({"TOTAL": gg_proy}, cols_pago, "Gastos Generales"),
+        "semana_activa": "",
     }
     return res_init
 
@@ -3708,9 +4253,11 @@ def obtener_pagado_por_partida_proyecto(proy_name: str) -> dict[str, float]:
     if df_parts.empty or "Proyecto" not in df_parts.columns:
         return resultado_pagado
 
+
     p_sub = df_parts[df_parts["Proyecto"] == proy_name]
     if p_sub.empty:
         return resultado_pagado
+
 
     data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
     res_calc = calcular_resumen_cuadro_pagos_semanales(data_cuadro)
@@ -3741,6 +4288,91 @@ def obtener_pagado_por_partida_proyecto(proy_name: str) -> dict[str, float]:
         resultado_pagado[p_raw] = round(pagado_cuadro + pagado_manual, 2)
 
     return resultado_pagado
+
+
+
+def obtener_utilidades_gestion_pagadas_proyecto(proy_name: str) -> float:
+    """
+    Retorna el monto total PAGADO en Soles de la fila 'Gestión y supervisión de obras'
+    en el Cuadro de Pagos Semanales del proyecto `proy_name`
+    (excluye columnas marcadas como 'Por Pagar').
+    """
+    if not proy_name:
+        return 0.0
+    data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+    res = calcular_resumen_cuadro_pagos_semanales(data_cuadro)
+    f_ges = res.get("fila_gestion", {})
+    pagado_val = safe_float(f_ges.get("PAGADO", 0.0), 0.0)
+    if pagado_val <= 0:
+        return 0.0
+    tc = safe_float(res.get("tc", 3.60), 3.60)
+    if tc <= 0:
+        tc = 3.60
+    mon = safe_str(f_ges.get("Moneda", "Soles")).lower()
+    es_usd = any(tok in mon for tok in ("dolar", "dólar", "usd", "$"))
+    return round(pagado_val * (tc if es_usd else 1.0), 2)
+
+
+def obtener_utilidades_recibidas_estudio(nombres_proyectos: list[str] | None = None) -> dict:
+    """
+    Calcula las utilidades totales recibidas del estudio y su desglose por proyecto,
+    sumando directamente los pagos registrados en la fila 'Gestión y supervisión de obras'
+    del Cuadro de Pagos Semanales más los ingresos registrados en `ingresos_socios`.
+    """
+    if nombres_proyectos is None:
+        df_p = st.session_state.get("proyectos", pd.DataFrame())
+        if isinstance(df_p, pd.DataFrame) and not df_p.empty and "Nombre" in df_p.columns:
+            mask_act = ~df_p["Archivado"].apply(to_bool) if "Archivado" in df_p.columns else pd.Series(True, index=df_p.index)
+            nombres_proyectos = df_p.loc[mask_act, "Nombre"].dropna().astype(str).tolist()
+        else:
+            nombres_proyectos = []
+
+    por_proyecto: dict[str, dict[str, float]] = {}
+    tot_gestion_pagado = 0.0
+    for p_nom in nombres_proyectos:
+        g_pag = obtener_utilidades_gestion_pagadas_proyecto(p_nom)
+        por_proyecto[p_nom] = {
+            "gestion_pagado": g_pag,
+            "ingresos_util": 0.0,
+            "ingresos_gg": 0.0,
+            "total_recibidas": g_pag,
+        }
+        tot_gestion_pagado = round(tot_gestion_pagado + g_pag, 2)
+
+    tot_ing_util = 0.0
+    tot_ing_gg = 0.0
+    df_ing = st.session_state.get("ingresos_socios", pd.DataFrame())
+    if isinstance(df_ing, pd.DataFrame) and not df_ing.empty and "Monto" in df_ing.columns:
+        valid_proys = set(nombres_proyectos) | {"General"}
+        df_sub = df_ing[df_ing["Proyecto"].isin(valid_proys)].copy() if "Proyecto" in df_ing.columns else df_ing.copy()
+        if not df_sub.empty:
+            cat_col = df_sub["Categoria"].astype(str) if "Categoria" in df_sub.columns else pd.Series("", index=df_sub.index)
+            montos = pd.to_numeric(df_sub["Monto"], errors="coerce").fillna(0.0)
+            mask_util = cat_col.str.contains("Utilidad|Honorario", case=False, na=False)
+            mask_gg = cat_col.str.contains("Gasto|Caja|GG", case=False, na=False)
+            tot_ing_util = round(float(montos.loc[mask_util].sum()), 2)
+            tot_ing_gg = round(float(montos.loc[mask_gg].sum()), 2)
+            if "Proyecto" in df_sub.columns:
+                for p_nom in nombres_proyectos:
+                    m_p = df_sub["Proyecto"] == p_nom
+                    u_p = round(float(montos.loc[m_p & mask_util].sum()), 2)
+                    gg_p = round(float(montos.loc[m_p & mask_gg].sum()), 2)
+                    otros_p = round(float(montos.loc[m_p & (~mask_util) & (~mask_gg)].sum()), 2)
+                    por_proyecto[p_nom]["ingresos_util"] = round(u_p + otros_p, 2)
+                    por_proyecto[p_nom]["ingresos_gg"] = gg_p
+                    por_proyecto[p_nom]["total_recibidas"] = round(
+                        por_proyecto[p_nom]["gestion_pagado"] + u_p + otros_p, 2
+                    )
+
+    total_util_recibidas = round(tot_gestion_pagado + tot_ing_util, 2)
+    return {
+        "total_utilidades_recibidas": total_util_recibidas,
+        "gestion_pagado_total": tot_gestion_pagado,
+        "ingresos_util_total": tot_ing_util,
+        "gg_cobrados_total": tot_ing_gg,
+        "total_recibidas_mas_gg": round(total_util_recibidas + tot_ing_gg, 2),
+        "por_proyecto": por_proyecto,
+    }
 
 
 def guardar_cuadro_pagos_semanales_proyecto(proy_name: str, data_cuadro: dict):
@@ -3797,10 +4429,10 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
     def _apply_single_edit(ed: dict):
         r_type = safe_str(ed.get("row_type", "contratista")).strip()
         r_idx = int(ed.get("row_idx", 0) or 0)
-        field = safe_str(ed.get("field", "")).strip()
+        field = safe_str(ed.get("field") or ed.get("col") or "").strip()
         val = ed.get("value")
-        has_nota_pago = "nota_pago" in ed
-        nota_pago_val = safe_str(ed.get("nota_pago", "")).strip()
+        has_nota_pago = ("nota_pago" in ed) or ("nota" in ed)
+        nota_pago_val = safe_str(ed.get("nota_pago") if "nota_pago" in ed else ed.get("nota", "")).strip()
 
         target = None
         if r_type == "contratista":
@@ -3813,6 +4445,9 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
 
         if target is None or not field:
             return
+
+        if "notas_row" in ed:
+            target["Notas"] = safe_str(ed.get("notas_row", "")).strip()
 
         if field in ("Descripcion", "Partida", "Notas", "Moneda"):
             if val is not None:
@@ -3840,7 +4475,104 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
                     np_map.pop(field, None)
                 target["Notas_Pagos"] = np_map
 
-    if action == "edit_cells":
+    def _sync_semana_activa(col_w: str):
+        if col_w:
+            data_cuadro["semana_activa"] = col_w
+            st.session_state[f"sel_sem_resumen_{proy_name}"] = col_w
+
+    def _build_pago_entry(src: dict, col_w: str, existing_id: str = "") -> dict:
+        return {
+            "id": existing_id or safe_str(src.get("id", "")).strip() or f"pg_{uuid.uuid4().hex[:8]}",
+            "contratista": safe_str(src.get("contratista", src.get("Contratista", ""))).strip(),
+            "tipo": _normalizar_tipo_pago_cuadro(src.get("tipo", src.get("Tipo", "")), col_w),
+            "fecha": _normalizar_fecha_pago_iso(src.get("fecha", src.get("Fecha", ""))),
+            "monto": round(max(0.0, safe_float(src.get("monto", src.get("Monto", 0.0)), 0.0)), 2),
+            "nota": safe_str(src.get("nota", src.get("Nota", ""))).strip(),
+        }
+
+    if action in ("add_payment", "replace_legacy_with_payment"):
+        r_type = safe_str(payload.get("row_type", "contratista")).strip()
+        r_idx = int(payload.get("row_idx", 0) or 0)
+        col_w = _normalizar_col_pago_name(payload.get("field") or payload.get("col") or "", cols_pago)
+        target = _resolver_fila_target_cuadro(filas_c, fila_ges, fila_gg, r_type, r_idx)
+        pago_new = _build_pago_entry(payload, col_w)
+        if target is not None and col_w in cols_pago and pago_new["monto"] > 0:
+            registrar_pago_en_fila_dict(
+                target=target,
+                col_w=col_w,
+                contratista=pago_new["contratista"],
+                tipo=pago_new["tipo"],
+                fecha=pago_new["fecha"],
+                monto=pago_new["monto"],
+                nota=pago_new["nota"],
+                preserve_legacy=bool(payload.get("preserve_legacy", True)),
+                replace_all=(action == "replace_legacy_with_payment"),
+                payment_id=pago_new["id"],
+            )
+            _sync_semana_activa(col_w)
+    elif action == "edit_payment":
+        r_type = safe_str(payload.get("row_type", "contratista")).strip()
+        r_idx = int(payload.get("row_idx", 0) or 0)
+        col_w = _normalizar_col_pago_name(payload.get("field") or payload.get("col") or "", cols_pago)
+        pid = safe_str(payload.get("payment_id") or payload.get("id") or "").strip()
+        target = _resolver_fila_target_cuadro(filas_c, fila_ges, fila_gg, r_type, r_idx)
+        if target is not None and col_w in cols_pago and pid:
+            pd_map = dict(target.get("Pagos_Detalle", {}) if isinstance(target.get("Pagos_Detalle"), dict) else {})
+            cur_list = _normalizar_detalle_pagos_celda(pd_map.get(col_w, []), col_w)
+            upd_list = []
+            for p in cur_list:
+                if p.get("id") == pid:
+                    upd = _build_pago_entry(payload, col_w, existing_id=pid)
+                    if upd["monto"] > 0:
+                        upd_list.append(upd)
+                else:
+                    upd_list.append(p)
+            if upd_list:
+                pd_map[col_w] = upd_list
+                target[col_w] = round(sum(p["monto"] for p in upd_list), 2)
+            else:
+                pd_map.pop(col_w, None)
+                target[col_w] = 0.0
+            target["Pagos_Detalle"] = pd_map
+            _sync_semana_activa(col_w)
+    elif action == "delete_payment":
+        r_type = safe_str(payload.get("row_type", "contratista")).strip()
+        r_idx = int(payload.get("row_idx", 0) or 0)
+        col_w = _normalizar_col_pago_name(payload.get("field") or payload.get("col") or "", cols_pago)
+        pid = safe_str(payload.get("payment_id") or payload.get("id") or "").strip()
+        target = _resolver_fila_target_cuadro(filas_c, fila_ges, fila_gg, r_type, r_idx)
+        if target is not None and col_w in cols_pago and pid:
+            pd_map = dict(target.get("Pagos_Detalle", {}) if isinstance(target.get("Pagos_Detalle"), dict) else {})
+            cur_list = _normalizar_detalle_pagos_celda(pd_map.get(col_w, []), col_w)
+            rem_list = [p for p in cur_list if p.get("id") != pid]
+            if rem_list:
+                pd_map[col_w] = rem_list
+                target[col_w] = round(sum(p["monto"] for p in rem_list), 2)
+            else:
+                pd_map.pop(col_w, None)
+                target[col_w] = 0.0
+            target["Pagos_Detalle"] = pd_map
+            _sync_semana_activa(col_w)
+    elif action == "clear_legacy_cell":
+        r_type = safe_str(payload.get("row_type", "contratista")).strip()
+        r_idx = int(payload.get("row_idx", 0) or 0)
+        col_w = _normalizar_col_pago_name(payload.get("field") or payload.get("col") or "", cols_pago)
+        target = _resolver_fila_target_cuadro(filas_c, fila_ges, fila_gg, r_type, r_idx)
+        if target is not None and col_w in cols_pago:
+            pd_map = dict(target.get("Pagos_Detalle", {}) if isinstance(target.get("Pagos_Detalle"), dict) else {})
+            pd_map.pop(col_w, None)
+            target["Pagos_Detalle"] = pd_map
+            target[col_w] = 0.0
+            _sync_semana_activa(col_w)
+    elif action == "select_week":
+        col_raw = safe_str(payload.get("col") or payload.get("semana") or "").strip()
+        if col_raw.upper() == "ALL":
+            _sync_semana_activa("ALL")
+        else:
+            col_w = _normalizar_col_pago_name(col_raw, cols_pago)
+            if col_w in cols_pago:
+                _sync_semana_activa(col_w)
+    elif action == "edit_cells":
         edits = payload.get("edits", [])
         if isinstance(edits, list):
             for ed_item in edits:
@@ -3858,7 +4590,7 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
             data_cuadro["cols_por_pagar"] = cols_pp
             st.session_state.pop(f"por_pagar_cols_{proy_name}", None)
     elif action == "add_row":
-        part_name = safe_str(payload.get("Partida", "")).strip() or (filas_c[-1].get("Partida", "General") if filas_c else "General")
+        part_name = safe_str(payload.get("Partida") or payload.get("partida") or "").strip() or (filas_c[-1].get("Partida", "General") if filas_c else "General")
         desc_name = safe_str(payload.get("Descripcion", "")).strip() or f"{part_name} — Nuevo Contratista"
         mon_name = safe_str(payload.get("Moneda", "Soles")).strip() or "Soles"
         tot_val = round(safe_float(payload.get("TOTAL", 0.0), 0.0), 2)
@@ -4220,8 +4952,18 @@ def exportar_cuadro_pagos_semanales_excel(
             ws[f"{c_let}{curr_r}"].alignment = align_right
             ws[f"{c_let}{curr_r}"].font = f_row_paid if (c_name not in cols_por_pagar) else f_row
             np_c = f_c.get("Notas_Pagos", {})
+            pd_c = f_c.get("Pagos_Detalle", {})
+            c_lines = []
+            if isinstance(pd_c, dict) and isinstance(pd_c.get(c_name), list):
+                pref_cm = "$ " if es_usd_c else "S/ "
+                for p_it in pd_c[c_name]:
+                    c_lines.append(
+                        f"- {p_it.get('contratista') or 'Sin contratista'} | {p_it.get('tipo', '')} | {_formatear_fecha_ddmmyyyy(p_it.get('fecha', ''))}: {pref_cm}{safe_float(p_it.get('monto', 0.0), 0.0):,.2f}"
+                    )
+            if c_lines and not (isinstance(np_c, dict) and c_name in np_c and np_c[c_name]):
+                ws[f"{c_let}{curr_r}"].comment = Comment("\n".join(c_lines), "Cota")
             if isinstance(np_c, dict) and c_name in np_c and np_c[c_name]:
-                ws[f"{c_let}{curr_r}"].comment = Comment(str(np_c[c_name]).strip(), "Cota")
+                ws[f"{c_let}{curr_r}"].comment = Comment("\n".join(c_lines + [str(np_c[c_name]).strip()]), "Cota")
 
         ws[f"{let_pagado}{curr_r}"] = _formula_pagado(curr_r)
         ws[f"{let_pagado}{curr_r}"].number_format = fmt_mon_c
@@ -4366,13 +5108,34 @@ def exportar_cuadro_pagos_semanales_excel(
     # Anchos de columna
     ws.column_dimensions["A"].width = 3
     ws.column_dimensions["B"].width = 32
-    ws.column_dimensions["C"].width = 12
+    ws.column_dimensions["C"].width = 18
     ws.column_dimensions["D"].width = 15
     for i_c in range(len(cols_pago)):
         ws.column_dimensions[get_column_letter(5 + i_c)].width = 14
     ws.column_dimensions[let_pagado].width = 15
     ws.column_dimensions[let_saldo].width = 15
     ws.column_dimensions[let_notas].width = 24
+
+    fill_subhdr = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
+    f_subhdr = Font(name=font_family, size=10, bold=True, color="262320")
+    _agregar_resumen_pagos_semanal_excel(
+        ws=ws,
+        row_usd=row_usd,
+        data_cuadro=data_cuadro,
+        fill_header=fill_header,
+        fill_subhdr=fill_subhdr,
+        f_header=f_header,
+        f_subhdr=f_subhdr,
+        f_row=f_row,
+        f_total=f_total,
+        border_cell=border_cell,
+        border_closing=border_closing,
+        align_left=align_left,
+        align_right=align_right,
+        align_center=align_center,
+        fmt_soles=FMT_SOLES,
+        fmt_usd=FMT_USD,
+    )
 
     out = io.BytesIO()
     wb.save(out)
@@ -4581,6 +5344,13 @@ def exportar_cuadro_pagos_semanales_pdf(
         pdf.set_text_color(255, 255, 255)
         pdf.cell(w_sal, 6.0, safe_pdf_str(_fmt_pdf_money(d_tot.get("SALDO", 0.0), pref_tot, False)), border=1, align="R", fill=True, new_x="LMARGIN", new_y="NEXT")
 
+    _agregar_resumen_pagos_semanal_pdf(
+        pdf=pdf,
+        data_cuadro=data_cuadro,
+        brand_rgb=(b_r, b_g, b_b),
+        dark_rgb=(d_r, d_g, d_b),
+    )
+
     return bytes(pdf.output())
 
 
@@ -4671,6 +5441,8 @@ def parsear_cuadro_pagos_semanales(file_or_df, tc_default: float = 3.60) -> dict
         desc_low = desc.lower()
         mon_low = mon.lower()
 
+        if desc_low.startswith("resumen de pagos"):
+            break
         if "trabajos contratistas" in desc_low:
             continue
         if desc_low in ["sub total", "subtotal"]:

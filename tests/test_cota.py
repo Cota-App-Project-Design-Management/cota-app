@@ -1964,3 +1964,458 @@ def test_formato_venti_excel_y_pdf_con_marca():
     assert "btn_exp_pdf_top_" in tab_ppto
     assert "btn_exp_excel_bot_" in tab_ppto
     assert "btn_exp_pdf_bot_" in tab_ppto
+
+
+def test_cuadro_pagos_registro_multipagos_y_resumen_exportacion():
+    import io
+    import json
+    import openpyxl
+    import streamlit as st
+    from cota.cotizacion import (
+        TIPOS_PAGO_CUADRO,
+        aplicar_edicion_inline_cuadro_pagos,
+        calcular_resumen_cuadro_pagos_semanales,
+        exportar_cuadro_pagos_semanales_excel,
+        exportar_cuadro_pagos_semanales_pdf,
+        guardar_cuadro_pagos_semanales_proyecto,
+        obtener_contratistas_disponibles_proyecto,
+        obtener_cuadro_pagos_semanales_proyecto,
+        obtener_pagos_semana,
+        parsear_cuadro_pagos_semanales,
+        resumen_contratistas_semana,
+    )
+    from cota.ui.cuadro_pagos import build_pagos_floating_ui_js
+
+    proy = "Proy Pagos Detallados"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": proy,
+        "Cliente": "Cliente Test",
+        "TC_Presupuesto": 3.50,
+        "Pagos_Semanales_JSON": "",
+    }])
+    st.session_state["maestro"] = pd.DataFrame([
+        {"ID_Contratista": "Juan Pérez", "Especialidad": "Obras Civiles", "Ubicación_Base": "Lima", "Notas": ""},
+        {"ID_Contratista": "Carpintería Nord", "Especialidad": "Carpintería", "Ubicación_Base": "Lima", "Notas": ""},
+    ])
+    st.session_state["partidas"] = pd.DataFrame()
+    st.session_state["p_info"] = pd.DataFrame()
+    st.session_state["tasks"] = pd.DataFrame()
+
+    data_init = obtener_cuadro_pagos_semanales_proyecto(proy)
+    data_init["num_semanas"] = 2
+    data_init["filas_contratistas"] = [
+        {"Partida": "OBRAS CIVILES", "Descripcion": "OBRAS CIVILES", "Moneda": "Soles", "TOTAL": 10000.0},
+        {"Partida": "CARPINTERÍA", "Descripcion": "CARPINTERÍA", "Moneda": "Soles", "TOTAL": 5000.0},
+    ]
+    guardar_cuadro_pagos_semanales_proyecto(proy, data_init)
+
+    assert TIPOS_PAGO_CUADRO == ["Adelanto", "Valorización", "Liquidación"]
+    conts = obtener_contratistas_disponibles_proyecto(proy, data_init)
+    assert "Juan Pérez" in conts and "Carpintería Nord" in conts
+
+    # 1. Registrar más de un pago en la misma celda (OBRAS CIVILES, SEMANA 1)
+    assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({
+        "action": "add_payment",
+        "row_type": "contratista",
+        "row_idx": 0,
+        "field": "SEMANA 1",
+        "contratista": "Juan Pérez",
+        "tipo": "Adelanto",
+        "fecha": "2026-11-16",
+        "monto": 2000.0,
+    })) is True
+    assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({
+        "action": "add_payment",
+        "row_type": "contratista",
+        "row_idx": 0,
+        "field": "SEMANA 1",
+        "contratista": "Carpintería Nord",
+        "tipo": "Valorización",
+        "fecha": "2026-11-17",
+        "monto": 1500.0,
+    })) is True
+
+    # Pago al mismo Juan Pérez en CARPINTERÍA durante la misma SEMANA 1 + otro en SEMANA 2
+    assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({
+        "action": "add_payment",
+        "row_type": "contratista",
+        "row_idx": 1,
+        "field": "SEMANA 1",
+        "contratista": "Juan Pérez",
+        "tipo": "Liquidación",
+        "fecha": "2026-11-18",
+        "monto": 800.0,
+    })) is True
+    assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({
+        "action": "add_payment",
+        "row_type": "contratista",
+        "row_idx": 0,
+        "field": "SEMANA 2",
+        "contratista": "Juan Pérez",
+        "tipo": "Valorización",
+        "fecha": "2026-11-23",
+        "monto": 1000.0,
+    })) is True
+
+    data_cur = obtener_cuadro_pagos_semanales_proyecto(proy)
+    # La celda (OBRAS CIVILES, SEMANA 1) muestra la suma exacta (2000 + 1500)
+    assert data_cur["filas_contratistas"][0]["SEMANA 1"] == 3500.0
+    assert len(data_cur["filas_contratistas"][0]["Pagos_Detalle"]["SEMANA 1"]) == 2
+    assert data_cur["filas_contratistas"][1]["SEMANA 1"] == 800.0
+
+    # Totales recalculados correctamente
+    calc = calcular_resumen_cuadro_pagos_semanales(data_cur)
+    assert calc["total_soles"]["SEMANA 1"] == 4300.0
+    assert calc["total_soles"]["SEMANA 2"] == 1000.0
+
+    # Pagos realizados esa semana (SEMANA 1)
+    pagos_s1 = obtener_pagos_semana(data_cur, "SEMANA 1")
+    assert len(pagos_s1) == 3
+
+    # Resumen a quién pagar (solo Contratista y Monto agregado por contratista)
+    res_s1 = resumen_contratistas_semana(data_cur, "SEMANA 1")
+    assert [(r["contratista"], r["monto"]) for r in res_s1] == [
+        ("Juan Pérez", 2800.0),
+        ("Carpintería Nord", 1500.0),
+    ]
+
+    # 2. Exportar Excel y PDF mostrando el resumen de SEMANA 1 (solo Contratista y Monto)
+    data_exp = dict(data_cur)
+    data_exp["semana_resumen"] = "SEMANA 1"
+    xlsx_bytes = exportar_cuadro_pagos_semanales_excel(proy, data_exp)
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes))
+    ws = wb["Control de Pagos"]
+
+    valores_b = [ws.cell(row=r, column=2).value for r in range(1, ws.max_row + 1)]
+    idx_hdr_sum = valores_b.index("RESUMEN DE PAGOS — SEMANA 1") + 1
+    assert ws.cell(row=idx_hdr_sum + 1, column=2).value == "Contratista"
+    assert ws.cell(row=idx_hdr_sum + 1, column=3).value == "Monto"
+    assert ws.cell(row=idx_hdr_sum + 2, column=2).value == "Juan Pérez"
+    assert ws.cell(row=idx_hdr_sum + 2, column=3).value == 2800.0
+    assert ws.cell(row=idx_hdr_sum + 3, column=2).value == "Carpintería Nord"
+    assert ws.cell(row=idx_hdr_sum + 3, column=3).value == 1500.0
+    assert ws.cell(row=idx_hdr_sum + 1, column=4).value is None
+
+    # Round-trip del parser ignora el bloque resumen de pagos al final
+    reimportado = parsear_cuadro_pagos_semanales(xlsx_bytes, tc_default=3.50)
+    assert len(reimportado["filas_contratistas"]) == 2
+    assert reimportado["filas_contratistas"][0]["SEMANA 1"] == 3500.0
+
+    pdf_bytes = exportar_cuadro_pagos_semanales_pdf(proy, data_exp)
+    assert isinstance(pdf_bytes, (bytes, bytearray)) and pdf_bytes[:4] == b"%PDF"
+
+    # 3. Editar y eliminar pago individual y verificar recálculo
+    pid_edit = pagos_s1[0]["id"]
+    assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({
+        "action": "edit_payment",
+        "row_type": "contratista",
+        "row_idx": 0,
+        "field": "SEMANA 1",
+        "payment_id": pid_edit,
+        "contratista": "Juan Pérez",
+        "tipo": "Valorización",
+        "fecha": "2026-11-16",
+        "monto": 2200.0,
+    })) is True
+    assert obtener_cuadro_pagos_semanales_proyecto(proy)["filas_contratistas"][0]["SEMANA 1"] == 3700.0
+
+    assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({
+        "action": "delete_payment",
+        "row_type": "contratista",
+        "row_idx": 0,
+        "field": "SEMANA 1",
+        "payment_id": pid_edit,
+    })) is True
+    assert obtener_cuadro_pagos_semanales_proyecto(proy)["filas_contratistas"][0]["SEMANA 1"] == 1500.0
+
+    # 4. Verificar controlador flotante JS (Ingresar nuevo pago -> Registro de Pago)
+    js_ui = build_pagos_floating_ui_js()
+    assert "Ingresar nuevo pago" in js_ui
+    assert "Registro de Pago" in js_ui
+    assert "Contratista:" in js_ui
+    assert "Tipo de Pago:" in js_ui
+    assert "Adelanto" in js_ui and "Valorización" in js_ui and "Liquidación" in js_ui
+    assert "A quién hacer los pagos" in js_ui
+
+
+def test_pagos_gestion_supervision_a_utilidades_estudio():
+    import json
+    import streamlit as st
+    from cota.cotizacion import (
+        aplicar_edicion_inline_cuadro_pagos,
+        guardar_cuadro_pagos_semanales_proyecto,
+        obtener_cuadro_pagos_semanales_proyecto,
+        obtener_utilidades_gestion_pagadas_proyecto,
+        obtener_utilidades_recibidas_estudio,
+    )
+
+    p1 = "Proyecto Superv Soles"
+    p2 = "Proyecto Superv Dolares"
+    p_arc = "Proyecto Archivado"
+
+    st.session_state["proyectos"] = pd.DataFrame([
+        {"Nombre": p1, "Cliente": "C1", "TC_Presupuesto": 3.42, "Utilidades": 8400.0, "Archivado": False, "Pagos_Semanales_JSON": ""},
+        {"Nombre": p2, "Cliente": "C2", "TC_Presupuesto": 3.50, "Utilidades": 5000.0, "Archivado": False, "Pagos_Semanales_JSON": ""},
+        {"Nombre": p_arc, "Cliente": "C3", "TC_Presupuesto": 3.50, "Utilidades": 3000.0, "Archivado": True, "Pagos_Semanales_JSON": ""},
+    ])
+    st.session_state["partidas"] = pd.DataFrame()
+    st.session_state["p_info"] = pd.DataFrame()
+    st.session_state["tasks"] = pd.DataFrame()
+    st.session_state["ingresos_socios"] = pd.DataFrame([
+        {"ID": "ING_1", "Fecha": "2026-11-10", "Proyecto": p1, "Socio": "Alvaro", "Categoria": "Utilidad", "Monto": 500.0, "Notas": ""},
+        {"ID": "ING_2", "Fecha": "2026-11-10", "Proyecto": p1, "Socio": "Alvaro", "Categoria": "Gastos Generales", "Monto": 200.0, "Notas": ""},
+    ])
+
+    # Configurar p1: Gestión y supervisión S/ 3,075.00 pagado en SEMANA 1, S/ 1,200.00 Por Pagar en SEMANA 2, y GG S/ 1,000.00 pagado
+    d1 = obtener_cuadro_pagos_semanales_proyecto(p1)
+    d1["cols_por_pagar"] = ["SEMANA 2"]
+    d1["fila_gestion"]["TOTAL"] = 8400.0
+    d1["fila_gg"]["ADELANTO 1"] = 1000.0
+    guardar_cuadro_pagos_semanales_proyecto(p1, d1)
+
+    assert aplicar_edicion_inline_cuadro_pagos(p1, json.dumps({
+        "action": "add_payment",
+        "row_type": "gestion",
+        "row_idx": 0,
+        "field": "SEMANA 1",
+        "contratista": "Estudio Cota",
+        "tipo": "Valorización",
+        "fecha": "2026-11-16",
+        "monto": 3075.0,
+    })) is True
+    assert aplicar_edicion_inline_cuadro_pagos(p1, json.dumps({
+        "action": "add_payment",
+        "row_type": "gestion",
+        "row_idx": 0,
+        "field": "SEMANA 2",
+        "contratista": "Estudio Cota",
+        "tipo": "Valorización",
+        "fecha": "2026-11-23",
+        "monto": 1200.0,
+    })) is True
+
+    # Configurar p2 en Dólares ($500 * TC 3.50 = S/ 1,750.00) y proyecto archivado con pago (no debe sumar al estudio activo)
+    d2 = obtener_cuadro_pagos_semanales_proyecto(p2)
+    d2["tc"] = 3.50
+    d2["fila_gestion"]["Moneda"] = "Dólares"
+    d2["fila_gestion"]["SEMANA 1"] = 500.0
+    guardar_cuadro_pagos_semanales_proyecto(p2, d2)
+
+    d_arc = obtener_cuadro_pagos_semanales_proyecto(p_arc)
+    d_arc["fila_gestion"]["SEMANA 1"] = 999.0
+    guardar_cuadro_pagos_semanales_proyecto(p_arc, d_arc)
+
+    assert obtener_utilidades_gestion_pagadas_proyecto(p1) == 3075.0
+    assert obtener_utilidades_gestion_pagadas_proyecto(p2) == 1750.0
+
+    estudio_info = obtener_utilidades_recibidas_estudio([p1, p2])
+    assert estudio_info["gestion_pagado_total"] == 4825.0
+    assert estudio_info["ingresos_util_total"] == 500.0
+    assert estudio_info["total_utilidades_recibidas"] == 5325.0
+    assert estudio_info["gg_cobrados_total"] == 200.0
+    assert estudio_info["total_recibidas_mas_gg"] == 5525.0
+    assert estudio_info["por_proyecto"][p1]["gestion_pagado"] == 3075.0
+    assert estudio_info["por_proyecto"][p2]["gestion_pagado"] == 1750.0
+
+    # Al desmarcar SEMANA 2 como 'Por Pagar' (pasa a Pagado), suma automáticamente al estudio
+    assert aplicar_edicion_inline_cuadro_pagos(p1, json.dumps({"action": "toggle_por_pagar", "col": "SEMANA 2"})) is True
+    assert obtener_utilidades_gestion_pagadas_proyecto(p1) == 4275.0
+    estudio_info_2 = obtener_utilidades_recibidas_estudio()
+    assert estudio_info_2["gestion_pagado_total"] == 6025.0
+    assert estudio_info_2["total_utilidades_recibidas"] == 6525.0
+
+    with open("D:/cota-app/cota/ui/views_main.py", "r", encoding="utf-8") as f:
+        vm_code = f.read()
+    assert "obtener_utilidades_recibidas_estudio" in vm_code
+    assert "4. Utilidades Recibidas + GG Cobrados" in vm_code
+
+    with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f:
+        vp_code = f.read()
+    assert "obtener_utilidades_gestion_pagadas_proyecto" in vp_code
+
+
+def test_selector_socio_activo_sidebar_chip():
+    import streamlit as st
+    from cota.config import SOCIOS_DEFAULT
+    from cota.ui.components import render_sidebar_socio_chip, resolver_socios_y_activo
+    from cota.ui.styles import get_app_css
+
+    for k in ("socio_activo", "sb_socio_activo_sidebar", "catalogos_estudio"):
+        st.session_state.pop(k, None)
+
+    # 1. Resolución desde catálogo, deduplicando y seleccionando el primero por defecto
+    socios, activo = resolver_socios_y_activo(["Alvaro", "Socio 1", "Alvaro", "Socio 2"])
+    assert socios == ["Alvaro", "Socio 1", "Socio 2"]
+    assert activo == "Alvaro"
+    assert st.session_state["socio_activo"] == "Alvaro"
+
+    # 2. Respeta socio seleccionado en sidebar y soporta cambio
+    st.session_state["sb_socio_activo_sidebar"] = "Socio 2"
+    socios2, activo2 = resolver_socios_y_activo(["Alvaro", "Socio 1", "Socio 2"])
+    assert activo2 == "Socio 2"
+    assert st.session_state["socio_activo"] == "Socio 2"
+
+    # 3. Si el socio guardado ya no existe, limpia la clave obsoleta y cae al primero
+    st.session_state["sb_socio_activo_sidebar"] = "Socio Eliminado"
+    socios3, activo3 = resolver_socios_y_activo(["Alvaro", "Socio 1"])
+    assert activo3 == "Alvaro"
+    assert "sb_socio_activo_sidebar" not in st.session_state
+
+    # 4. Fallback a EQUIPO secret y luego a SOCIOS_DEFAULT
+    st.session_state.pop("socio_activo", None)
+    socios_sec, act_sec = resolver_socios_y_activo([], equipo_secret="Ana, Luis")
+    assert socios_sec == ["Ana", "Luis"]
+    assert act_sec == "Ana"
+
+    st.session_state.pop("socio_activo", None)
+    socios_def, act_def = resolver_socios_y_activo([], equipo_secret="")
+    assert socios_def == list(SOCIOS_DEFAULT)
+    assert act_def == SOCIOS_DEFAULT[0]
+    assert callable(render_sidebar_socio_chip)
+
+    # 5. Verificación en código fuente: sidebar sin text_input viejo, estilo chip y sincronización
+    with open("D:/cota-app/app.py", "r", encoding="utf-8") as f:
+        app_code = f.read()
+    assert "render_sidebar_socio_chip(" in app_code
+    assert 'st.text_input("Directores / Equipo de Diseño"' not in app_code
+
+    css_str = get_app_css()
+    assert ".st-key-sb_socio_activo_sidebar" in css_str
+    assert "border-radius: 999px" in css_str
+
+    with open("D:/cota-app/cota/ui/components.py", "r", encoding="utf-8") as f:
+        comp_code = f.read()
+    assert "__cotaSidebarSocio" in comp_code
+
+    with open("D:/cota-app/cota/ui/views_main.py", "r", encoding="utf-8") as f:
+        vm_code = f.read()
+    assert 'st.selectbox("Líder de Proyecto", lista_socios, index=' in vm_code
+    assert 'st.selectbox("Responsable", lista_socios, index=' in vm_code
+
+
+def test_cruces_contratistas_y_permitir_cruce():
+    import datetime
+    import streamlit as st
+    from cota.db import COLS_TASKS, establecer_permitir_cruce_tarea, on_table_edit
+    from cota.utils import detectar_cruces_contratistas
+
+    st.session_state["proyectos"] = pd.DataFrame([
+        {"Nombre": "Proyecto Alpha", "Archivado": False},
+        {"Nombre": "Proyecto Beta", "Archivado": False},
+        {"Nombre": "Proyecto Archivado", "Archivado": True},
+    ])
+
+    st.session_state["tasks"] = pd.DataFrame([
+        {
+            "Proyecto": "Proyecto Alpha", "Partida": "02. INSTALACIONES ELÉCTRICAS",
+            "Orden": 1, "Codigo_Item": "2.01", "Tarea": "2.01 Entubado y cableado",
+            "Contratista": "Jesús Villar", "Estado": "🟡 Planificado",
+            "Inicio": "23/11/2026", "Fin": "24/11/2026", "Permitir_Cruce": False,
+        },
+        {
+            "Proyecto": "Proyecto Beta", "Partida": "03. INSTALACIONES SANITARIAS",
+            "Orden": 1, "Codigo_Item": "3.01", "Tarea": "3.01 Tubería de drenaje",
+            "Contratista": "Jesus  Villar", "Estado": "🟡 Planificado",
+            "Inicio": "23/11/2026", "Fin": "23/11/2026", "Permitir_Cruce": False,
+        },
+        {
+            "Proyecto": "Proyecto Alpha", "Partida": "02. INSTALACIONES ELÉCTRICAS",
+            "Orden": 2, "Codigo_Item": "2.03", "Tarea": "2.03 Spots de piso",
+            "Contratista": "Jesús Villar", "Estado": "🟡 Planificado",
+            "Inicio": "27/11/2026", "Fin": "27/11/2026", "Permitir_Cruce": False,
+        },
+        {
+            "Proyecto": "Proyecto Alpha", "Partida": "02. INSTALACIONES ELÉCTRICAS",
+            "Orden": 3, "Codigo_Item": "2.04", "Tarea": "2.04 Luminarias LED",
+            "Contratista": "Jesús Villar", "Estado": "🟡 Planificado",
+            "Inicio": "27/11/2026", "Fin": "27/11/2026", "Permitir_Cruce": False,
+        },
+        {
+            "Proyecto": "Proyecto Beta", "Partida": "03. INSTALACIONES SANITARIAS",
+            "Orden": 2, "Codigo_Item": "3.02", "Tarea": "3.02 Ya terminada",
+            "Contratista": "Jesús Villar", "Estado": "🟢 Completado a tiempo",
+            "Inicio": "23/11/2026", "Fin": "24/11/2026", "Permitir_Cruce": False,
+        },
+        {
+            "Proyecto": "Proyecto Archivado", "Partida": "01. Preliminares",
+            "Orden": 1, "Codigo_Item": "1.01", "Tarea": "1.01 Obra cerrada",
+            "Contratista": "Jesús Villar", "Estado": "🟡 Planificado",
+            "Inicio": "23/11/2026", "Fin": "24/11/2026", "Permitir_Cruce": False,
+        },
+        {
+            "Proyecto": "Proyecto Alpha", "Partida": "02. INSTALACIONES ELÉCTRICAS",
+            "Orden": 4, "Codigo_Item": "2.05", "Tarea": "2.05 Sin contratista",
+            "Contratista": "", "Estado": "🟡 Planificado",
+            "Inicio": "23/11/2026", "Fin": "24/11/2026", "Permitir_Cruce": False,
+        },
+    ])
+    for col in COLS_TASKS:
+        if col not in st.session_state["tasks"].columns:
+            st.session_state["tasks"][col] = ""
+
+    # 1. Detectar cruce entre proyectos (prioritario) + cruce dentro del mismo proyecto en Proyecto Alpha
+    info_alpha = detectar_cruces_contratistas(
+        st.session_state["tasks"], proy_name="Proyecto Alpha", df_proyectos=st.session_state["proyectos"]
+    )
+    assert len(info_alpha["activos"]) == 2
+    assert len(info_alpha["permitidos"]) == 0
+    c_cross = info_alpha["activos"][0]
+    c_same = info_alpha["activos"][1]
+    assert c_cross["mismo_proyecto"] is False
+    assert c_cross["conflicto_proyecto"] == "Proyecto Beta"
+    assert c_cross["cruce_inicio"] == datetime.date(2026, 11, 23)
+    assert c_cross["cruce_fin"] == datetime.date(2026, 11, 23)
+    assert c_cross["dias_cruce"] == 1
+    assert c_same["mismo_proyecto"] is True
+    assert c_same["dias_cruce"] == 1
+
+    # Proyecto Beta también ve el cruce contra Proyecto Alpha (ignorando tarea completada y proyecto archivado)
+    info_beta = detectar_cruces_contratistas(
+        st.session_state["tasks"], proy_name="Proyecto Beta", df_proyectos=st.session_state["proyectos"]
+    )
+    assert len(info_beta["activos"]) == 1
+    assert info_beta["activos"][0]["conflicto_proyecto"] == "Proyecto Alpha"
+
+    # 2. Autorizar cruce con establecer_permitir_cruce_tarea e incrementar contador de tabla
+    st.session_state["c_base_df_tasks_Proyecto Alpha_02. INSTALACIONES ELÉCTRICAS"] = 0
+    assert establecer_permitir_cruce_tarea(0, True) is True
+    assert st.session_state["c_base_df_tasks_Proyecto Alpha_02. INSTALACIONES ELÉCTRICAS"] == 1
+    info_after = detectar_cruces_contratistas(
+        st.session_state["tasks"], proy_name="Proyecto Alpha", df_proyectos=st.session_state["proyectos"]
+    )
+    assert len(info_after["activos"]) == 1
+    assert len(info_after["permitidos"]) == 1
+    assert info_after["permitidos"][0]["conflicto_proyecto"] == "Proyecto Beta"
+
+    # 3. Revocar permiso vuelve el cruce a activos
+    assert establecer_permitir_cruce_tarea(0, False) is True
+    info_rev = detectar_cruces_contratistas(
+        st.session_state["tasks"], proy_name="Proyecto Alpha", df_proyectos=st.session_state["proyectos"]
+    )
+    assert len(info_rev["activos"]) == 2
+
+    # 4. Edición directa en tabla vía on_table_edit persiste Permitir_Cruce como booleano
+    base_k = "base_df_tasks_Proyecto Beta_03. INSTALACIONES SANITARIAS"
+    w_k = "ed_tasks_beta_0"
+    sub_b = st.session_state["tasks"][
+        (st.session_state["tasks"]["Proyecto"] == "Proyecto Beta")
+        & (st.session_state["tasks"]["Partida"] == "03. INSTALACIONES SANITARIAS")
+    ].copy().reset_index(drop=True)
+    st.session_state[base_k] = sub_b
+    st.session_state[w_k] = {"edited_rows": {"0": {"Permitir_Cruce": True}}}
+    on_table_edit(base_k, w_k, "tasks", ["Proyecto", "Partida"], ["Proyecto Beta", "03. INSTALACIONES SANITARIAS"])
+    info_beta_after = detectar_cruces_contratistas(
+        st.session_state["tasks"], proy_name="Proyecto Beta", df_proyectos=st.session_state["proyectos"]
+    )
+    assert len(info_beta_after["activos"]) == 0
+    assert len(info_beta_after["permitidos"]) == 1
+
+    # 5. Verificación de cableado en 05. PARTIDAS Y TAREAS (views_project.py)
+    with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f:
+        vp_code = f.read()
+    tab_obra_code = vp_code.split("def _render_tab_obra")[1].split("def _render_pagos_tooltip_controller")[0]
+    assert "render_alertas_cruce_contratistas(proy_name)" in tab_obra_code
+    assert "render_alertas_cruce_partida(proy_name, p_nom)" in tab_obra_code
+    assert '"Permitir_Cruce": st.column_config.CheckboxColumn(' in tab_obra_code
+
+

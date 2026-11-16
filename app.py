@@ -27,6 +27,7 @@ import cota.pdf
 import cota.ui.styles
 import cota.ui.components
 import cota.ui.views_main
+import cota.ui.cuadro_pagos
 import cota.ui.views_project
 
 for _mod in (
@@ -38,6 +39,7 @@ for _mod in (
     cota.ui.styles,
     cota.ui.components,
     cota.ui.views_main,
+    cota.ui.cuadro_pagos,
     cota.ui.views_project,
 ):
     try:
@@ -79,7 +81,7 @@ from cota.db import (
     inicializar_conexion_gsheets,
     obtener_catalogo_estudio,
 )
-from cota.ui.components import render_header, render_sidebar_branding
+from cota.ui.components import render_header, render_sidebar_branding, render_sidebar_socio_chip
 from cota.ui.styles import get_app_css
 from cota.ui.views_main import render_main_view
 from cota.ui.views_project import render_proyecto_view
@@ -366,13 +368,7 @@ with st.sidebar:
         st.divider()
 
     socios_cat = obtener_catalogo_estudio("socios")
-    equipo_default = ", ".join(socios_cat) if socios_cat else get_secret("EQUIPO", "Socio 1, Socio 2")
-    socios_input = st.text_input("Directores / Equipo de Diseño", value=equipo_default)
-    lista_socios = [s.strip() for s in socios_input.split(",") if s.strip()]
-    if not lista_socios:
-        lista_socios = socios_cat if socios_cat else ["Socio 1", "Socio 2"]
-    else:
-        st.session_state.setdefault("catalogos_estudio", {})["socios"] = lista_socios
+    lista_socios, _ = render_sidebar_socio_chip(socios_cat)
 
     st.divider()
 

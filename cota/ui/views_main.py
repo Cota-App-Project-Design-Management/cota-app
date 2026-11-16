@@ -42,12 +42,16 @@ from cota.db import (
 import importlib
 import cota.cotizacion
 try:
-    if not hasattr(cota.cotizacion, "aplicar_cotizacion_a_proyecto"):
+    if (
+        not hasattr(cota.cotizacion, "aplicar_cotizacion_a_proyecto")
+        or not hasattr(cota.cotizacion, "obtener_utilidades_recibidas_estudio")
+    ):
         importlib.reload(cota.cotizacion)
 except Exception:
     pass
 from cota.cotizacion import (
     aplicar_cotizacion_a_proyecto,
+    obtener_utilidades_recibidas_estudio,
     generar_plantilla_cotizacion_venti,
     parsear_cotizacion_venti,
     parsear_presupuesto_flexible,
@@ -379,7 +383,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 sel_ubi = st.selectbox("Ubicación", exist_ubis + ["+ Agregar Ubicación"])
                 p_ubi_new = st.text_input("Nueva Ubicación (si elegiste '+ Agregar Ubicación')", placeholder="").strip()
                 p_ubi = p_ubi_new if (sel_ubi == "+ Agregar Ubicación" and p_ubi_new) else (exist_ubis[0] if sel_ubi == "+ Agregar Ubicación" else sel_ubi)
-                pe = st.selectbox("Líder de Proyecto", lista_socios)
+                pe = st.selectbox("Líder de Proyecto", lista_socios, index=(lista_socios.index(st.session_state.get("socio_activo")) if st.session_state.get("socio_activo") in lista_socios else 0))
                 ps = st.selectbox("Estado Inicial", STATUS_PROYECTOS)
                 p_tipo = st.selectbox("Tipo de Proyecto", tipos_cat)
                 p_cliente = st.text_input("Nombre del Cliente", placeholder="")
@@ -1202,7 +1206,9 @@ def _render_tab_finanzas_estudio(fecha_hoy):
         util_ejecutadas = 0.0
         gg_cobrados = 0.0
 
-    tot_util_ejec_mas_gg = util_ejecutadas + gg_cobrados
+    util_rec_info = obtener_utilidades_recibidas_estudio(nombres_activos)
+    util_ejecutadas = round(util_ejecutadas + float(util_rec_info.get("gestion_pagado_total", 0.0)), 2)
+    tot_util_ejec_mas_gg = round(util_ejecutadas + gg_cobrados, 2)
 
     # Sub-módulo de Manejo de Caja Chica y Gastos Generales (Punto 1.3)
     if st.session_state.get("modulo_caja_chica_abierto", False):
@@ -1268,7 +1274,7 @@ def _render_tab_finanzas_estudio(fecha_hoy):
         render_metric_card(
             "2. Utilidades",
             format_currency(tot_utilidades),
-            f"Margen estimado: {pct_util_contratos:.0f}% sobre contratos",
+            f"Margen est.: {pct_util_contratos:.0f}% · Recibidas: {format_currency(util_ejecutadas)}",
             border_color="#4A7C59",
             text_color="#4A7C59",
         )
@@ -1285,9 +1291,9 @@ def _render_tab_finanzas_estudio(fecha_hoy):
             st.rerun()
     with cw4:
         render_metric_card(
-            "4. Utilidades Ejecutadas + GG Cobrados",
+            "4. Utilidades Recibidas + GG Cobrados",
             format_currency(tot_util_ejec_mas_gg),
-            f"Util. Ejec.: {format_currency(util_ejecutadas)} · GG: {format_currency(gg_cobrados)}",
+            f"Util. Recibidas: {format_currency(util_ejecutadas)} · GG: {format_currency(gg_cobrados)}",
             border_color="#4A7C59",
             text_color="#4A7C59",
         )
@@ -1318,6 +1324,8 @@ def _render_tab_finanzas_estudio(fecha_hoy):
             u_ej_p = float(pd.to_numeric(ing_p['Monto'], errors='coerce').fillna(0.0).sum())
         else:
             u_ej_p = 0.0
+
+        u_ej_p = round(u_ej_p + float(util_rec_info.get("por_proyecto", {}).get(p_name, {}).get("gestion_pagado", 0.0)), 2)
 
         rows_fin.append({
             "Proyecto": p_name,
@@ -1381,7 +1389,7 @@ def _render_tab_operativo_diario(lista_socios, fecha_hoy, conn, sheet_url, nube_
             with st.form("form_nuevo_todo", clear_on_submit=True):
                 p_act = get_proyectos_activos(st.session_state.proyectos)['Nombre'].tolist()
                 t_p = st.selectbox("Asignar a Proyecto", ["General"] + p_act)
-                t_r = st.selectbox("Responsable", lista_socios)
+                t_r = st.selectbox("Responsable", lista_socios, index=(lista_socios.index(st.session_state.get("socio_activo")) if st.session_state.get("socio_activo") in lista_socios else 0))
                 t_cat = st.selectbox("Clasificación", ["Compras / FF&E", "Pagos", "Proveedores", "Coordinación Cliente", "Supervisión Obra"])
                 t_txt = st.text_input("Detalle de Actividad")
                 if st.form_submit_button("REGISTRAR ACTIVIDAD") and t_txt:
