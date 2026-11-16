@@ -394,6 +394,7 @@ def test_in_app_budget_builder():
         ajustar_cantidad_tareas_partida,
         renombrar_partida_presupuesto,
         recalcular_totales_presupuesto_proyecto,
+        exportar_presupuesto_pdf,
         exportar_proyecto_a_formato_venti,
     )
     from cota.db import COLS_PROY, COLS_P_INFO, COLS_TASKS
@@ -1540,6 +1541,7 @@ def test_exportacion_formato_monedas_y_encabezado_ordenado():
     import streamlit as st
     from cota.cotizacion import (
         asegurar_estructura_presupuesto_proyecto,
+        exportar_presupuesto_pdf,
         exportar_proyecto_a_formato_venti,
         parsear_cotizacion_venti,
         recalcular_totales_presupuesto_proyecto,
@@ -1586,18 +1588,18 @@ def test_exportacion_formato_monedas_y_encabezado_ordenado():
     wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=False)
     ws1 = wb["Presupuesto"]
 
-    # 1. Verificar encabezado integrado y ordenado (Filas 2, 3 y 4 pegadas a la cabecera en Fila 5)
-    assert "PRESUPUESTO DE OBRA" in str(ws1["B2"].value)
-    assert ws1["B3"].value == "Proyecto:"
-    assert ws1["C3"].value == proy
-    assert ws1["I3"].value == "Fecha:"
-    assert ws1["J3"].value == "2026-11-09"
-    assert ws1["B4"].value == "Cliente:"
-    assert ws1["C4"].value == "Maruja Morín"
+    # 1. Verificar encabezado exacto formato Venti (Logo en B2:B4, Proyecto/Fecha fila 2, espacio fila 3, Cliente/TC fila 4, cabecera fila 5)
+    assert ws1["C2"].value == "Proyecto:"
+    assert ws1["D2"].value == proy
+    assert ws1["I2"].value == "2026-11-09"
+    assert ws1["C3"].value is None
+    assert ws1["C4"].value == "Cliente:"
+    assert ws1["D4"].value == "Maruja Morín"
     assert ws1["I4"].value == "TC:"
     assert float(ws1["J4"].value) == 3.42
-    assert ws1["B5"].value == "Ítem"
-    assert len(ws1._images) >= 1
+    assert ws1["B5"].value in ("", None)
+    assert ws1["C5"].value == "Descripción"
+    assert len(ws1._images) >= 2
 
     # 2. Verificar formatos de moneda en Soles y Dólares
     FMT_SOLES = '"S/ "#,##0.00'
@@ -1643,6 +1645,7 @@ def test_marca_estudio_color_y_logo_por_branch():
         generar_plantilla_cotizacion_venti,
     )
     from cota.pdf import generar_pdf_minuta
+    from cota.cotizacion import exportar_presupuesto_pdf
     from cota.ui.styles import get_app_css
     from cota.utils import guardar_marca_estudio, obtener_marca_estudio
 
@@ -1668,13 +1671,20 @@ def test_marca_estudio_color_y_logo_por_branch():
         css_str = get_app_css()
         assert "--clay-primary: #C85A32;" in css_str
 
-        # Excel de Presupuesto usa el color del estudio, nombre y logo
+        # Excel y PDF de Presupuesto usan el formato Venti con el color del estudio, nombre y logo
         xlsx_ppto = generar_plantilla_cotizacion_venti(proyecto="Proy Marca", cliente="Cliente Marca")
         wb_ppto = openpyxl.load_workbook(io.BytesIO(xlsx_ppto))
         ws_ppto = wb_ppto["Presupuesto"]
-        assert "ATELIER AZUL" in str(ws_ppto["B2"].value)
-        assert ws_ppto["B2"].fill.start_color.rgb.endswith("1E3A5F")
-        assert len(ws_ppto._images) >= 1
+        assert ws_ppto["C2"].value == "Proyecto:"
+        assert ws_ppto["D2"].value == "Proy Marca"
+        assert "ATELIER AZUL" in str(ws_ppto.oddHeader.center.text)
+        assert ws_ppto["C5"].fill.start_color.rgb.endswith("1E3A5F")
+        assert ws_ppto[f"C{ws_ppto.max_row - 1}"].fill.start_color.rgb.endswith("1E3A5F")
+        assert len(ws_ppto._images) >= 2
+
+        pdf_ppto = exportar_presupuesto_pdf("Proy Marca")
+        assert isinstance(pdf_ppto, (bytes, bytearray))
+        assert pdf_ppto[:4] == b"%PDF"
 
         # Excel y PDF de Control de Pagos usan el color del estudio, formato de moneda y logo
         xlsx_pagos = exportar_cuadro_pagos_semanales_excel("Proy Marca")
@@ -1849,3 +1859,108 @@ def test_diseno_entregables_sin_cronograma():
     assert "Fin_DT" not in tab_diseno
     assert '"Entrega"' not in tab_diseno
     assert "_contar_estados_diseno" in tab_diseno
+
+
+def test_formato_venti_excel_y_pdf_con_marca():
+    import io
+    import openpyxl
+    import streamlit as st
+    from cota.cotizacion import (
+        exportar_presupuesto_pdf,
+        exportar_proyecto_a_formato_venti,
+        parsear_cotizacion_venti,
+    )
+    from cota.db import COLS_P_INFO, COLS_TASKS
+
+    proy = "Casa Venti Test"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": proy,
+        "Cliente": "Cliente Venti SAC",
+        "Inicio": "2026-11-16",
+        "Presupuesto": 0.0,
+        "Utilidades": 0.0,
+        "GG_Presupuesto": 0.0,
+        "TC_Presupuesto": 3.42,
+        "GG_Pct": 2.0,
+        "Utilidades_Pct": 15.0,
+        "Incluir_IGV": False,
+        "Archivado": False,
+    }])
+    st.session_state["partidas"] = pd.DataFrame([
+        {"Proyecto": proy, "Nombre_Partida": "01. Obras Civiles"}
+    ])
+    st.session_state["p_info"] = pd.DataFrame([
+        {"Proyecto": proy, "Nombre_Partida": "01. Obras Civiles", "Monto_Pactado": 1500.0}
+    ])
+    st.session_state["tasks"] = pd.DataFrame([
+        {
+            "Proyecto": proy,
+            "Partida": "01. Obras Civiles",
+            "Orden": 1,
+            "Codigo_Item": "1.01",
+            "Tarea": "1.01 Demolición e instalación completa de tabiquería drywall resistente a la humedad en área de servicio y lavandería",
+            "Moneda": "Soles",
+            "Unidad": "glb",
+            "Metrado": 1.0,
+            "Valor_Unitario": 1500.0,
+            "Presupuesto": 1500.0,
+        }
+    ])
+
+    xlsx_bytes = exportar_proyecto_a_formato_venti(proy, brand_color="#2B4C7E", studio_name="Venti Studio")
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=False)
+    ws1 = wb["Presupuesto"]
+    ws2 = wb["Control de Pagos"]
+
+    # Encabezado exacto del formato Venti
+    assert ws1["C1"].value is None
+    assert ws1["C2"].value == "Proyecto:"
+    assert ws1["D2"].value == proy
+    assert ws1["I2"].value == "2026-11-16"
+    assert ws1["C3"].value is None
+    assert ws1["C4"].value == "Cliente:"
+    assert ws1["D4"].value == "Cliente Venti SAC"
+    assert ws1["I4"].value == "TC:"
+    assert float(ws1["J4"].value) == 3.42
+    assert ws1["B5"].value in ("", None)
+    assert ws1["C5"].value == "Descripción"
+    assert ws1["C5"].fill.start_color.rgb.endswith("2B4C7E")
+
+    # Cierre estilo Venti (TOTAL Soles + Dólares con Col C vacía) y logo superior e inferior
+    row_tot = ws1.max_row - 1
+    row_usd = ws1.max_row
+    assert ws1[f"C{row_tot}"].value == "TOTAL"
+    assert ws1[f"D{row_tot}"].value == "Soles"
+    assert ws1[f"C{row_tot}"].fill.start_color.rgb.endswith("2B4C7E")
+    assert ws1[f"C{row_usd}"].value in ("", None)
+    assert ws1[f"D{row_usd}"].value == "Dólares"
+    assert len(ws1._images) >= 2
+
+    # Hoja 2 enlazada correctamente al nuevo encabezado Venti
+    assert ws2["C1"].value == "=Presupuesto!D2"
+    assert ws2["J1"].value == "=Presupuesto!I2"
+    assert ws2["C2"].value == "=Presupuesto!D4"
+    assert ws2["J2"].value == "=Presupuesto!J4"
+
+    # Round-trip del parser
+    parsed = parsear_cotizacion_venti(xlsx_bytes)
+    assert parsed["proyecto"] == proy
+    assert parsed["cliente"] == "Cliente Venti SAC"
+    assert parsed["tc"] == 3.42
+
+    # Exportación PDF con mismo formato Venti, marca y texto largo multilinea
+    pdf_bytes = exportar_presupuesto_pdf(proy, brand_color="#2B4C7E", studio_name="Venti Studio")
+    assert isinstance(pdf_bytes, (bytes, bytearray))
+    assert pdf_bytes[:4] == b"%PDF"
+    assert len(pdf_bytes) > 1000
+
+    # Verificar botones Excel y PDF en UI de Presupuesto
+    with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f:
+        vp_code = f.read()
+    tab_ppto = vp_code.split("def _render_tab_presupuesto")[1].split("def _render_tab_entregables")[0]
+    assert "exportar_proyecto_a_formato_venti" in tab_ppto
+    assert "exportar_presupuesto_pdf" in tab_ppto
+    assert "btn_exp_excel_top_" in tab_ppto
+    assert "btn_exp_pdf_top_" in tab_ppto
+    assert "btn_exp_excel_bot_" in tab_ppto
+    assert "btn_exp_pdf_bot_" in tab_ppto

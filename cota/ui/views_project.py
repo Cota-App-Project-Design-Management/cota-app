@@ -62,6 +62,7 @@ try:
         or not hasattr(cota.cotizacion, "eliminar_partida_presupuesto")
         or not hasattr(cota.cotizacion, "mover_tareas_seleccionadas_presupuesto")
         or not hasattr(cota.cotizacion, "eliminar_tareas_seleccionadas_presupuesto")
+        or not hasattr(cota.cotizacion, "exportar_presupuesto_pdf")
     ):
         importlib.reload(cota.cotizacion)
     if not hasattr(cota.pdf, "generar_pdf_minuta"):
@@ -84,6 +85,7 @@ from cota.cotizacion import (
     etiqueta_export_columna_pago,
     exportar_cuadro_pagos_semanales_excel,
     exportar_cuadro_pagos_semanales_pdf,
+    exportar_presupuesto_pdf,
     exportar_proyecto_a_formato_venti,
     extraer_descripcion_tarea,
     generar_plantilla_cotizacion_venti,
@@ -1139,7 +1141,8 @@ def _render_tab_presupuesto(proy_name, proy_data):
 
     parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
 
-    col_tit_p, col_undo, col_imp_top, col_exp_p = st.columns([4.2, 1.8, 2.0, 2.0])
+    safe_fn_p = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in proy_name).strip("_") or "Proyecto"
+    col_tit_p, col_undo, col_imp_top, col_exp_x, col_exp_pdf = st.columns([3.7, 1.6, 1.7, 1.5, 1.5])
     with col_tit_p:
         st.markdown("### 📐 PRESUPUESTO Y COTIZACIÓN DEL PROYECTO")
         st.caption(
@@ -1165,17 +1168,28 @@ def _render_tab_presupuesto(proy_name, proy_data):
         st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
         if st.button("📥 IMPORTAR PRESUPUESTO", key=f"btn_toggle_imp_ppto_{proy_name}", use_container_width=True):
             st.session_state[f"show_imp_ppto_{proy_name}"] = not st.session_state.get(f"show_imp_ppto_{proy_name}", False)
-    with col_exp_p:
+    with col_exp_x:
         st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
         xlsx_export_bytes = exportar_proyecto_a_formato_venti(proy_name)
         st.download_button(
-            "📥 EXPORTAR EXCEL CLIENTE (.XLSX)",
+            "📥 EXCEL (.XLSX)",
             data=xlsx_export_bytes,
-            file_name=f"Presupuesto_{proy_name.replace(' ', '_')}.xlsx",
+            file_name=f"Presupuesto_{safe_fn_p}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
             use_container_width=True,
             key=f"btn_exp_excel_top_{proy_name}",
+        )
+    with col_exp_pdf:
+        st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
+        pdf_export_bytes = exportar_presupuesto_pdf(proy_name)
+        st.download_button(
+            "📄 PDF (.PDF)",
+            data=pdf_export_bytes,
+            file_name=f"Presupuesto_{safe_fn_p}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"btn_exp_pdf_top_{proy_name}",
         )
 
     # Panel Importador Inteligente de Presupuesto
@@ -1956,18 +1970,27 @@ def _render_tab_presupuesto(proy_name, proy_data):
     )
     st.markdown(tabla_cierre_html, unsafe_allow_html=True)
 
-    col_bot_exp1, col_bot_exp2 = st.columns([5, 5])
+    col_bot_exp1, col_bot_exp2, col_bot_exp3 = st.columns([3.3, 3.2, 3.5])
     with col_bot_exp1:
         st.download_button(
             "📥 EXPORTAR PRESUPUESTO A EXCEL (.XLSX) PARA EL CLIENTE",
             data=xlsx_export_bytes,
-            file_name=f"Presupuesto_{proy_name.replace(' ', '_')}.xlsx",
+            file_name=f"Presupuesto_{safe_fn_p}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
             use_container_width=True,
             key=f"btn_exp_excel_bot_{proy_name}",
         )
     with col_bot_exp2:
+        st.download_button(
+            "📄 EXPORTAR PRESUPUESTO A PDF (.PDF)",
+            data=pdf_export_bytes,
+            file_name=f"Presupuesto_{safe_fn_p}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"btn_exp_pdf_bot_{proy_name}",
+        )
+    with col_bot_exp3:
         st.info("✅ **Sincronizado en tiempo real:** Las partidas, tareas, contratistas y montos están conectados con **05. PARTIDAS Y TAREAS** y **06. COBROS & FINANZAS**.")
 
 

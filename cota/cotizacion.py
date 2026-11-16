@@ -1331,15 +1331,28 @@ def generar_plantilla_cotizacion_venti(
     - Hoja 2 ('Control de Pagos'): Cronograma de desembolsos por semanas integrado simétricamente.
     """
     from openpyxl.drawing.image import Image as XLImage
-    from cota.utils import normalizar_hex_color, obtener_marca_estudio, oscurecer_hex_color, preparar_logo_png_bytes
+    from cota.utils import (
+        aclarar_hex_color,
+        hex_a_rgb,
+        normalizar_hex_color,
+        obtener_marca_estudio,
+        oscurecer_hex_color,
+        preparar_logo_png_bytes,
+    )
 
     if not fecha:
         fecha = datetime.date.today().strftime("%Y-%m-%d")
 
     marca = obtener_marca_estudio()
-    brand_hex = normalizar_hex_color(brand_color or marca.get("brand_color", "#C85A32")).lstrip("#")
-    brand_dark_hex = oscurecer_hex_color(f"#{brand_hex}", 0.82).lstrip("#")
+    brand_hex_full = normalizar_hex_color(brand_color or marca.get("brand_color", "#C85A32"))
+    brand_hex = brand_hex_full.lstrip("#")
+    brand_dark_hex = oscurecer_hex_color(brand_hex_full, 0.82).lstrip("#")
+    brand_soft_hex = aclarar_hex_color(brand_hex_full, 0.88).lstrip("#")
     nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "")).strip()
+
+    b_r, b_g, b_b = hex_a_rgb(brand_hex_full)
+    lum_brand = 0.299 * b_r + 0.587 * b_g + 0.114 * b_b
+    brand_txt_hex = "262320" if lum_brand > 185 else "FFFFFF"
 
     if logo_bytes is not None:
         logo_png, logo_dims = preparar_logo_png_bytes(logo_bytes)
@@ -1347,8 +1360,18 @@ def generar_plantilla_cotizacion_venti(
         logo_png = marca.get("logo_png_bytes")
         logo_dims = marca.get("logo_size")
 
+    def _fit_xl_logo(max_w: float, max_h: float):
+        xl_img = XLImage(io.BytesIO(logo_png))
+        if logo_dims and logo_dims[0] > 0 and logo_dims[1] > 0:
+            ratio = min(max_w / float(logo_dims[0]), max_h / float(logo_dims[1]))
+            xl_img.width = max(18, int(round(logo_dims[0] * ratio)))
+            xl_img.height = max(14, int(round(logo_dims[1] * ratio)))
+        return xl_img
+
     FMT_SOLES = '"S/ "#,##0.00'
     FMT_USD = '"$ "#,##0.00'
+    FMT_PCT_DASH = '0.0%;-0.0%;"-%"'
+    FMT_INT_PCT_DASH = '0%;-0%;"-%"'
 
     gg_dec = float(gg_pct) / 100.0 if float(gg_pct) > 1.0 else float(gg_pct)
     ges_dec = float(gestion_pct) / 100.0 if float(gestion_pct) > 1.0 else float(gestion_pct)
@@ -1356,33 +1379,34 @@ def generar_plantilla_cotizacion_venti(
     wb = openpyxl.Workbook()
 
     font_family = "Calibri"
-    f_banner = Font(name=font_family, size=11, bold=True, color="FFFFFF")
-    f_banner_sub = Font(name=font_family, size=9, bold=True, color="EFECE6")
+    f_banner = Font(name=font_family, size=10, bold=True, color=brand_txt_hex)
+    f_banner_sub = Font(name=font_family, size=8, bold=True, color=brand_hex)
     f_meta_lbl = Font(name=font_family, size=10, bold=True, color="262320")
-    f_title = Font(name=font_family, size=11, bold=True, color="262320")
-    f_header = Font(name=font_family, size=10, bold=True, color="FFFFFF")
+    f_title = Font(name=font_family, size=10, bold=True, color="262320")
+    f_header = Font(name=font_family, size=10, bold=True, color=brand_txt_hex)
     f_partida = Font(name=font_family, size=10, bold=True, color="262320")
     f_task = Font(name=font_family, size=10, bold=False, color="262320")
     f_footer = Font(name=font_family, size=10, bold=True, color="262320")
-    f_total = Font(name=font_family, size=10, bold=True, color="FFFFFF")
+    f_total = Font(name=font_family, size=10, bold=True, color=brand_txt_hex)
     f_usd = Font(name=font_family, size=10, bold=True, color="262320")
 
     fill_brand = PatternFill(start_color=brand_hex, end_color=brand_hex, fill_type="solid")
-    fill_logo_box = PatternFill(start_color="262320", end_color="262320", fill_type="solid")
-    fill_header = PatternFill(start_color="262320", end_color="262320", fill_type="solid")
+    fill_brand_soft = PatternFill(start_color=brand_soft_hex, end_color=brand_soft_hex, fill_type="solid")
+    fill_logo_box = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    fill_header = fill_brand
     fill_meta_lbl = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
-    fill_meta_val = PatternFill(start_color="FAF8F5", end_color="FAF8F5", fill_type="solid")
-    fill_partida = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
-    fill_subtotal = PatternFill(start_color="DFD9CE", end_color="DFD9CE", fill_type="solid")
-    fill_total = PatternFill(start_color=brand_hex, end_color=brand_hex, fill_type="solid")
-    fill_usd = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
+    fill_meta_val = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    fill_partida = fill_brand_soft
+    fill_subtotal = PatternFill(start_color="EFECE6", end_color="EFECE6", fill_type="solid")
+    fill_total = fill_brand
+    fill_usd = fill_brand_soft
     fill_input = PatternFill(start_color="FAF8F5", end_color="FAF8F5", fill_type="solid")
 
     thin_side = Side(border_style="thin", color="D0C9BD")
     brand_med_side = Side(border_style="medium", color=brand_hex)
     med_bottom = Side(border_style="medium", color="262320")
     border_cell = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
-    border_header_col = Border(left=thin_side, right=thin_side, top=thin_side, bottom=brand_med_side)
+    border_header_col = Border(left=thin_side, right=thin_side, top=brand_med_side, bottom=brand_med_side)
     border_partida = Border(left=thin_side, right=thin_side, top=thin_side, bottom=med_bottom)
     border_closing = Border(left=thin_side, right=thin_side, top=thin_side, bottom=med_bottom)
 
@@ -1391,7 +1415,7 @@ def generar_plantilla_cotizacion_venti(
     align_right = Alignment(horizontal="right", vertical="center", wrap_text=True)
 
     # ==========================================
-    # HOJA 1: PRESUPUESTO
+    # HOJA 1: PRESUPUESTO (FORMATO VENTI + MARCA DEL ESTUDIO)
     # ==========================================
     ws1 = wb.active
     ws1.title = "Presupuesto"
@@ -1401,84 +1425,64 @@ def generar_plantilla_cotizacion_venti(
     ws1.sheet_properties.pageSetUpPr.fitToPage = True
     ws1.page_setup.fitToWidth = 1
     ws1.page_setup.fitToHeight = 0
+    if nom_estudio:
+        ws1.oddHeader.center.text = f"&B{nom_estudio.upper()} — PRESUPUESTO"
 
-    # --- ENCABEZADO ORDENADO E INTEGRADO DEL PRESUPUESTO (Filas 2, 3 y 4) ---
+    # --- ENCABEZADO FORMATO VENTI (Fila 1 vacía, Fila 2 Logo + Proyecto + Fecha, Fila 3 espacio, Fila 4 Cliente + TC) ---
     ws1.row_dimensions[1].height = 8
-    ws1.row_dimensions[2].height = 34
-    ws1.row_dimensions[3].height = 22
+    ws1.row_dimensions[2].height = 22
+    ws1.row_dimensions[3].height = 10
     ws1.row_dimensions[4].height = 22
 
-    # Fila 2: Banner Superior de Marca del Estudio + Logo
-    banner_txt = f"  {nom_estudio.upper()}  —  PRESUPUESTO DE OBRA" if nom_estudio else "  PRESUPUESTO DE OBRA"
-    ws1.merge_cells("B2:H2")
-    ws1["B2"] = banner_txt
-    ws1["B2"].font = f_banner
-    ws1["B2"].alignment = align_left
-
-    ws1.merge_cells("I2:J2")
-    ws1["I2"] = nom_estudio.upper() if nom_estudio else "COTA"
-    ws1["I2"].font = f_banner_sub
-    ws1["I2"].alignment = align_center
-
-    for c_idx in range(2, 9):
-        c_let = get_column_letter(c_idx)
-        ws1[f"{c_let}2"].fill = fill_brand
-        ws1[f"{c_let}2"].border = border_cell
-    for c_idx in (9, 10):
-        c_let = get_column_letter(c_idx)
-        ws1[f"{c_let}2"].fill = fill_logo_box
-        ws1[f"{c_let}2"].border = border_cell
+    # Celda izquierda de Logo [logo] en B2:B4
+    ws1.merge_cells("B2:B4")
+    ws1["B2"] = nom_estudio.upper() if nom_estudio else ""
+    ws1["B2"].font = f_banner_sub
+    ws1["B2"].alignment = align_center
+    for r_l in (2, 3, 4):
+        ws1[f"B{r_l}"].fill = fill_logo_box
+        ws1[f"B{r_l}"].border = border_cell
 
     if logo_png:
         try:
-            xl_img1 = XLImage(io.BytesIO(logo_png))
-            if logo_dims and logo_dims[1] > 0:
-                target_h = 30
-                target_w = min(145, max(28, int(round(logo_dims[0] * (target_h / float(logo_dims[1]))))))
-                xl_img1.width = target_w
-                xl_img1.height = target_h
-            ws1.add_image(xl_img1, "I2")
-            ws1["I2"] = ""
+            ws1.add_image(_fit_xl_logo(88, 50), "B2")
+            ws1["B2"] = ""
         except Exception:
             pass
 
-    # Fila 3: Proyecto (B3:H3) y Fecha (I3:J3)
-    ws1.merge_cells("C3:H3")
-    ws1["B3"] = "Proyecto:"
-    ws1["B3"].font = f_meta_lbl
-    ws1["B3"].fill = fill_meta_lbl
-    ws1["B3"].alignment = align_right
+    # Fila 2: Proyecto (C2:H2) y Fecha (I2:J2)
+    ws1["C2"] = "Proyecto:"
+    ws1["C2"].font = f_meta_lbl
+    ws1["C2"].fill = fill_meta_lbl
+    ws1["C2"].alignment = align_left
 
-    ws1["C3"] = proyecto
-    ws1["C3"].font = f_title
-    ws1["C3"].alignment = align_left
+    ws1.merge_cells("D2:H2")
+    ws1["D2"] = proyecto
+    ws1["D2"].font = f_title
+    ws1["D2"].alignment = align_left
 
-    ws1["I3"] = "Fecha:"
-    ws1["I3"].font = f_meta_lbl
-    ws1["I3"].fill = fill_meta_lbl
-    ws1["I3"].alignment = align_right
+    ws1.merge_cells("I2:J2")
+    ws1["I2"] = fecha
+    ws1["I2"].font = f_meta_lbl
+    ws1["I2"].fill = fill_meta_val
+    ws1["I2"].alignment = align_center
 
-    ws1["J3"] = fecha
-    ws1["J3"].font = f_meta_lbl
-    ws1["J3"].fill = fill_meta_val
-    ws1["J3"].alignment = align_center
-
-    for c_idx in range(2, 11):
+    for c_idx in range(3, 11):
         c_let = get_column_letter(c_idx)
-        if c_idx in range(3, 9):
-            ws1[f"{c_let}3"].fill = fill_meta_val
-        ws1[f"{c_let}3"].border = border_cell
+        if c_idx in range(4, 9):
+            ws1[f"{c_let}2"].fill = fill_meta_val
+        ws1[f"{c_let}2"].border = border_cell
 
-    # Fila 4: Cliente (B4:H4) y TC (I4:J4)
-    ws1.merge_cells("C4:H4")
-    ws1["B4"] = "Cliente:"
-    ws1["B4"].font = f_meta_lbl
-    ws1["B4"].fill = fill_meta_lbl
-    ws1["B4"].alignment = align_right
-
-    ws1["C4"] = cliente
-    ws1["C4"].font = f_title
+    # Fila 4: Cliente (C4:H4) y TC (I4:J4)
+    ws1["C4"] = "Cliente:"
+    ws1["C4"].font = f_meta_lbl
+    ws1["C4"].fill = fill_meta_lbl
     ws1["C4"].alignment = align_left
+
+    ws1.merge_cells("D4:H4")
+    ws1["D4"] = cliente
+    ws1["D4"].font = f_title
+    ws1["D4"].alignment = align_left
 
     ws1["I4"] = "TC:"
     ws1["I4"].font = f_meta_lbl
@@ -1488,17 +1492,17 @@ def generar_plantilla_cotizacion_venti(
     ws1["J4"] = float(tc)
     ws1["J4"].font = f_title
     ws1["J4"].fill = fill_meta_val
-    ws1["J4"].number_format = '"S/ "0.00'
+    ws1["J4"].number_format = "0.00"
     ws1["J4"].alignment = align_center
 
-    for c_idx in range(2, 11):
+    for c_idx in range(3, 11):
         c_let = get_column_letter(c_idx)
-        if c_idx in range(3, 9):
+        if c_idx in range(4, 9):
             ws1[f"{c_let}4"].fill = fill_meta_val
         ws1[f"{c_let}4"].border = border_cell
 
     headers_h1 = [
-        ("B", "Ítem"),
+        ("B", ""),
         ("C", "Descripción"),
         ("D", "Moneda"),
         ("E", "Unidad"),
@@ -1645,7 +1649,7 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"D{row_gg}"] = "Soles"
     ws1[f"D{row_gg}"].alignment = align_center
     ws1[f"F{row_gg}"] = gg_dec
-    ws1[f"F{row_gg}"].number_format = "0.0%"
+    ws1[f"F{row_gg}"].number_format = FMT_PCT_DASH
     ws1[f"F{row_gg}"].alignment = align_center
     if gg_monto_fijo is not None and float(gg_monto_fijo) > 0:
         ws1[f"H{row_gg}"] = float(gg_monto_fijo)
@@ -1664,7 +1668,7 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"D{row_gestion}"] = "Soles"
     ws1[f"D{row_gestion}"].alignment = align_center
     ws1[f"F{row_gestion}"] = ges_dec
-    ws1[f"F{row_gestion}"].number_format = "0.0%"
+    ws1[f"F{row_gestion}"].number_format = FMT_PCT_DASH
     ws1[f"F{row_gestion}"].alignment = align_center
     if gestion_monto_fijo is not None and float(gestion_monto_fijo) > 0:
         ws1[f"H{row_gestion}"] = float(gestion_monto_fijo)
@@ -1683,7 +1687,7 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"D{row_igv}"] = "Soles"
     ws1[f"D{row_igv}"].alignment = align_center
     ws1[f"F{row_igv}"] = 0.18 if incluir_igv else 0.0
-    ws1[f"F{row_igv}"].number_format = "0%"
+    ws1[f"F{row_igv}"].number_format = FMT_INT_PCT_DASH
     ws1[f"F{row_igv}"].alignment = align_center
     ws1[f"H{row_igv}"] = f"=IF(ISNUMBER(F{row_igv}),(I{row_subtotal_casco}+H{row_gg}+H{row_gestion})*F{row_igv},0)"
     ws1[f"H{row_igv}"].number_format = FMT_SOLES
@@ -1693,9 +1697,30 @@ def generar_plantilla_cotizacion_venti(
         ws1[f"{c_let}{row_igv}"].font = f_footer
         ws1[f"{c_let}{row_igv}"].border = border_cell
 
-    # Fila TOTAL Soles
+    # Fila TOTAL Soles + Logo inferior en B[row_total]:B[row_usd] (Formato Venti)
     row_total = row_igv + 1
+    row_usd = row_total + 1
+    ws1.row_dimensions[row_total].height = 22
+    ws1.row_dimensions[row_usd].height = 22
+
+    ws1.merge_cells(f"B{row_total}:B{row_usd}")
+    ws1[f"B{row_total}"] = nom_estudio.upper() if nom_estudio else ""
+    ws1[f"B{row_total}"].font = f_banner_sub
+    ws1[f"B{row_total}"].alignment = align_center
+    ws1[f"B{row_total}"].fill = fill_logo_box
+    ws1[f"B{row_total}"].border = border_cell
+    ws1[f"B{row_usd}"].fill = fill_logo_box
+    ws1[f"B{row_usd}"].border = border_closing
+
+    if logo_png:
+        try:
+            ws1.add_image(_fit_xl_logo(88, 38), f"B{row_total}")
+            ws1[f"B{row_total}"] = ""
+        except Exception:
+            pass
+
     ws1[f"C{row_total}"] = "TOTAL"
+    ws1[f"C{row_total}"].alignment = align_left
     ws1[f"D{row_total}"] = "Soles"
     ws1[f"D{row_total}"].alignment = align_center
     ws1[f"I{row_total}"] = f"=I{row_subtotal_casco}+H{row_gg}+H{row_gestion}+H{row_igv}"
@@ -1704,21 +1729,20 @@ def generar_plantilla_cotizacion_venti(
     ws1[f"J{row_total}"] = f"=IFERROR(I{row_total}/I{row_subtotal_casco},0)"
     ws1[f"J{row_total}"].number_format = "0.0%"
     ws1[f"J{row_total}"].alignment = align_center
-    for c_idx in range(2, 11):
+    for c_idx in range(3, 11):
         c_let = get_column_letter(c_idx)
         ws1[f"{c_let}{row_total}"].font = f_total
         ws1[f"{c_let}{row_total}"].fill = fill_total
         ws1[f"{c_let}{row_total}"].border = border_cell
 
-    # Fila TOTAL Dólares integrada simétricamente al cuadro
-    row_usd = row_total + 1
-    ws1[f"C{row_usd}"] = "TOTAL (USD)"
+    # Fila Dólares (Formato Venti: Col C vacía, Col D = "Dólares", Col I = USD)
+    ws1[f"C{row_usd}"] = ""
     ws1[f"D{row_usd}"] = "Dólares"
     ws1[f"D{row_usd}"].alignment = align_center
     ws1[f"I{row_usd}"] = f"=IFERROR(I{row_total}/J4,0)"
     ws1[f"I{row_usd}"].number_format = FMT_USD
     ws1[f"I{row_usd}"].alignment = align_right
-    for c_idx in range(2, 11):
+    for c_idx in range(3, 11):
         c_let = get_column_letter(c_idx)
         ws1[f"{c_let}{row_usd}"].font = f_usd
         ws1[f"{c_let}{row_usd}"].fill = fill_usd
@@ -1726,7 +1750,7 @@ def generar_plantilla_cotizacion_venti(
 
     col_widths_h1 = {
         "A": 3,
-        "B": 11,
+        "B": 14,
         "C": 44,
         "D": 12,
         "E": 10,
@@ -1761,15 +1785,15 @@ def generar_plantilla_cotizacion_venti(
 
     ws2["B1"] = "Proyecto:"
     ws2["B1"].alignment = align_right
-    ws2["C1"] = "=Presupuesto!C3"
+    ws2["C1"] = "=Presupuesto!D2"
     ws2["I1"] = "Fecha:"
     ws2["I1"].alignment = align_right
-    ws2["J1"] = "=Presupuesto!J3"
+    ws2["J1"] = "=Presupuesto!I2"
     ws2["J1"].alignment = align_center
 
     ws2["B2"] = "Cliente:"
     ws2["B2"].alignment = align_right
-    ws2["C2"] = "=Presupuesto!C4"
+    ws2["C2"] = "=Presupuesto!D4"
     ws2["I2"] = "TC:"
     ws2["I2"].alignment = align_right
     ws2["J2"] = "=Presupuesto!J4"
@@ -1938,23 +1962,20 @@ def generar_plantilla_cotizacion_venti(
     return out.getvalue()
 
 
-def exportar_proyecto_a_formato_venti(
+def _construir_payload_presupuesto_export(
     proy_name: str,
     tc: float = None,
     gg_pct_override: float = None,
     gestion_pct_override: float = None,
     incluir_igv: bool = None,
-    brand_color: str = None,
-    studio_name: str = None,
-    logo_bytes: bytes = None,
-) -> bytes:
-    """
-    Exporta el presupuesto actual del proyecto en COTA a un archivo Excel (.xlsx)
-    listo para compartir con el cliente, aplicando la marca, color y logo del Estudio.
-    """
+) -> dict:
+    """Recopila partidas, tareas y totales actualizados del proyecto para exportar a Excel o PDF."""
     totales = recalcular_totales_presupuesto_proyecto(proy_name)
     params = obtener_parametros_presupuesto_proyecto(proy_name)
     tc_final = tc if tc is not None else params["tc"]
+    if tc_final <= 0:
+        tc_final = 3.42
+
     gg_final = gg_pct_override if gg_pct_override is not None else (totales["gg_pct"] / 100.0)
     ges_final = gestion_pct_override if gestion_pct_override is not None else (totales["utilidades_pct"] / 100.0)
     igv_final = incluir_igv if incluir_igv is not None else params["incluir_igv"]
@@ -1974,6 +1995,8 @@ def exportar_proyecto_a_formato_venti(
     df_tasks = st.session_state.get("tasks", pd.DataFrame())
 
     partidas_precargadas = []
+    subtotal_casco = 0.0
+
     if not parts_proy.empty:
         for idx_p, (_, p_r) in enumerate(parts_proy.iterrows(), start=1):
             p_nom_raw = safe_str(p_r.get("Nombre_Partida", f"Partida {idx_p}"))
@@ -1983,7 +2006,11 @@ def exportar_proyecto_a_formato_venti(
             monto_pact = safe_float(pinfo_m["Monto_Pactado"].iloc[0], 0.0) if not pinfo_m.empty else 0.0
 
             tasks_m = df_tasks[(df_tasks["Proyecto"] == proy_name) & (df_tasks["Partida"] == p_nom_raw)] if not df_tasks.empty else pd.DataFrame()
+            if not tasks_m.empty and "Orden" in tasks_m.columns:
+                tasks_m = tasks_m.sort_values(by="Orden", kind="stable")
+
             subitems = []
+            subtot_p_calc = 0.0
             if not tasks_m.empty:
                 for idx_t, (_, t_r) in enumerate(tasks_m.iterrows(), start=1):
                     cod_item = f"{idx_p}.{idx_t:02d}"
@@ -1996,8 +2023,12 @@ def exportar_proyecto_a_formato_venti(
                         t_met = 1.0
                     t_ppto = safe_float(t_r.get("Presupuesto", 0.0), 0.0)
                     t_vu = safe_float(t_r.get("Valor_Unitario", 0.0), 0.0)
+                    es_usd_t = any(d in t_mon.lower() for d in ["dolar", "dólar", "usd", "$"])
                     if t_vu <= 0 and t_ppto > 0:
-                        t_vu = round(t_ppto / t_met, 2)
+                        t_vu = round(t_ppto / (t_met * tc_final), 2) if es_usd_t else round(t_ppto / t_met, 2)
+                    vp_moneda = round(t_met * t_vu, 2)
+                    vp_soles = round(vp_moneda * (tc_final if es_usd_t else 1.0), 2)
+                    subtot_p_calc += vp_soles
 
                     subitems.append({
                         "codigo": cod_item,
@@ -2006,8 +2037,11 @@ def exportar_proyecto_a_formato_venti(
                         "unidad": t_und,
                         "metrado": t_met,
                         "valor_unitario": t_vu,
+                        "valor_parcial": vp_moneda,
+                        "parcial_soles": vp_soles,
                     })
             else:
+                subtot_p_calc = monto_pact
                 subitems.append({
                     "codigo": f"{idx_p}.01",
                     "descripcion": p_nom_clean if monto_pact > 0 else "",
@@ -2015,30 +2049,421 @@ def exportar_proyecto_a_formato_venti(
                     "unidad": "glb",
                     "metrado": 1.0,
                     "valor_unitario": monto_pact if monto_pact > 0 else None,
+                    "valor_parcial": monto_pact,
+                    "parcial_soles": monto_pact,
                 })
 
+            subtot_p_round = round(subtot_p_calc, 2)
+            subtotal_casco += subtot_p_round
             partidas_precargadas.append({
                 "codigo": str(idx_p),
                 "nombre": p_nom_clean,
-                "monto_pactado": monto_pact,
+                "monto_pactado": subtot_p_round,
                 "subitems": subitems,
             })
 
+    subtotal_casco = round(subtotal_casco, 2)
+    for part in partidas_precargadas:
+        part["mix_pct"] = round((part["monto_pactado"] / subtotal_casco * 100.0), 1) if subtotal_casco > 0 else 0.0
+
+    gg_dec = float(gg_final) / 100.0 if float(gg_final) > 1.0 else float(gg_final)
+    ges_dec = float(ges_final) / 100.0 if float(ges_final) > 1.0 else float(ges_final)
+    gg_monto = float(gg_fijo) if (gg_fijo is not None and float(gg_fijo) > 0) else redondear_arriba_10(subtotal_casco * gg_dec)
+    util_monto = float(ges_fijo) if (ges_fijo is not None and float(ges_fijo) > 0) else redondear_arriba_100(subtotal_casco * ges_dec)
+    gg_pct_eff = round((gg_monto / subtotal_casco * 100.0), 1) if (gg_fijo is not None and subtotal_casco > 0) else round(gg_dec * 100.0, 1)
+    util_pct_eff = round((util_monto / subtotal_casco * 100.0), 1) if (ges_fijo is not None and subtotal_casco > 0) else round(ges_dec * 100.0, 1)
+
+    base_imp = subtotal_casco + gg_monto + util_monto
+    igv_monto = round(base_imp * 0.18, 2) if igv_final else 0.0
+    total_soles = round(base_imp + igv_monto, 2)
+    total_usd = round(total_soles / tc_final, 2) if tc_final > 0 else 0.0
+
+    return {
+        "proyecto": proy_name,
+        "cliente": cliente,
+        "fecha": fecha,
+        "tc": tc_final,
+        "gg_final": gg_final,
+        "ges_final": ges_final,
+        "igv_final": igv_final,
+        "gg_fijo": gg_fijo,
+        "ges_fijo": ges_fijo,
+        "partidas_precargadas": partidas_precargadas,
+        "subtotal_casco": subtotal_casco,
+        "gg_pct_eff": gg_pct_eff,
+        "gg_monto": gg_monto,
+        "util_pct_eff": util_pct_eff,
+        "util_monto": util_monto,
+        "igv_monto": igv_monto,
+        "presupuesto_total": total_soles,
+        "presupuesto_dolares": total_usd,
+    }
+
+
+def exportar_proyecto_a_formato_venti(
+    proy_name: str,
+    tc: float = None,
+    gg_pct_override: float = None,
+    gestion_pct_override: float = None,
+    incluir_igv: bool = None,
+    brand_color: str = None,
+    studio_name: str = None,
+    logo_bytes: bytes = None,
+) -> bytes:
+    """
+    Exporta el presupuesto actual del proyecto en COTA a un archivo Excel (.xlsx)
+    siguiendo el formato de Venti con el color y logo del Estudio.
+    """
+    payload = _construir_payload_presupuesto_export(
+        proy_name=proy_name,
+        tc=tc,
+        gg_pct_override=gg_pct_override,
+        gestion_pct_override=gestion_pct_override,
+        incluir_igv=incluir_igv,
+    )
+    partidas = payload["partidas_precargadas"]
     return generar_plantilla_cotizacion_venti(
-        proyecto=proy_name,
-        cliente=cliente,
-        tc=tc_final,
-        fecha=fecha,
-        partidas_precargadas=partidas_precargadas if partidas_precargadas else None,
-        gg_pct=gg_final,
-        gestion_pct=ges_final,
-        incluir_igv=igv_final,
+        proyecto=payload["proyecto"],
+        cliente=payload["cliente"],
+        tc=payload["tc"],
+        fecha=payload["fecha"],
+        partidas_precargadas=partidas if partidas else None,
+        gg_pct=payload["gg_final"],
+        gestion_pct=payload["ges_final"],
+        incluir_igv=payload["igv_final"],
         brand_color=brand_color,
         studio_name=studio_name,
         logo_bytes=logo_bytes,
-        gg_monto_fijo=gg_fijo,
-        gestion_monto_fijo=ges_fijo,
+        gg_monto_fijo=payload["gg_fijo"],
+        gestion_monto_fijo=payload["ges_fijo"],
     )
+
+
+def exportar_presupuesto_pdf(
+    proy_name: str,
+    tc: float = None,
+    gg_pct_override: float = None,
+    gestion_pct_override: float = None,
+    incluir_igv: bool = None,
+    brand_color: str = None,
+    studio_name: str = None,
+    logo_bytes: bytes = None,
+) -> bytes:
+    """
+    Exporta el presupuesto del proyecto a PDF horizontal (Landscape A4) replicando
+    el mismo formato de Venti con el color y logo del Estudio.
+    """
+    from fpdf import FPDF
+    from cota.pdf import safe_pdf_str
+    from cota.utils import aclarar_hex_color, hex_a_rgb, normalizar_hex_color, obtener_marca_estudio, preparar_logo_png_bytes
+
+    payload = _construir_payload_presupuesto_export(
+        proy_name=proy_name,
+        tc=tc,
+        gg_pct_override=gg_pct_override,
+        gestion_pct_override=gestion_pct_override,
+        incluir_igv=incluir_igv,
+    )
+
+    marca = obtener_marca_estudio()
+    brand_hex_full = normalizar_hex_color(brand_color or marca.get("brand_color", "#C85A32"))
+    b_r, b_g, b_b = hex_a_rgb(brand_hex_full)
+    s_r, s_g, s_b = hex_a_rgb(aclarar_hex_color(brand_hex_full, 0.88))
+    lum = 0.299 * b_r + 0.587 * b_g + 0.114 * b_b
+    txt_on_brand = (38, 35, 32) if lum > 185 else (255, 255, 255)
+    nom_estudio = (studio_name if studio_name is not None else marca.get("studio_name", "")).strip()
+
+    if logo_bytes is not None:
+        logo_png, logo_dims = preparar_logo_png_bytes(logo_bytes)
+    else:
+        logo_png = marca.get("logo_png_bytes")
+        logo_dims = marca.get("logo_size")
+
+    class VentiBudgetPDF(FPDF):
+        def footer(self):
+            self.set_y(-11)
+            self.set_font("Helvetica", "I", 7.5)
+            self.set_text_color(110, 102, 94)
+            brand_lbl = safe_pdf_str(nom_estudio) if nom_estudio else "COTA"
+            self.cell(0, 6, f"Pagina {self.page_no()}/{{nb}}  -  {brand_lbl}", align="C")
+
+    pdf = VentiBudgetPDF(orientation="L", unit="mm", format="A4")
+    pdf.alias_nb_pages()
+    pdf.set_auto_page_break(auto=False)
+    pdf.set_margins(10, 10, 10)
+    pdf.add_page()
+    pdf.set_y(10)
+
+    margin_x = 10.0
+    page_bottom = 194.0
+    w_item = 20.0
+    w_desc = 115.0
+    w_mon = 18.0
+    w_und = 14.0
+    w_met = 18.0
+    w_vu = 26.0
+    w_vp = 26.0
+    w_sub = 26.0
+    w_mix = 14.0
+    widths_all = [w_item, w_desc, w_mon, w_und, w_met, w_vu, w_vp, w_sub, w_mix]
+
+    def _draw_logo_box(x: float, y: float, w: float, h: float):
+        pdf.set_fill_color(255, 255, 255)
+        pdf.set_draw_color(208, 201, 189)
+        pdf.rect(x, y, w, h, style="DF")
+        if logo_png:
+            try:
+                if logo_dims and logo_dims[0] > 0 and logo_dims[1] > 0:
+                    ratio = min((w - 2.4) / float(logo_dims[0]), (h - 2.0) / float(logo_dims[1]))
+                    draw_w = float(logo_dims[0]) * ratio
+                    draw_h = float(logo_dims[1]) * ratio
+                else:
+                    draw_h = h - 2.4
+                    draw_w = draw_h * 2.0
+                    if draw_w > w - 2.4:
+                        draw_w = w - 2.4
+                img_x = x + (w - draw_w) / 2.0
+                img_y = y + (h - draw_h) / 2.0
+                pdf.image(io.BytesIO(logo_png), x=img_x, y=img_y, w=draw_w, h=draw_h)
+                return
+            except Exception:
+                pass
+        if nom_estudio:
+            pdf.set_font("Helvetica", "B", 7.5)
+            pdf.set_text_color(b_r, b_g, b_b)
+            pdf.set_xy(x, y + (h - 4.0) / 2.0)
+            pdf.cell(w, 4.0, safe_pdf_str(nom_estudio.upper())[:12], align="C")
+
+    def _wrap_lines(txt: str, max_w: float) -> list[str]:
+        clean = " ".join(str(txt or "").split())
+        if not clean:
+            return [""]
+        words = clean.split(" ")
+        lines = []
+        cur = words[0]
+        for w_tok in words[1:]:
+            cand = f"{cur} {w_tok}"
+            if pdf.get_string_width(cand) <= max_w:
+                cur = cand
+            else:
+                lines.append(cur)
+                cur = w_tok
+        lines.append(cur)
+        return lines
+
+    def _draw_table_header():
+        y_hdr = pdf.get_y()
+        hdr_h = 9.0
+        pdf.set_fill_color(b_r, b_g, b_b)
+        pdf.set_text_color(*txt_on_brand)
+        pdf.set_draw_color(208, 201, 189)
+        pdf.set_font("Helvetica", "B", 7.8)
+
+        headers_spec = [
+            (w_item, ""),
+            (w_desc, "Descripción"),
+            (w_mon, "Moneda"),
+            (w_und, "Unidad"),
+            (w_met, "Metrado"),
+            (w_vu, "Valor\nUnitario"),
+            (w_vp, "Valor\nParcial"),
+            (w_sub, "Sub Total (S/.)"),
+            (w_mix, "Mix"),
+        ]
+        cx = margin_x
+        for cw, htxt in headers_spec:
+            pdf.rect(cx, y_hdr, cw, hdr_h, style="DF")
+            if "\n" in htxt:
+                parts_h = htxt.split("\n", 1)
+                pdf.set_xy(cx, y_hdr + 1.0)
+                pdf.cell(cw, 3.5, safe_pdf_str(parts_h[0]), align="C")
+                pdf.set_xy(cx, y_hdr + 4.5)
+                pdf.cell(cw, 3.5, safe_pdf_str(parts_h[1]), align="C")
+            else:
+                pdf.set_xy(cx, y_hdr + 2.5)
+                pdf.cell(cw, 4.0, safe_pdf_str(htxt), align="C")
+            cx += cw
+        pdf.set_xy(margin_x, y_hdr + hdr_h)
+
+    # 1. Encabezado Venti (Filas 2..4: Logo izquierda, Proyecto/Fecha arriba, Cliente/TC abajo)
+    y_top = 10.0
+    _draw_logo_box(margin_x, y_top, w_item, 15.0)
+
+    x_meta = margin_x + w_item
+    w_lbl_meta = 24.0
+    w_val_meta = w_desc + w_mon + w_und + w_met + w_vu + w_vp - w_lbl_meta
+
+    pdf.set_draw_color(208, 201, 189)
+    # Fila Proyecto + Fecha
+    pdf.set_xy(x_meta, y_top)
+    pdf.set_fill_color(239, 236, 230)
+    pdf.set_text_color(38, 35, 32)
+    pdf.set_font("Helvetica", "B", 8.5)
+    pdf.cell(w_lbl_meta, 6.2, safe_pdf_str("Proyecto:"), border=1, align="L", fill=True)
+    pdf.set_fill_color(255, 255, 255)
+    pdf.cell(w_val_meta, 6.2, safe_pdf_str(payload["proyecto"])[:85], border=1, align="L", fill=True)
+    pdf.set_font("Helvetica", "B", 8.0)
+    pdf.cell(w_sub + w_mix, 6.2, safe_pdf_str(payload["fecha"]), border=1, align="C", fill=True)
+
+    # Fila Cliente + TC (tras espacio 2.6mm)
+    y_cli = y_top + 8.8
+    pdf.set_xy(x_meta, y_cli)
+    pdf.set_fill_color(239, 236, 230)
+    pdf.set_font("Helvetica", "B", 8.5)
+    pdf.cell(w_lbl_meta, 6.2, safe_pdf_str("Cliente:"), border=1, align="L", fill=True)
+    pdf.set_fill_color(255, 255, 255)
+    pdf.set_font("Helvetica", "", 8.5)
+    pdf.cell(w_val_meta, 6.2, safe_pdf_str(payload["cliente"])[:85], border=1, align="L", fill=True)
+    pdf.set_fill_color(239, 236, 230)
+    pdf.set_font("Helvetica", "B", 8.0)
+    pdf.cell(w_sub, 6.2, safe_pdf_str("TC:"), border=1, align="R", fill=True)
+    pdf.set_fill_color(255, 255, 255)
+    pdf.cell(w_mix, 6.2, f"{payload['tc']:.2f}", border=1, align="C", fill=True)
+
+    pdf.set_xy(margin_x, y_top + 15.0)
+    _draw_table_header()
+
+    def _draw_row_cells(vals: list[str], aligns: list[str], fill_rgb: tuple, text_rgb: tuple, bold: bool, desc_text: str):
+        pdf.set_font("Helvetica", "B" if bold else "", 7.6)
+        desc_lines = _wrap_lines(safe_pdf_str(desc_text), w_desc - 3.0)
+        row_h = max(5.6, len(desc_lines) * 4.1 + 1.5)
+        if pdf.get_y() + row_h > page_bottom:
+            pdf.add_page()
+            _draw_table_header()
+            pdf.set_font("Helvetica", "B" if bold else "", 7.6)
+
+        y0 = pdf.get_y()
+        cx = margin_x
+        pdf.set_fill_color(*fill_rgb)
+        pdf.set_text_color(*text_rgb)
+        pdf.set_draw_color(208, 201, 189)
+        for idx_c, (cw, val_s, al) in enumerate(zip(widths_all, vals, aligns)):
+            pdf.rect(cx, y0, cw, row_h, style="DF")
+            if idx_c == 1:
+                pdf.set_xy(cx + 1.5, y0 + 0.8)
+                pdf.multi_cell(cw - 3.0, 4.1, "\n".join(desc_lines), border=0, align="L")
+            elif val_s:
+                pdf.set_xy(cx + 1.0, y0 + (row_h - 4.0) / 2.0)
+                pdf.cell(cw - 2.0, 4.0, safe_pdf_str(val_s), border=0, align=al)
+            cx += cw
+        pdf.set_xy(margin_x, y0 + row_h)
+
+    # 2. Filas de Partidas y Tareas
+    for part in payload["partidas_precargadas"]:
+        sub_p_str = f"S/ {part['monto_pactado']:,.2f}"
+        mix_p_str = f"{part.get('mix_pct', 0.0):.1f}%"
+        _draw_row_cells(
+            vals=[str(part["codigo"]), "", "", "", "", "", "", sub_p_str, mix_p_str],
+            aligns=["C", "L", "C", "C", "C", "R", "R", "R", "C"],
+            fill_rgb=(s_r, s_g, s_b),
+            text_rgb=(38, 35, 32),
+            bold=True,
+            desc_text=part["nombre"],
+        )
+        for sub in part["subitems"]:
+            t_mon = safe_str(sub.get("moneda", "Soles")) or "Soles"
+            es_usd = any(d in t_mon.lower() for d in ["dolar", "dólar", "usd", "$"])
+            pref_m = "$ " if es_usd else "S/ "
+            t_met = safe_float(sub.get("metrado", 1.0), 1.0)
+            t_vu = sub.get("valor_unitario", None)
+            vu_str = f"{pref_m}{safe_float(t_vu, 0.0):,.2f}" if (t_vu is not None and safe_float(t_vu, 0.0) > 0) else ""
+            vp_val = safe_float(sub.get("valor_parcial", 0.0), 0.0)
+            vp_str = f"{pref_m}{vp_val:,.2f}"
+            _draw_row_cells(
+                vals=[
+                    str(sub.get("codigo", "")),
+                    "",
+                    t_mon,
+                    safe_str(sub.get("unidad", "glb")),
+                    f"{t_met:,.2f}",
+                    vu_str,
+                    vp_str,
+                    "",
+                    "",
+                ],
+                aligns=["C", "L", "C", "C", "C", "R", "R", "R", "C"],
+                fill_rgb=(255, 255, 255),
+                text_rgb=(38, 35, 32),
+                bold=False,
+                desc_text=sub.get("descripcion", ""),
+            )
+
+    # 3. Bloque de Cierre Venti (Subtotal Casco, GG, Gestión, IGV, [logo]+TOTAL, Dólares)
+    if pdf.get_y() + 38.0 > page_bottom:
+        pdf.add_page()
+        _draw_table_header()
+
+    sub_casco = payload["subtotal_casco"]
+    mix_casco_str = "100.0%" if sub_casco > 0 else "0.0%"
+    _draw_row_cells(
+        vals=["", "", "Soles", "", "", "", "", f"S/ {sub_casco:,.2f}", mix_casco_str],
+        aligns=["C", "L", "C", "C", "C", "R", "R", "R", "C"],
+        fill_rgb=(239, 236, 230),
+        text_rgb=(38, 35, 32),
+        bold=True,
+        desc_text="SUB TOTAL (Casco)",
+    )
+
+    gg_f_str = f"{payload['gg_pct_eff']:g}%" if payload["gg_pct_eff"] > 0 else "-%"
+    _draw_row_cells(
+        vals=["", "", "Soles", "", gg_f_str, "", f"S/ {payload['gg_monto']:,.2f}", "", ""],
+        aligns=["C", "L", "C", "C", "C", "R", "R", "R", "C"],
+        fill_rgb=(255, 255, 255),
+        text_rgb=(38, 35, 32),
+        bold=True,
+        desc_text="Gastos generales",
+    )
+
+    ges_f_str = f"{payload['util_pct_eff']:g}%" if payload["util_pct_eff"] > 0 else "-%"
+    _draw_row_cells(
+        vals=["", "", "Soles", "", ges_f_str, "", f"S/ {payload['util_monto']:,.2f}", "", ""],
+        aligns=["C", "L", "C", "C", "C", "R", "R", "R", "C"],
+        fill_rgb=(255, 255, 255),
+        text_rgb=(38, 35, 32),
+        bold=True,
+        desc_text="Gestión y supervisión de obras",
+    )
+
+    igv_f_str = "18%" if payload["igv_final"] else "-%"
+    _draw_row_cells(
+        vals=["", "", "Soles", "", igv_f_str, "", f"S/ {payload['igv_monto']:,.2f}", "", ""],
+        aligns=["C", "L", "C", "C", "C", "R", "R", "R", "C"],
+        fill_rgb=(255, 255, 255),
+        text_rgb=(38, 35, 32),
+        bold=True,
+        desc_text="IGV",
+    )
+
+    # Fila TOTAL (Soles) + Dólares con [logo] en Col B a la izquierda
+    y_tot = pdf.get_y()
+    h_tot = 6.8
+    _draw_logo_box(margin_x, y_tot, w_item, h_tot * 2.0)
+
+    # Fila TOTAL Soles en Color de Marca del Estudio
+    pdf.set_xy(x_meta, y_tot)
+    pdf.set_fill_color(b_r, b_g, b_b)
+    pdf.set_text_color(*txt_on_brand)
+    pdf.set_draw_color(208, 201, 189)
+    pdf.set_font("Helvetica", "B", 8.0)
+    tot_mix_str = f"{(payload['presupuesto_total'] / sub_casco * 100.0):.1f}%" if sub_casco > 0 else "0.0%"
+    pdf.cell(w_desc, h_tot, safe_pdf_str("TOTAL"), border=1, align="L", fill=True)
+    pdf.cell(w_mon, h_tot, "Soles", border=1, align="C", fill=True)
+    pdf.cell(w_und + w_met + w_vu + w_vp, h_tot, "", border=1, align="C", fill=True)
+    pdf.cell(w_sub, h_tot, f"S/ {payload['presupuesto_total']:,.2f}", border=1, align="R", fill=True)
+    pdf.cell(w_mix, h_tot, tot_mix_str, border=1, align="C", fill=True)
+
+    # Fila Dólares (Col C vacía, Col D = Dólares, Col I = USD) en tinta suave del Estudio
+    pdf.set_xy(x_meta, y_tot + h_tot)
+    pdf.set_fill_color(s_r, s_g, s_b)
+    pdf.set_text_color(38, 35, 32)
+    pdf.set_font("Helvetica", "B", 8.0)
+    pdf.cell(w_desc, h_tot, "", border=1, align="L", fill=True)
+    pdf.cell(w_mon, h_tot, safe_pdf_str("Dólares"), border=1, align="C", fill=True)
+    pdf.cell(w_und + w_met + w_vu + w_vp, h_tot, "", border=1, align="C", fill=True)
+    pdf.cell(w_sub, h_tot, f"$ {payload['presupuesto_dolares']:,.2f}", border=1, align="R", fill=True)
+    pdf.cell(w_mix, h_tot, "", border=1, align="C", fill=True)
+
+    return bytes(pdf.output())
 
 
 # ==========================================
