@@ -2884,6 +2884,20 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
             `;
         }}
 
+        if (!parentWin.__cotaSafeDomPatched) {{
+            parentWin.__cotaSafeDomPatched = true;
+            const origRemoveChild = parentWin.Node.prototype.removeChild;
+            parentWin.Node.prototype.removeChild = function(child) {{
+                if (child && child.parentNode !== this) return child;
+                return origRemoveChild.apply(this, arguments);
+            }};
+            const origInsertBefore = parentWin.Node.prototype.insertBefore;
+            parentWin.Node.prototype.insertBefore = function(newNode, referenceNode) {{
+                if (referenceNode && referenceNode.parentNode !== this) return this.appendChild(newNode);
+                return origInsertBefore.apply(this, arguments);
+            }};
+        }}
+
         function findBridgeInput() {{
             let inp = parentDoc.querySelector('input[aria-label="' + bridgeLabel + '"]');
             if (inp) return inp;

@@ -679,6 +679,19 @@ def render_chat_notas_proyecto(proy_name: str, socios_disp: list[str] | None = N
         const bridgeLabel = {bridge_label_json};
         const sociosList = {socios_json};
         const defaultSocio = {soc_act_json};
+        if (!parentWin.__cotaSafeDomPatched) {{
+            parentWin.__cotaSafeDomPatched = true;
+            const origRemoveChild = parentWin.Node.prototype.removeChild;
+            parentWin.Node.prototype.removeChild = function(child) {{
+                if (child && child.parentNode !== this) return child;
+                return origRemoveChild.apply(this, arguments);
+            }};
+            const origInsertBefore = parentWin.Node.prototype.insertBefore;
+            parentWin.Node.prototype.insertBefore = function(newNode, referenceNode) {{
+                if (referenceNode && referenceNode.parentNode !== this) return this.appendChild(newNode);
+                return origInsertBefore.apply(this, arguments);
+            }};
+        }}
         const sidebarSocioChanged = (parentWin.__cotaSidebarSocio !== defaultSocio);
         if (sidebarSocioChanged) {{
             parentWin.__cotaSidebarSocio = defaultSocio;
@@ -850,7 +863,7 @@ def render_chat_notas_proyecto(proy_name: str, socios_disp: list[str] | None = N
 
                     // Agregar burbuja de forma optimista en el DOM (0ms)
                     const emptyMsg = listEl.querySelector('.cota-chat-empty');
-                    if (emptyMsg) emptyMsg.remove();
+                    if (emptyMsg) emptyMsg.style.display = 'none';
 
                     const now = new Date();
                     const pad = n => String(n).padStart(2, '0');
@@ -1032,7 +1045,8 @@ def render_chat_notas_proyecto(proy_name: str, socios_disp: list[str] | None = N
                                     startInlineEdit(bubble);
                                 }} else if (act === 'delete') {{
                                     bubble.style.opacity = '0.35';
-                                    bubble.remove();
+                                    bubble.style.display = 'none';
+                                    bubble.style.pointerEvents = 'none';
                                     sendBridgePayload({{
                                         action: 'delete',
                                         idx: idx

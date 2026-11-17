@@ -2549,6 +2549,13 @@ def test_multipagos_misma_semana_y_resumen_completo():
     assert "cota-floating-task-window" in vp_src
     assert '"Metrado": st.column_config.NumberColumn("Metrado", min_value=0.01, step=0.01' in vp_src
     assert '"Valor_Unitario": st.column_config.NumberColumn("Valor Unitario", min_value=0.0, step=0.01' in vp_src
+    assert "__cotaSafeDomPatched" in vp_src
+
+    with open("D:/cota-app/cota/ui/components.py", "r", encoding="utf-8") as f:
+        comp_src = f.read()
+    assert "bubble.remove()" not in comp_src
+    assert "emptyMsg.remove()" not in comp_src
+    assert "__cotaSafeDomPatched" in comp_src
 
     # Verificar que aplicar_cotizacion_a_proyecto en modo="agregar" conserva GG, Util, TC e IGV del proyecto
     from cota.cotizacion import aplicar_cotizacion_a_proyecto, parsear_presupuesto_flexible
