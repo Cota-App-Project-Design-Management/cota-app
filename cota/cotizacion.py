@@ -3781,7 +3781,11 @@ def registrar_pago_en_fila_dict(
     if replace_all:
         cur_list = [pago_new]
     else:
-        cur_list.append(pago_new)
+        existing_idx = next((i for i, p in enumerate(cur_list) if safe_str(p.get("id", "")).strip() == pago_new["id"]), -1)
+        if existing_idx >= 0:
+            cur_list[existing_idx] = pago_new
+        else:
+            cur_list.append(pago_new)
     pd_map[col_w] = cur_list
     target["Pagos_Detalle"] = pd_map
     target[col_w] = round(sum(p["monto"] for p in cur_list), 2)
@@ -4425,6 +4429,12 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
     cols_pp = list(data_cuadro.get("cols_por_pagar", []))
 
     action = safe_str(payload.get("action", "edit_cells")).strip()
+    ts_val = safe_str(payload.get("ts", "")).strip()
+    if ts_val:
+        last_ts_key = f"_last_pagos_bridge_ts_{proy_name}"
+        if st.session_state.get(last_ts_key) == ts_val:
+            return False
+        st.session_state[last_ts_key] = ts_val
 
     def _apply_single_edit(ed: dict):
         r_type = safe_str(ed.get("row_type", "contratista")).strip()
@@ -4497,6 +4507,24 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
         target = _resolver_fila_target_cuadro(filas_c, fila_ges, fila_gg, r_type, r_idx)
         pago_new = _build_pago_entry(payload, col_w)
         if target is not None and col_w in cols_pago and pago_new["monto"] > 0:
+            cell_payments_raw = payload.get("cell_payments")
+            if isinstance(cell_payments_raw, list) and action == "add_payment":
+                for cp_item in cell_payments_raw:
+                    if isinstance(cp_item, dict):
+                        cp_norm = _build_pago_entry(cp_item, col_w)
+                        if cp_norm["monto"] > 0 and cp_norm["id"] != pago_new["id"]:
+                            registrar_pago_en_fila_dict(
+                                target=target,
+                                col_w=col_w,
+                                contratista=cp_norm["contratista"],
+                                tipo=cp_norm["tipo"],
+                                fecha=cp_norm["fecha"],
+                                monto=cp_norm["monto"],
+                                nota=cp_norm["nota"],
+                                preserve_legacy=bool(payload.get("preserve_legacy", True)),
+                                replace_all=False,
+                                payment_id=cp_norm["id"],
+                            )
             registrar_pago_en_fila_dict(
                 target=target,
                 col_w=col_w,
@@ -5022,8 +5050,20 @@ def exportar_cuadro_pagos_semanales_excel(
         ws[f"{c_let}{row_ges}"].alignment = align_right
         ws[f"{c_let}{row_ges}"].font = f_row_paid if (c_name not in cols_por_pagar) else f_row
         np_ges = f_ges.get("Notas_Pagos", {})
+        pd_ges = f_ges.get("Pagos_Detalle", {})
+        comment_lines_ges = []
+        if isinstance(pd_ges, dict) and isinstance(pd_ges.get(c_name), list):
+            for p_it in pd_ges.get(c_name, []):
+                if isinstance(p_it, dict) and safe_float(p_it.get("monto", 0.0), 0.0) > 0:
+                    c_nom = safe_str(p_it.get("contratista", "")).strip() or "Sin contratista"
+                    t_nom = safe_str(p_it.get("tipo", "")).strip() or "Pago"
+                    f_str = _formatear_fecha_corta(p_it.get("fecha", ""))
+                    m_str = f"{safe_float(p_it.get('monto', 0.0), 0.0):,.2f}"
+                    comment_lines_ges.append(f"• {c_nom} ({t_nom} - {f_str}): {m_str}")
         if isinstance(np_ges, dict) and c_name in np_ges and np_ges[c_name]:
-            ws[f"{c_let}{row_ges}"].comment = Comment(str(np_ges[c_name]).strip(), "Cota")
+            comment_lines_ges.append(str(np_ges[c_name]).strip())
+        if comment_lines_ges:
+            ws[f"{c_let}{row_ges}"].comment = Comment("\n".join(comment_lines_ges), "Cota")
     ws[f"{let_pagado}{row_ges}"] = _formula_pagado(row_ges)
     ws[f"{let_pagado}{row_ges}"].number_format = fmt_mon_ges
     ws[f"{let_pagado}{row_ges}"].alignment = align_right
@@ -5057,8 +5097,20 @@ def exportar_cuadro_pagos_semanales_excel(
         ws[f"{c_let}{row_gg}"].alignment = align_right
         ws[f"{c_let}{row_gg}"].font = f_row_paid if (c_name not in cols_por_pagar) else f_row
         np_gg = f_gg.get("Notas_Pagos", {})
+        pd_gg = f_gg.get("Pagos_Detalle", {})
+        comment_lines_gg = []
+        if isinstance(pd_gg, dict) and isinstance(pd_gg.get(c_name), list):
+            for p_it in pd_gg.get(c_name, []):
+                if isinstance(p_it, dict) and safe_float(p_it.get("monto", 0.0), 0.0) > 0:
+                    c_nom = safe_str(p_it.get("contratista", "")).strip() or "Sin contratista"
+                    t_nom = safe_str(p_it.get("tipo", "")).strip() or "Pago"
+                    f_str = _formatear_fecha_corta(p_it.get("fecha", ""))
+                    m_str = f"{safe_float(p_it.get('monto', 0.0), 0.0):,.2f}"
+                    comment_lines_gg.append(f"• {c_nom} ({t_nom} - {f_str}): {m_str}")
         if isinstance(np_gg, dict) and c_name in np_gg and np_gg[c_name]:
-            ws[f"{c_let}{row_gg}"].comment = Comment(str(np_gg[c_name]).strip(), "Cota")
+            comment_lines_gg.append(str(np_gg[c_name]).strip())
+        if comment_lines_gg:
+            ws[f"{c_let}{row_gg}"].comment = Comment("\n".join(comment_lines_gg), "Cota")
     ws[f"{let_pagado}{row_gg}"] = _formula_pagado(row_gg)
     ws[f"{let_pagado}{row_gg}"].number_format = fmt_mon_gg
     ws[f"{let_pagado}{row_gg}"].alignment = align_right

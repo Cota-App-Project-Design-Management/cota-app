@@ -2446,3 +2446,155 @@ def test_python311_fstring_no_backslash_syntax():
         assert 'payload_json.replace("</", "<\\/")' not in src
 
 
+def test_multipagos_misma_semana_y_resumen_completo():
+    import json
+    import streamlit as st
+    from cota.cotizacion import (
+        aplicar_edicion_inline_cuadro_pagos,
+        exportar_cuadro_pagos_semanales_excel,
+        exportar_cuadro_pagos_semanales_pdf,
+        guardar_cuadro_pagos_semanales_proyecto,
+        obtener_cuadro_pagos_semanales_proyecto,
+        obtener_pagos_semana,
+        resumen_contratistas_semana,
+    )
+    from cota.ui.cuadro_pagos import build_cell_payments_badge_and_tooltip, build_pagos_floating_ui_js
+
+    proy = "Proy MultiSemana"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": proy,
+        "Cliente": "Cliente Multi",
+        "TC_Presupuesto": 3.60,
+        "Pagos_Semanales_JSON": "",
+    }])
+    st.session_state["partidas"] = pd.DataFrame()
+    st.session_state["p_info"] = pd.DataFrame()
+    st.session_state["tasks"] = pd.DataFrame()
+
+    data_init = obtener_cuadro_pagos_semanales_proyecto(proy)
+    data_init["num_semanas"] = 3
+    data_init["filas_contratistas"] = [
+        {"Partida": "OBRAS CIVILES", "Descripcion": "OBRAS CIVILES", "Moneda": "Soles", "TOTAL": 8000.0},
+        {"Partida": "CARPINTERÍA", "Descripcion": "CARPINTERÍA", "Moneda": "Dólares", "TOTAL": 2000.0},
+    ]
+    guardar_cuadro_pagos_semanales_proyecto(proy, data_init)
+
+    assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({
+        "action": "add_payment",
+        "id": "pg_ui_1",
+        "row_type": "contratista",
+        "row_idx": 0,
+        "field": "SEMANA 1",
+        "contratista": "Juan Pérez",
+        "tipo": "Adelanto",
+        "fecha": "2026-11-16",
+        "monto": 1200.0,
+    })) is True
+    assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({
+        "action": "add_payment",
+        "id": "pg_ui_2",
+        "row_type": "contratista",
+        "row_idx": 0,
+        "field": "SEMANA 1",
+        "contratista": "Juan Pérez",
+        "tipo": "Valorización",
+        "fecha": "2026-11-16",
+        "monto": 800.0,
+    })) is True
+    assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({
+        "action": "add_payment",
+        "id": "pg_ui_3",
+        "row_type": "contratista",
+        "row_idx": 1,
+        "field": "SEMANA 1",
+        "contratista": "Juan Pérez",
+        "tipo": "Adelanto",
+        "fecha": "2026-11-16",
+        "monto": 500.0,
+    })) is True
+
+    data_cur = obtener_cuadro_pagos_semanales_proyecto(proy)
+    pagos_s1 = obtener_pagos_semana(data_cur, "SEMANA 1")
+    assert [p["id"] for p in pagos_s1] == ["pg_ui_1", "pg_ui_2", "pg_ui_3"]
+
+    res_s1 = resumen_contratistas_semana(data_cur, "SEMANA 1")
+    assert [(r["contratista"], r["monto"]) for r in res_s1] == [
+        ("Juan Pérez (S/)", 2000.0),
+        ("Juan Pérez (USD)", 500.0),
+    ]
+
+    disp, _, tooltip_txt, pagos_celda, _ = build_cell_payments_badge_and_tooltip(
+        data_cur["filas_contratistas"][0], "SEMANA 1", "S/ ", 2000.0
+    )
+    assert len(pagos_celda) == 2
+    assert "cota-cell-multi-badge" in disp
+    assert "\n" in tooltip_txt
+
+    xlsx_bytes = exportar_cuadro_pagos_semanales_excel(proy, {**data_cur, "semana_resumen": "SEMANA 1"})
+    pdf_bytes = exportar_cuadro_pagos_semanales_pdf(proy, {**data_cur, "semana_resumen": "SEMANA 1"})
+    assert len(xlsx_bytes) > 1000 and pdf_bytes[:4] == b"%PDF"
+
+    js_ui = build_pagos_floating_ui_js()
+    assert "isSubmitting" in js_ui
+    assert "id: newEntry.id" in js_ui
+
+    with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f:
+        vp_src = f.read()
+    assert '.replace("\\n", "&#10;")' in vp_src
+    assert "qp_reset_" in vp_src
+    assert 'st.button("➕ Agregar Tarea"' in vp_src
+
+    # Deduplicación por ts y por id de pago
+    assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({
+        "action": "add_payment",
+        "id": "pg_ui_dup",
+        "ts": 1700000000001,
+        "row_type": "contratista",
+        "row_idx": 0,
+        "field": "SEMANA 2",
+        "contratista": "Carlos Ruiz",
+        "tipo": "Adelanto",
+        "fecha": "2026-11-17",
+        "monto": 600.0,
+    })) is True
+    # Reenvío accidental con el mismo ts debe ignorarse
+    assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({
+        "action": "add_payment",
+        "id": "pg_ui_dup",
+        "ts": 1700000000001,
+        "row_type": "contratista",
+        "row_idx": 0,
+        "field": "SEMANA 2",
+        "contratista": "Carlos Ruiz",
+        "tipo": "Adelanto",
+        "fecha": "2026-11-17",
+        "monto": 600.0,
+    })) is False
+    # Sincronización de cell_payments al agregar dos pagos rápidos en la misma celda
+    assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({
+        "action": "add_payment",
+        "id": "pg_fast_2",
+        "ts": 1700000000002,
+        "row_type": "contratista",
+        "row_idx": 0,
+        "field": "SEMANA 3",
+        "contratista": "Elena Gómez",
+        "tipo": "Liquidación",
+        "fecha": "2026-11-18",
+        "monto": 900.0,
+        "cell_payments": [
+            {"id": "pg_fast_1", "contratista": "Elena Gómez", "tipo": "Adelanto", "fecha": "2026-11-18", "monto": 400.0},
+            {"id": "pg_fast_2", "contratista": "Elena Gómez", "tipo": "Liquidación", "fecha": "2026-11-18", "monto": 900.0},
+        ],
+    })) is True
+    data_after_fast = obtener_cuadro_pagos_semanales_proyecto(proy)
+    pagos_s3 = obtener_pagos_semana(data_after_fast, "SEMANA 3")
+    assert [(p["id"], p["monto"]) for p in pagos_s3] == [("pg_fast_1", 400.0), ("pg_fast_2", 900.0)]
+
+    # sanitizar_fases_estudio sin columna Orden no debe lanzar KeyError
+    from cota.db import sanitizar_fases_estudio
+    st.session_state["fases"] = pd.DataFrame([{"Proyecto": proy, "Fase": "01. Layout", "Estado": "🟡 En proceso"}])
+    sanitizar_fases_estudio()
+    assert "Orden" in st.session_state["fases"].columns
+
+

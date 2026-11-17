@@ -66,6 +66,7 @@ try:
         or not hasattr(cota.cotizacion, "resumen_contratistas_semana")
         or not hasattr(cota.cotizacion, "registrar_pago_en_fila_dict")
         or not hasattr(cota.cotizacion, "obtener_utilidades_gestion_pagadas_proyecto")
+        or not hasattr(cota.cotizacion, "agregar_tarea_presupuesto")
     ):
         importlib.reload(cota.cotizacion)
     if not hasattr(cota.pdf, "generar_pdf_minuta"):
@@ -74,6 +75,7 @@ except Exception:
     pass
 from cota.cotizacion import (
     agregar_partida_presupuesto,
+    agregar_tarea_presupuesto,
     ajustar_cantidad_partidas_proyecto,
     ajustar_cantidad_tareas_partida,
     aplicar_cotizacion_a_proyecto,
@@ -1635,6 +1637,14 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     placeholder="",
                 )
             with cp_cnt:
+                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                if st.button("➕ Agregar Tarea", key=f"btn_add_task_ppto_{proy_name}_{idx_p}", use_container_width=True):
+                    agregar_tarea_presupuesto(proy_name, idx_p, p_nom_completo)
+                    if base_ppto_key in st.session_state:
+                        del st.session_state[base_ppto_key]
+                    st.session_state[c_ppto_key] = st.session_state.get(c_ppto_key, 0) + 1
+                    st.rerun()
+            if False:
                 st.number_input(
                     f"N° de Tareas ({idx_p}.01, {idx_p}.02...)",
                     min_value=1,
@@ -2832,6 +2842,7 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
             nativeSetter.call(inp, valStr);
             inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
             inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            try {{ inp.focus({{ preventScroll: true }}); }} catch (e) {{}}
             inp.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }}));
             inp.blur();
         }}
@@ -3697,6 +3708,8 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             with c_tp_f2:
                 fecha_qp_sel = st.date_input("Fecha:", value=datetime.date.today(), key=f"dt_qp_{proy_name}")
             val_qp_actual = 0.0
+            qp_cnt_key = f"qp_reset_{proy_name}"
+            qp_cnt_val = int(st.session_state.get(qp_cnt_key, 0) or 0)
             nota_qp_actual = (obj_qp.get("Notas_Pagos", {}) or {}).get(col_qp_sel, "") if isinstance(obj_qp.get("Notas_Pagos"), dict) else ""
             nuevo_monto_qp = st.number_input(
                 f"Monto para {etiqueta_corta_columna_pago(col_qp_sel)}:",
@@ -3704,13 +3717,13 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                 value=float(val_qp_actual),
                 step=100.0,
                 format="%.2f",
-                key=f"num_qp_{proy_name}_{fila_qp_lbl}_{col_qp_sel}",
+                key=f"num_qp_{proy_name}_{fila_qp_lbl}_{col_qp_sel}_{qp_cnt_val}",
             )
             nueva_nota_qp = st.text_input(
                 "Nota del pago (opcional, visible al pasar el mouse):",
                 value=nota_qp_actual,
                 placeholder="",
-                key=f"txt_qp_{proy_name}_{fila_qp_lbl}_{col_qp_sel}",
+                key=f"txt_qp_{proy_name}_{fila_qp_lbl}_{col_qp_sel}_{qp_cnt_val}",
             )
             if st.button("💾 Guardar Pago", key=f"btn_save_qp_{proy_name}", type="primary", use_container_width=True) and nuevo_monto_qp > 0 and con_qp_final:
                 d_cur_qp = obtener_cuadro_pagos_semanales_proyecto(proy_name)
@@ -3748,6 +3761,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                 d_cur_qp["semana_activa"] = col_qp_sel
                 st.session_state[f"sel_sem_resumen_{proy_name}"] = col_qp_sel
                 guardar_cuadro_pagos_semanales_proyecto(proy_name, d_cur_qp)
+                st.session_state[qp_cnt_key] = qp_cnt_val + 1
                 st.session_state[cnt_cont_key] = st.session_state.get(cnt_cont_key, 0) + 1
                 st.session_state[cnt_ges_key] = st.session_state.get(cnt_ges_key, 0) + 1
                 st.rerun()
@@ -4005,16 +4019,16 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             disp_inner_c, corner_dot_c, tooltip_full_c, pagos_celda_c, def_con_c = build_cell_payments_badge_and_tooltip(
                 fila_d, c_s, pref_m, v_num
             )
-            esc_pay_json = html_lib.escape(json.dumps(pagos_celda_c, ensure_ascii=False), quote=True)
+            esc_pay_json = html_lib.escape(json.dumps(pagos_celda_c, ensure_ascii=False), quote=True).replace("\r\n", "&#10;").replace("\r", "&#10;").replace("\n", "&#10;")
             esc_def_con = html_lib.escape(def_con_c, quote=True)
-            esc_nota_man = html_lib.escape(nota_manual_txt, quote=True)
+            esc_nota_man = html_lib.escape(nota_manual_txt, quote=True).replace("\r\n", "&#10;").replace("\r", "&#10;").replace("\n", "&#10;")
             nota_txt = tooltip_full_c
             esc_sem_short = html_lib.escape(etiqueta_corta_columna_pago(c_s), quote=True)
             esc_col_f = html_lib.escape(c_s, quote=True)
             esc_mon = html_lib.escape(f"{pref_m}{v_num:,.2f}", quote=True)
 
             if nota_txt:
-                esc_not = html_lib.escape(nota_txt, quote=True)
+                esc_not = html_lib.escape(nota_txt, quote=True).replace("\r\n", "&#10;").replace("\r", "&#10;").replace("\n", "&#10;")
                 disp_inner = disp_inner_c
                 tds.append(
                     f"<td class='cota-editable-cell' data-row-type='{r_type}' data-row-idx='{r_idx}' "

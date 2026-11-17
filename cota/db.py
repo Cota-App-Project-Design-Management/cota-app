@@ -824,6 +824,10 @@ def sanitizar_fases_estudio():
 
     # 3. Re-indexar orden por proyecto
     dfs_proy = []
+    if 'Orden' not in df_f.columns:
+        df_f['Orden'] = list(range(1, len(df_f) + 1))
+    else:
+        df_f['Orden'] = pd.to_numeric(df_f['Orden'], errors='coerce').fillna(999).astype(int)
     for proy_k, grp in df_f.groupby('Proyecto', sort=False):
         grp_sorted = grp.sort_values(by='Orden').copy()
         grp_sorted['Orden'] = list(range(1, len(grp_sorted) + 1))

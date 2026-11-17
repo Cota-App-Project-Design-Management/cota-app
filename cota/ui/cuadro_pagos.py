@@ -853,7 +853,9 @@ def build_pagos_floating_ui_js() -> str:
                 }
             });
 
+            let isSubmitting = false;
             function submitPago() {
+                if (isSubmitting) return;
                 const fechaVal = (fechaInp.value || '').trim() || todayIso;
                 const montoNum = Math.round((parseFloat(montoInp.value) || 0) * 100) / 100;
                 if (!selContratista.trim()) {
@@ -872,6 +874,9 @@ def build_pagos_floating_ui_js() -> str:
                     montoInp.focus();
                     return;
                 }
+
+                isSubmitting = true;
+                if (saveBtn) saveBtn.disabled = true;
 
                 const newEntry = {
                     id: isEdit ? existingP.id : ('pg_' + Date.now() + '_' + Math.random().toString(16).slice(2, 6)),
@@ -912,6 +917,8 @@ def build_pagos_floating_ui_js() -> str:
 
                 const actionName = isEdit ? 'edit_payment' : (isReplaceLegacy ? 'replace_legacy_with_payment' : 'add_payment');
                 const bridgeMsg = {
+                    id: newEntry.id,
+                    cell_payments: (cell ? getCellPaymentsFromTd(cell) : [newEntry]),
                     action: actionName,
                     row_type: rType,
                     row_idx: rIdx,
