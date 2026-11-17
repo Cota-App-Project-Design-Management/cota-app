@@ -20,6 +20,7 @@ import datetime
 import io
 import json
 import math
+import os
 import re
 import openpyxl
 from openpyxl.comments import Comment
@@ -2555,8 +2556,6 @@ def exportar_presupuesto_pdf(
             pdf.set_xy(margin_x + 2.5, y_cur_n + 0.7)
             pdf.multi_cell(w_total_table - 5.0, 4.0, "\n".join(n_lines), border=0, align="L")
             pdf.set_xy(margin_x, y_cur_n + h_n)
-    if False:
-    pdf.cell(w_mix, h_tot, "", border=1, align="C", fill=True)
 
     return bytes(pdf.output())
 
@@ -4847,6 +4846,7 @@ def aplicar_cotizacion_planificada_a_presupuesto(
 
 
 def guardar_cuadro_pagos_semanales_proyecto(proy_name: str, data_cuadro: dict):
+    """Guarda el estado del Cuadro de Pagos Semanales en `st.session_state.proyectos`."""
     if isinstance(data_cuadro, dict) and "notas_presupuesto" not in data_cuadro:
         notas_exist = obtener_notas_presupuesto_proyecto(proy_name)
         if notas_exist:
@@ -4866,7 +4866,7 @@ def guardar_cuadro_pagos_semanales_proyecto(proy_name: str, data_cuadro: dict):
                                     data_cuadro = {**data_cuadro, k_pres: d_prev[k_pres]}
                     except Exception:
                         pass
-    """Guarda el estado del Cuadro de Pagos Semanales en `st.session_state.proyectos`."""
+
     if "proyectos" not in st.session_state or st.session_state.proyectos.empty:
         return
     if "Pagos_Semanales_JSON" not in st.session_state.proyectos.columns:
