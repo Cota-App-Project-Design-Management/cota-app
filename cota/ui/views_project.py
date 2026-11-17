@@ -498,7 +498,8 @@ def _render_tab_fases(proy_name, proy_data):
             if est_dis_actual not in STATUS_FASES:
                 est_dis_actual = STATUS_FASES[0]
             key_est_dis = f"sel_est_diseno_plan_{proy_name}"
-            st.session_state[key_est_dis] = est_dis_actual
+            if key_est_dis not in st.session_state or st.session_state[key_est_dis] != est_dis_actual:
+                st.session_state[key_est_dis] = est_dis_actual
 
             def _on_change_est_diseno():
                 nuevo_e = st.session_state.get(key_est_dis, STATUS_FASES[0])
@@ -549,15 +550,20 @@ def _render_tab_fases(proy_name, proy_data):
                 f_nom = safe_str(r_f.get("Fase", f"Etapa {idx_r + 1}"))
                 checked_actual = bool(to_bool(r_f.get("Aprobado_Cliente", False)) or ("aprob" in str(r_f.get("Estado", "")).lower()))
                 k_chk = f"chk_etapa_plan_{proy_name}_{f_id}_{idx_r}"
-                st.session_state[k_chk] = checked_actual
+                if k_chk not in st.session_state or bool(st.session_state[k_chk]) != checked_actual:
+                    st.session_state[k_chk] = checked_actual
 
                 def _make_on_chk_fase(fase_id_val, fase_nom_val, key_c):
                     def _cb_chk():
                         nuevo_chk = bool(st.session_state.get(key_c, False))
-                        m_f = (st.session_state.fases["Proyecto"] == proy_name) & (
-                            (st.session_state.fases["ID"].astype(str) == str(fase_id_val))
-                            | (st.session_state.fases["Fase"].astype(str) == str(fase_nom_val))
-                        )
+                        m_f = st.session_state.fases["Proyecto"] == proy_name
+                        if str(fase_id_val).strip():
+                            m_f = m_f & (
+                                (st.session_state.fases["ID"].astype(str) == str(fase_id_val))
+                                | (st.session_state.fases["Fase"].astype(str) == str(fase_nom_val))
+                            )
+                        else:
+                            m_f = m_f & (st.session_state.fases["Fase"].astype(str) == str(fase_nom_val))
                         if m_f.any():
                             st.session_state.fases.loc[m_f, "Aprobado_Cliente"] = nuevo_chk
                             st.session_state.fases.loc[m_f, "Estado"] = "🟢 Aprobado" if nuevo_chk else "⚪ Pendiente"
@@ -569,6 +575,8 @@ def _render_tab_fases(proy_name, proy_data):
                                 guardar_estado_diseno_proyecto(proy_name, "🟢 Aprobado")
                             elif ok_c > 0:
                                 guardar_estado_diseno_proyecto(proy_name, "🟡 En proceso")
+                            else:
+                                guardar_estado_diseno_proyecto(proy_name, "⚪ Pendiente")
                             clear_base_dfs()
                     return _cb_chk
 
@@ -617,7 +625,7 @@ def _render_tab_fases(proy_name, proy_data):
                     {"contratista": "", "monto": 0.0, "entregado": False, "notas": ""},
                 ],
             })
-            guardar_planificacion_presupuesto_proyecto(proy_name, plan_items, sincronizar_partidas_ppto=True)
+            guardar_planificacion_presupuesto_proyecto(proy_name, plan_items, sincronizar_partidas_ppto=False)
             st.rerun()
     with c_pl_hdr3:
         st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
@@ -686,20 +694,25 @@ def _render_tab_fases(proy_name, proy_data):
             for i_c, c in enumerate(cots_p)
             if safe_float(c.get("monto", 0.0), 0.0) > 0
         ]
-        mejor_cot_txt = "Sin montos aún"
-        if 0 <= elegida_idx < len(cots_p) and safe_float(cots_p[elegida_idx].get("monto", 0.0), 0.0) > 0:
+        mejor_cot_txt = "Sin cotización elegida"
+        if 0 <= elegida_idx < len(cots_p):
             c_el = cots_p[elegida_idx]
-            mejor_cot_txt = f"⭐ Elegida: {c_el.get('contratista') or 'Contratista'} ({format_currency(c_el.get('monto', 0.0))})"
+            nom_el = safe_str(c_el.get("contratista", "")).strip() or f"Cotización #{elegida_idx + 1}"
+            mejor_cot_txt = f"⭐ Elegida: {nom_el} ({format_currency(c_el.get('monto', 0.0))})"
         elif montos_validos:
             min_c = min(montos_validos, key=lambda x: x[1])
             mejor_cot_txt = f"💡 Más económica: {min_c[2] or f'Opción {min_c[0]+1}'} ({format_currency(min_c[1])})"
+        else:
+            mejor_cot_txt = "Sin montos aún"
 
         with st.container(border=True):
             cp_top1, cp_top2, cp_top3, cp_top4 = st.columns([4.2, 1.8, 3.0, 1.0])
             key_nom_plan = f"plan_pnom_{proy_name}_{idx_p0}"
             key_ncot_plan = f"plan_ncot_{proy_name}_{idx_p0}"
-            st.session_state[key_nom_plan] = p_nom_limpio
-            st.session_state[key_ncot_plan] = int(n_cots_p)
+            if key_nom_plan not in st.session_state or st.session_state[key_nom_plan] != p_nom_limpio:
+                st.session_state[key_nom_plan] = p_nom_limpio
+            if key_ncot_plan not in st.session_state or int(st.session_state[key_ncot_plan]) != int(n_cots_p):
+                st.session_state[key_ncot_plan] = int(n_cots_p)
 
             def _make_on_plan_header(i_p0, k_nom_pl, k_ncot_pl):
                 def _cb_hdr():
@@ -709,7 +722,7 @@ def _render_tab_fases(proy_name, proy_data):
                         curr_items[i_p0]["nombre_limpio"] = nuevo_nom_l
                         curr_items[i_p0]["partida"] = f"{i_p0 + 1:02d}. {nuevo_nom_l}"
                         curr_items[i_p0]["num_cotizaciones"] = int(st.session_state.get(k_ncot_pl, 2) or 1)
-                        guardar_planificacion_presupuesto_proyecto(proy_name, curr_items, sincronizar_partidas_ppto=True)
+                        guardar_planificacion_presupuesto_proyecto(proy_name, curr_items, sincronizar_partidas_ppto=False)
                 return _cb_hdr
 
             with cp_top1:
@@ -742,7 +755,29 @@ def _render_tab_fases(proy_name, proy_data):
                 if st.button("🗑️", key=f"btn_del_plan_p_{proy_name}_{idx_p0}", disabled=(len(plan_items) <= 1), help="Eliminar partida del borrador", use_container_width=True):
                     plan_items.pop(idx_p0)
                     guardar_planificacion_presupuesto_proyecto(proy_name, plan_items, sincronizar_partidas_ppto=False)
+                    prefijos_del = (
+                        f"plan_pnom_{proy_name}_",
+                        f"plan_ncot_{proy_name}_",
+                        f"plan_cot_con_{proy_name}_",
+                        f"plan_cot_mon_{proy_name}_",
+                        f"plan_cot_ent_{proy_name}_",
+                        f"plan_cot_eleg_{proy_name}_",
+                    )
+                    for k_st in list(st.session_state.keys()):
+                        if str(k_st).startswith(prefijos_del):
+                            del st.session_state[k_st]
                     st.rerun()
+
+            def _sincronizar_fila_cot_widgets(curr_items, i_p0, i_c0, kc, km, ke):
+                if 0 <= i_p0 < len(curr_items):
+                    c_list = curr_items[i_p0].get("cotizaciones", [])
+                    if 0 <= i_c0 < len(c_list):
+                        if kc in st.session_state:
+                            c_list[i_c0]["contratista"] = safe_str(st.session_state.get(kc, "")).strip()
+                        if km in st.session_state:
+                            c_list[i_c0]["monto"] = round(max(0.0, safe_float(st.session_state.get(km, 0.0), 0.0)), 2)
+                        if ke in st.session_state:
+                            c_list[i_c0]["entregado"] = bool(st.session_state.get(ke, False))
 
             # Filas de cotizaciones de esta partida
             for idx_c0, cot_it in enumerate(cots_p):
@@ -755,24 +790,45 @@ def _render_tab_fases(proy_name, proy_data):
                 k_con = f"plan_cot_con_{proy_name}_{idx_p0}_{idx_c0}"
                 k_mon = f"plan_cot_mon_{proy_name}_{idx_p0}_{idx_c0}"
                 k_ent = f"plan_cot_ent_{proy_name}_{idx_p0}_{idx_c0}"
+                k_elg = f"plan_cot_eleg_{proy_name}_{idx_p0}_{idx_c0}"
 
-                st.session_state[k_con] = contra_val if contra_val in opciones_c_row else ""
-                st.session_state[k_mon] = float(safe_float(cot_it.get("monto", 0.0), 0.0))
-                st.session_state[k_ent] = es_ent
+                contra_exp = contra_val if contra_val in opciones_c_row else ""
+                monto_exp = float(safe_float(cot_it.get("monto", 0.0), 0.0))
+                if k_con not in st.session_state or st.session_state[k_con] != contra_exp:
+                    st.session_state[k_con] = contra_exp
+                if k_mon not in st.session_state or abs(safe_float(st.session_state[k_mon], -1.0) - monto_exp) > 1e-6:
+                    st.session_state[k_mon] = monto_exp
+                if k_ent not in st.session_state or bool(st.session_state[k_ent]) != es_ent:
+                    st.session_state[k_ent] = es_ent
+                if k_elg not in st.session_state or bool(st.session_state[k_elg]) != es_eleg:
+                    st.session_state[k_elg] = es_eleg
 
                 def _make_on_cot_change(i_p0, i_c0, kc, km, ke):
                     def _cb_cot():
                         curr_items = obtener_planificacion_presupuesto_proyecto(proy_name)
+                        _sincronizar_fila_cot_widgets(curr_items, i_p0, i_c0, kc, km, ke)
+                        guardar_planificacion_presupuesto_proyecto(proy_name, curr_items, sincronizar_partidas_ppto=False)
+                    return _cb_cot
+
+                def _make_on_cot_eleg_change(i_p0, i_c0, kc, km, ke, k_eleg_w):
+                    def _cb_eleg():
+                        curr_items = obtener_planificacion_presupuesto_proyecto(proy_name)
+                        _sincronizar_fila_cot_widgets(curr_items, i_p0, i_c0, kc, km, ke)
                         if 0 <= i_p0 < len(curr_items):
                             c_list = curr_items[i_p0].get("cotizaciones", [])
                             if 0 <= i_c0 < len(c_list):
-                                c_list[i_c0]["contratista"] = safe_str(st.session_state.get(kc, "")).strip()
-                                c_list[i_c0]["monto"] = round(max(0.0, safe_float(st.session_state.get(km, 0.0), 0.0)), 2)
-                                c_list[i_c0]["entregado"] = bool(st.session_state.get(ke, False))
+                                marcar_eleg = bool(st.session_state.get(k_eleg_w, False))
+                                if marcar_eleg:
+                                    curr_items[i_p0]["cotizacion_elegida"] = int(i_c0)
+                                elif int(curr_items[i_p0].get("cotizacion_elegida", -1)) == int(i_c0):
+                                    curr_items[i_p0]["cotizacion_elegida"] = -1
                                 guardar_planificacion_presupuesto_proyecto(proy_name, curr_items, sincronizar_partidas_ppto=False)
-                    return _cb_cot
+                                eleg_final = int(curr_items[i_p0].get("cotizacion_elegida", -1))
+                                for j_c in range(len(c_list)):
+                                    st.session_state[f"plan_cot_eleg_{proy_name}_{i_p0}_{j_c}"] = (j_c == eleg_final)
+                    return _cb_eleg
 
-                cc1, cc2, cc3, cc4, cc5 = st.columns([1.2, 3.2, 2.2, 1.8, 1.6])
+                cc1, cc2, cc3, cc4, cc5 = st.columns([1.2, 3.2, 2.2, 1.7, 1.7])
                 with cc1:
                     bg_tag = "#E8F5E9" if es_ent else "#FFF8E7"
                     col_tag = "#2E7D32" if es_ent else "#B76E00"
@@ -809,15 +865,12 @@ def _render_tab_fases(proy_name, proy_data):
                         on_change=_make_on_cot_change(idx_p0, idx_c0, k_con, k_mon, k_ent),
                     )
                 with cc5:
-                    if st.button(
-                        "⭐ Elegida" if es_eleg else "Marcar Elegida",
-                        key=f"btn_eleg_cot_{proy_name}_{idx_p0}_{idx_c0}",
-                        type="primary" if es_eleg else "secondary",
-                        use_container_width=True,
-                        help="Marca esta cotización como la más indicada en tu borrador comparativo",
-                    ):
-                        aplicar_cotizacion_planificada_a_presupuesto(proy_name, idx_p0, idx_c0)
-                        st.rerun()
+                    st.checkbox(
+                        "⭐ Elegida",
+                        key=k_elg,
+                        on_change=_make_on_cot_eleg_change(idx_p0, idx_c0, k_con, k_mon, k_ent, k_elg),
+                        help="Marca esta cotización como la elegida (más indicada) en tu borrador comparativo",
+                    )
     return
     """Pestaña 2: Gestión exclusiva del Diseño (02. Diseño) — Entregables por estado (pendiente, en proceso, en revisión, observado, aprobado), control de cambios y Drive vinculado."""
     st.markdown("### 🎨 02. DISEÑO — GESTIÓN DE ENTREGABLES (PLANOS, RENDERS Y 3D)")

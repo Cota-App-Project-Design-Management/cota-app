@@ -2684,6 +2684,9 @@ def test_multipagos_misma_semana_y_resumen_completo():
     assert aplicar_cotizacion_planificada_a_presupuesto(proy_add, 0, 0) is True
     res_pl2 = resumen_planificacion_presupuesto(obtener_planificacion_presupuesto_proyecto(proy_add))
     assert res_pl2["monto_estimado_optimo"] == 9500.0
+    assert aplicar_cotizacion_planificada_a_presupuesto(proy_add, 0, 0, elegida=False) is True
+    assert obtener_planificacion_presupuesto_proyecto(proy_add)[0]["cotizacion_elegida"] == -1
+    assert aplicar_cotizacion_planificada_a_presupuesto(proy_add, 0, 0, elegida=True) is True
     # Verificar que la planificación de presupuesto es un borrador independiente y no altera st.session_state["partidas"]
     partidas_ppto_antes = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == proy_add]["Nombre_Partida"].tolist()
     plan_items.append({"partida": "99. Partida Solo Borrador", "num_cotizaciones": 2})

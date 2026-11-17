@@ -4828,9 +4828,10 @@ def aplicar_cotizacion_planificada_a_presupuesto(
     proy_name: str,
     idx_partida_0b: int,
     idx_cotizacion_0b: int,
+    elegida: bool = True,
 ) -> bool:
     """
-    Marca la cotización `idx_cotizacion_0b` como la elegida para la partida `idx_partida_0b`
+    Marca o desmarca la cotización `idx_cotizacion_0b` como la elegida para la partida `idx_partida_0b`
     en el borrador de planificación (sin alterar las partidas de 03. PRESUPUESTO).
     """
     items = obtener_planificacion_presupuesto_proyecto(proy_name)
@@ -4840,7 +4841,10 @@ def aplicar_cotizacion_planificada_a_presupuesto(
     cots = it.get("cotizaciones", [])
     if not (0 <= idx_cotizacion_0b < len(cots)):
         return False
-    it["cotizacion_elegida"] = int(idx_cotizacion_0b)
+    if elegida:
+        it["cotizacion_elegida"] = int(idx_cotizacion_0b)
+    elif int(it.get("cotizacion_elegida", -1)) == int(idx_cotizacion_0b):
+        it["cotizacion_elegida"] = -1
     guardar_planificacion_presupuesto_proyecto(proy_name, items, sincronizar_partidas_ppto=False)
     return True
 
