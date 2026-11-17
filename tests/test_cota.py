@@ -1053,6 +1053,15 @@ def test_recalcular_totales_modo_monto_y_pct():
     assert tot["gg_monto"] == 30.0
     assert tot["utilidades_monto"] == 200.0
     assert tot["presupuesto_total"] == 1055.0 + 30.0 + 200.0  # 1285.0
+    assert tot["gg_pct"] == 2.0
+    assert tot["utilidades_pct"] == 15.0
+    # Llamadas repetidas en modo 'pct' NO deben incrementar ni alterar gg_pct ni utilidades_pct
+    for _ in range(5):
+        tot_rep = recalcular_totales_presupuesto_proyecto(proy_test)
+        assert tot_rep["gg_pct"] == 2.0
+        assert tot_rep["utilidades_pct"] == 15.0
+        assert tot_rep["gg_monto"] == 30.0
+        assert tot_rep["utilidades_monto"] == 200.0
 
     # 2. Modo Monto Exacto con redondeo hacia arriba:
     # Guardamos monto fijo GG = 42.0 (redondeo a 50.0) y Util = 310.0 (redondeo a 400.0)
@@ -2621,6 +2630,66 @@ def test_multipagos_misma_semana_y_resumen_completo():
     partidas_reord2 = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == proy_add]["Nombre_Partida"].tolist()
     assert "PINTURA Y ACABADOS" in partidas_reord2[1]
     assert "DEMOLICIÓN" in partidas_reord2[2]
+
+    # Verificar Módulo de Notas del Presupuesto (Personalizadas + Predeterminados + Export Excel/PDF)
+    from cota.cotizacion import (
+        agregar_nota_presupuesto_proyecto,
+        eliminar_nota_predeterminada_presupuesto,
+        eliminar_nota_presupuesto_proyecto,
+        exportar_presupuesto_pdf,
+        exportar_proyecto_a_formato_venti,
+        obtener_notas_predeterminadas_presupuesto,
+        obtener_notas_presupuesto_proyecto,
+    )
+    presets_init = obtener_notas_predeterminadas_presupuesto()
+    assert any("metraje se ajustará al real en obra" in p.lower() for p in presets_init)
+    agregar_nota_presupuesto_proyecto(proy_add, "El metraje se ajustará al real en obra.", guardar_como_predeterminado=False)
+    agregar_nota_presupuesto_proyecto(proy_add, "No incluye mobiliario suelto.", guardar_como_predeterminado=True)
+    notas_proy = obtener_notas_presupuesto_proyecto(proy_add)
+    assert notas_proy == ["El metraje se ajustará al real en obra.", "No incluye mobiliario suelto."]
+    assert "No incluye mobiliario suelto." in obtener_notas_predeterminadas_presupuesto()
+    xl_ppto_n = exportar_proyecto_a_formato_venti(proy_add)
+    pdf_ppto_n = exportar_presupuesto_pdf(proy_add)
+    assert len(xl_ppto_n) > 1000 and pdf_ppto_n[:4] == b"%PDF"
+    eliminar_nota_presupuesto_proyecto(proy_add, 0)
+    assert obtener_notas_presupuesto_proyecto(proy_add) == ["No incluye mobiliario suelto."]
+    eliminar_nota_predeterminada_presupuesto("No incluye mobiliario suelto.")
+
+    # Verificar 02. PLANIFICACIÓN (Estado de Diseño + Planificación de Presupuesto y Cotizaciones por Partida)
+    from cota.cotizacion import (
+        aplicar_cotizacion_planificada_a_presupuesto,
+        guardar_estado_diseno_proyecto,
+        guardar_planificacion_presupuesto_proyecto,
+        obtener_estado_diseno_proyecto,
+        obtener_planificacion_presupuesto_proyecto,
+        resumen_planificacion_presupuesto,
+    )
+    assert '"02. PLANIFICACIÓN"' in vp_src
+    assert guardar_estado_diseno_proyecto(proy_add, "🟡 En proceso") == "🟡 En proceso"
+    assert obtener_estado_diseno_proyecto(proy_add) == "🟡 En proceso"
+
+    plan_items = obtener_planificacion_presupuesto_proyecto(proy_add)
+    assert len(plan_items) >= 2
+    plan_items[0]["num_cotizaciones"] = 3
+    plan_items[0]["cotizaciones"] = [
+        {"contratista": "Juan Pérez", "monto": 9500.0, "entregado": True, "notas": ""},
+        {"contratista": "Carlos Ruiz", "monto": 8800.0, "entregado": True, "notas": ""},
+        {"contratista": "Pedro Díaz", "monto": 0.0, "entregado": False, "notas": ""},
+    ]
+    plan_saved = guardar_planificacion_presupuesto_proyecto(proy_add, plan_items, sincronizar_partidas_ppto=True)
+    assert plan_saved[0]["num_cotizaciones"] == 3
+    res_pl = resumen_planificacion_presupuesto(plan_saved)
+    assert res_pl["cotizaciones_entregadas"] == 2
+    assert res_pl["monto_estimado_optimo"] == 8800.0
+    assert aplicar_cotizacion_planificada_a_presupuesto(proy_add, 0, 0) is True
+    res_pl2 = resumen_planificacion_presupuesto(obtener_planificacion_presupuesto_proyecto(proy_add))
+    assert res_pl2["monto_estimado_optimo"] == 9500.0
+    # Verificar que la planificación de presupuesto es un borrador independiente y no altera st.session_state["partidas"]
+    partidas_ppto_antes = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == proy_add]["Nombre_Partida"].tolist()
+    plan_items.append({"partida": "99. Partida Solo Borrador", "num_cotizaciones": 2})
+    guardar_planificacion_presupuesto_proyecto(proy_add, plan_items, sincronizar_partidas_ppto=False)
+    partidas_ppto_despues = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == proy_add]["Nombre_Partida"].tolist()
+    assert partidas_ppto_despues == partidas_ppto_antes
 
     # Deduplicación por ts y por id de pago
     assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({

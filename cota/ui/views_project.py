@@ -67,6 +67,8 @@ try:
         or not hasattr(cota.cotizacion, "registrar_pago_en_fila_dict")
         or not hasattr(cota.cotizacion, "obtener_utilidades_gestion_pagadas_proyecto")
         or not hasattr(cota.cotizacion, "agregar_tarea_presupuesto")
+        or not hasattr(cota.cotizacion, "obtener_notas_presupuesto_proyecto")
+        or not hasattr(cota.cotizacion, "obtener_planificacion_presupuesto_proyecto")
     ):
         importlib.reload(cota.cotizacion)
     if not hasattr(cota.pdf, "generar_pdf_minuta"):
@@ -76,6 +78,19 @@ except Exception:
 from cota.cotizacion import (
     agregar_partida_presupuesto,
     agregar_tarea_presupuesto,
+    agregar_nota_presupuesto_proyecto,
+    eliminar_nota_presupuesto_proyecto,
+    eliminar_nota_predeterminada_presupuesto,
+    guardar_nota_predeterminada_presupuesto,
+    guardar_notas_presupuesto_proyecto,
+    obtener_notas_predeterminadas_presupuesto,
+    obtener_notas_presupuesto_proyecto,
+    aplicar_cotizacion_planificada_a_presupuesto,
+    guardar_estado_diseno_proyecto,
+    guardar_planificacion_presupuesto_proyecto,
+    obtener_estado_diseno_proyecto,
+    obtener_planificacion_presupuesto_proyecto,
+    resumen_planificacion_presupuesto,
     ajustar_cantidad_partidas_proyecto,
     ajustar_cantidad_tareas_partida,
     aplicar_cotizacion_a_proyecto,
@@ -221,7 +236,7 @@ def render_proyecto_view(proy_name):
     # Tabs especializadas del proyecto
     t_resumen, t_diseno, t_presupuesto, t_obra, t_finanzas, t_actas, t_observaciones = st.tabs([
         "01. RESUMEN",
-        "02. DISEÑO",
+        "02. PLANIFICACIÓN",
         "03. PRESUPUESTO",
         "05. PARTIDAS Y TAREAS",
         "06. COBROS & FINANZAS",
@@ -447,6 +462,363 @@ def _contar_estados_diseno(fases_df: pd.DataFrame, df_ent_proy: pd.DataFrame) ->
 
 
 def _render_tab_fases(proy_name, proy_data):
+    """Pestaña 2: 02. PLANIFICACIÓN — Estado del Diseño con Checklist simple de Etapas + Planificación de Presupuesto y Comparativo de Cotizaciones por Partida."""
+    st.markdown("### 🗂️ 02. PLANIFICACIÓN — DISEÑO Y COTIZACIONES DE PRESUPUESTO")
+    st.caption(
+        "Gestiona de forma simple el estado y checklist de etapas del diseño, y planifica las partidas del presupuesto "
+        "comparando cotizaciones por contratista, monto total y estado (Entregado o Pendiente)."
+    )
+
+    # Preparar etapas de diseño del proyecto
+    fases_df = st.session_state.fases[st.session_state.fases["Proyecto"] == proy_name].copy()
+    for c_req in COLS_FASES:
+        if c_req not in fases_df.columns:
+            fases_df[c_req] = 0 if c_req in ("Orden", "Avance_Pct", "Cambios_Realizados") else (False if c_req == "Aprobado_Cliente" else "")
+    fases_df["Estado"] = fases_df["Estado"].apply(_normalizar_estado_diseno)
+    fases_df = fases_df.sort_values(by="Orden").reset_index(drop=True)
+    fases_activas_actuales = fases_df["Fase"].tolist() if not fases_df.empty else []
+    _ = _contar_estados_diseno(fases_df, pd.DataFrame())
+
+    n_etapas_tot = len(fases_df)
+    n_etapas_ok = int(
+        (fases_df["Aprobado_Cliente"].apply(to_bool) | fases_df["Estado"].astype(str).str.contains("Aprob", case=False, na=False)).sum()
+    ) if not fases_df.empty else 0
+    pct_diseno = (n_etapas_ok / n_etapas_tot * 100.0) if n_etapas_tot > 0 else 0.0
+
+    # ==========================================================
+    # 1. SECCIÓN SIMPLE DE DISEÑO: ESTADO + CHECKLIST DE ETAPAS
+    # ==========================================================
+    with st.container(border=True):
+        c_dis_top1, c_dis_top2, c_dis_top3 = st.columns([4.2, 3.2, 2.6])
+        with c_dis_top1:
+            st.markdown("#### 🎨 1. Estado del Diseño y Checklist de Etapas")
+            st.caption(f"Marca las etapas completadas del diseño ({n_etapas_ok} de {n_etapas_tot} listas · {pct_diseno:.0f}%).")
+        with c_dis_top2:
+            est_dis_actual = obtener_estado_diseno_proyecto(proy_name)
+            if est_dis_actual not in STATUS_FASES:
+                est_dis_actual = STATUS_FASES[0]
+            key_est_dis = f"sel_est_diseno_plan_{proy_name}"
+            st.session_state[key_est_dis] = est_dis_actual
+
+            def _on_change_est_diseno():
+                nuevo_e = st.session_state.get(key_est_dis, STATUS_FASES[0])
+                guardar_estado_diseno_proyecto(proy_name, nuevo_e)
+
+            st.selectbox(
+                "Estado General del Diseño:",
+                options=STATUS_FASES,
+                key=key_est_dis,
+                on_change=_on_change_est_diseno,
+            )
+        with c_dis_top3:
+            st.markdown("<div style='padding-top: 24px;'></div>", unsafe_allow_html=True)
+            banco_fases = obtener_banco_fases()
+            nombres_banco = [f["Fase"] for f in banco_fases]
+            todas_opciones_fases = list(dict.fromkeys(nombres_banco + fases_activas_actuales))
+            with st.popover("⚙️ Configurar Etapas", use_container_width=True):
+                with st.form(f"form_cfg_etapas_plan_{proy_name}"):
+                    st.markdown("##### Etapas del Checklist de Diseño")
+                    sel_fases = st.multiselect(
+                        "Etapas activas en este proyecto:",
+                        options=todas_opciones_fases,
+                        default=fases_activas_actuales,
+                    )
+                    nueva_etapa_txt = st.text_input("➕ Agregar nueva etapa (opcional):", placeholder="Ej: Iluminación")
+                    if st.form_submit_button("💾 Guardar Etapas", type="primary", use_container_width=True):
+                        fases_final = list(sel_fases)
+                        if nueva_etapa_txt.strip():
+                            nf_added = agregar_fase_banco(nueva_etapa_txt.strip())
+                            if nf_added["Fase"] not in fases_final:
+                                fases_final.append(nf_added["Fase"])
+                        sincronizar_fases_proyecto(proy_name, fases_final)
+                        st.rerun()
+
+        # Barra de progreso visual del checklist de diseño
+        col_bar_d = "#4A7C59" if pct_diseno >= 100 else "#C85A32"
+        st.markdown(
+            f"<div style='background:#EFECE6; border-radius:6px; height:8px; overflow:hidden; margin:4px 0 12px 0;'>"
+            f"<div style='background:{col_bar_d}; width:{max(0.0, min(100.0, pct_diseno)):.1f}%; height:100%; transition:width 0.2s ease;'></div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        if not fases_df.empty:
+            cols_chk_dis = st.columns(2)
+            for idx_r, r_f in fases_df.iterrows():
+                f_id = safe_str(r_f.get("ID", ""))
+                f_nom = safe_str(r_f.get("Fase", f"Etapa {idx_r + 1}"))
+                checked_actual = bool(to_bool(r_f.get("Aprobado_Cliente", False)) or ("aprob" in str(r_f.get("Estado", "")).lower()))
+                k_chk = f"chk_etapa_plan_{proy_name}_{f_id}_{idx_r}"
+                st.session_state[k_chk] = checked_actual
+
+                def _make_on_chk_fase(fase_id_val, fase_nom_val, key_c):
+                    def _cb_chk():
+                        nuevo_chk = bool(st.session_state.get(key_c, False))
+                        m_f = (st.session_state.fases["Proyecto"] == proy_name) & (
+                            (st.session_state.fases["ID"].astype(str) == str(fase_id_val))
+                            | (st.session_state.fases["Fase"].astype(str) == str(fase_nom_val))
+                        )
+                        if m_f.any():
+                            st.session_state.fases.loc[m_f, "Aprobado_Cliente"] = nuevo_chk
+                            st.session_state.fases.loc[m_f, "Estado"] = "🟢 Aprobado" if nuevo_chk else "⚪ Pendiente"
+                            st.session_state.fases.loc[m_f, "Avance_Pct"] = 100 if nuevo_chk else 0
+                            # Actualizar estado general del diseño automáticamente según el checklist
+                            f_sub_p = st.session_state.fases[st.session_state.fases["Proyecto"] == proy_name]
+                            ok_c = int((f_sub_p["Aprobado_Cliente"].apply(to_bool)).sum())
+                            if ok_c >= len(f_sub_p) and len(f_sub_p) > 0:
+                                guardar_estado_diseno_proyecto(proy_name, "🟢 Aprobado")
+                            elif ok_c > 0:
+                                guardar_estado_diseno_proyecto(proy_name, "🟡 En proceso")
+                            clear_base_dfs()
+                    return _cb_chk
+
+                with cols_chk_dis[idx_r % 2]:
+                    st.checkbox(
+                        f"{f_nom}",
+                        key=k_chk,
+                        on_change=_make_on_chk_fase(f_id, f_nom, k_chk),
+                    )
+        else:
+            st.info("No hay etapas configuradas en el checklist. Usa '⚙️ Configurar Etapas' para activarlas.")
+
+    st.divider()
+
+    # ==========================================================
+    # 2. PLANIFICACIÓN DE PRESUPUESTO Y COMPARATIVO DE COTIZACIONES
+    # ==========================================================
+    plan_items = obtener_planificacion_presupuesto_proyecto(proy_name)
+    res_plan = resumen_planificacion_presupuesto(plan_items)
+
+    contratistas_disp = [""] + (
+        st.session_state.maestro["ID_Contratista"].dropna().astype(str).unique().tolist()
+        if "maestro" in st.session_state and not st.session_state.maestro.empty and "ID_Contratista" in st.session_state.maestro.columns
+        else []
+    )
+
+    c_pl_hdr1, c_pl_hdr2, c_pl_hdr3 = st.columns([5.2, 2.4, 2.4])
+    with c_pl_hdr1:
+        st.markdown("#### 📐 2. Planificación de Presupuesto y Cotizaciones por Partida")
+        st.caption(
+            "Define las partidas que tendrá el presupuesto, cuántas cotizaciones solicitarás por partida, "
+            "el contratista, el monto total y si ya fue **ENTREGADO** o sigue **Pendiente**."
+        )
+    with c_pl_hdr2:
+        st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
+        if st.button("➕ Agregar Partida a Cotizar", key=f"btn_add_part_plan_{proy_name}", type="primary", use_container_width=True):
+            nuevo_num = len(plan_items) + 1
+            plan_items.append({
+                "id": f"pp_{nuevo_num}_{uuid.uuid4().hex[:4]}",
+                "partida": f"{nuevo_num:02d}. Partida {nuevo_num}",
+                "nombre_limpio": f"Partida {nuevo_num}",
+                "num_cotizaciones": 2,
+                "cotizacion_elegida": -1,
+                "cotizaciones": [
+                    {"contratista": "", "monto": 0.0, "entregado": False, "notas": ""},
+                    {"contratista": "", "monto": 0.0, "entregado": False, "notas": ""},
+                ],
+            })
+            guardar_planificacion_presupuesto_proyecto(proy_name, plan_items, sincronizar_partidas_ppto=True)
+            st.rerun()
+    with c_pl_hdr3:
+        st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
+        with st.popover("👷 Nuevo Contratista", use_container_width=True):
+            with st.form(f"form_quick_contra_plan_{proy_name}", clear_on_submit=True):
+                st.markdown("##### Registrar Contratista")
+                nc_nom = st.text_input("Nombre del Contratista / Proveedor:")
+                nc_esp = st.selectbox("Especialidad:", ESPECIALIDADES_DEFAULT)
+                if st.form_submit_button("Guardar Contratista", type="primary", use_container_width=True) and nc_nom.strip():
+                    nuevo_c_df = pd.DataFrame([{
+                        "ID_Contratista": nc_nom.strip(),
+                        "Especialidad": nc_esp,
+                        "Ubicación_Base": "Lima",
+                        "Notas": "",
+                    }])
+                    st.session_state.maestro = pd.concat([st.session_state.maestro, nuevo_c_df], ignore_index=True)
+                    clear_base_dfs()
+                    st.rerun()
+
+    # 4 Tarjetas resumen de cotizaciones
+    kp1, kp2, kp3, kp4 = st.columns(4)
+    with kp1:
+        render_metric_card(
+            "Partidas Planificadas",
+            f"{res_plan['total_partidas']} partidas",
+            f"{res_plan['partidas_con_entrega']} con cotización recibida",
+        )
+    with kp2:
+        render_metric_card(
+            "Cotizaciones Entregadas",
+            f"{res_plan['cotizaciones_entregadas']} de {res_plan['total_cotizaciones']}",
+            "🟢 Ya recibidas",
+            border_color="#4A7C59",
+            text_color="#4A7C59",
+        )
+    with kp3:
+        render_metric_card(
+            "Cotizaciones Pendientes",
+            f"{res_plan['cotizaciones_pendientes']}",
+            "⏳ Faltan entregar",
+            border_color="#D98A2B" if res_plan["cotizaciones_pendientes"] > 0 else "#4A7C59",
+            text_color="#D98A2B" if res_plan["cotizaciones_pendientes"] > 0 else "#4A7C59",
+        )
+    with kp4:
+        render_metric_card(
+            "Presupuesto Comparado (Casco)",
+            format_currency(res_plan["monto_estimado_optimo"]),
+            "Suma de cotizaciones elegidas / mejores",
+            border_color="#C85A32",
+            text_color="#C85A32",
+        )
+
+    st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+
+    # Renderizar cada Partida con sus N cotizaciones
+    for idx_p0, item_p in enumerate(plan_items):
+        idx_p1 = idx_p0 + 1
+        p_nom_limpio = safe_str(item_p.get("nombre_limpio", limpiar_nombre_partida(item_p.get("partida", ""), idx_p1)))
+        n_cots_p = int(item_p.get("num_cotizaciones", 2) or 1)
+        cots_p = list(item_p.get("cotizaciones", []))
+        elegida_idx = int(item_p.get("cotizacion_elegida", -1))
+
+        entregadas_p = sum(1 for c in cots_p if c.get("entregado"))
+        montos_validos = [
+            (i_c, safe_float(c.get("monto", 0.0), 0.0), safe_str(c.get("contratista", "")))
+            for i_c, c in enumerate(cots_p)
+            if safe_float(c.get("monto", 0.0), 0.0) > 0
+        ]
+        mejor_cot_txt = "Sin montos aún"
+        if 0 <= elegida_idx < len(cots_p) and safe_float(cots_p[elegida_idx].get("monto", 0.0), 0.0) > 0:
+            c_el = cots_p[elegida_idx]
+            mejor_cot_txt = f"⭐ Elegida: {c_el.get('contratista') or 'Contratista'} ({format_currency(c_el.get('monto', 0.0))})"
+        elif montos_validos:
+            min_c = min(montos_validos, key=lambda x: x[1])
+            mejor_cot_txt = f"💡 Más económica: {min_c[2] or f'Opción {min_c[0]+1}'} ({format_currency(min_c[1])})"
+
+        with st.container(border=True):
+            cp_top1, cp_top2, cp_top3, cp_top4 = st.columns([4.2, 1.8, 3.0, 1.0])
+            key_nom_plan = f"plan_pnom_{proy_name}_{idx_p0}"
+            key_ncot_plan = f"plan_ncot_{proy_name}_{idx_p0}"
+            st.session_state[key_nom_plan] = p_nom_limpio
+            st.session_state[key_ncot_plan] = int(n_cots_p)
+
+            def _make_on_plan_header(i_p0, k_nom_pl, k_ncot_pl):
+                def _cb_hdr():
+                    curr_items = obtener_planificacion_presupuesto_proyecto(proy_name)
+                    if 0 <= i_p0 < len(curr_items):
+                        nuevo_nom_l = safe_str(st.session_state.get(k_nom_pl, "")).strip() or f"Partida {i_p0 + 1}"
+                        curr_items[i_p0]["nombre_limpio"] = nuevo_nom_l
+                        curr_items[i_p0]["partida"] = f"{i_p0 + 1:02d}. {nuevo_nom_l}"
+                        curr_items[i_p0]["num_cotizaciones"] = int(st.session_state.get(k_ncot_pl, 2) or 1)
+                        guardar_planificacion_presupuesto_proyecto(proy_name, curr_items, sincronizar_partidas_ppto=True)
+                return _cb_hdr
+
+            with cp_top1:
+                st.text_input(
+                    f"Partida {idx_p1} — Nombre de la Partida",
+                    key=key_nom_plan,
+                    on_change=_make_on_plan_header(idx_p0, key_nom_plan, key_ncot_plan),
+                )
+            with cp_top2:
+                st.number_input(
+                    "N° de Cotizaciones",
+                    min_value=1,
+                    max_value=15,
+                    step=1,
+                    key=key_ncot_plan,
+                    on_change=_make_on_plan_header(idx_p0, key_nom_plan, key_ncot_plan),
+                )
+            with cp_top3:
+                col_est_b = "#4A7C59" if entregadas_p == n_cots_p else ("#D98A2B" if entregadas_p > 0 else "#6E665E")
+                st.markdown(
+                    f"<div style='background:#FAF8F5; border:1px solid #DFD9CE; border-radius:8px; padding:7px 12px; margin-top:4px;'>"
+                    f"<div style='font-size:11px; font-weight:700; color:{col_est_b}; text-transform:uppercase;'>"
+                    f"📬 {entregadas_p}/{n_cots_p} Entregada(s) · {n_cots_p - entregadas_p} Pendiente(s)</div>"
+                    f"<div style='font-size:12.5px; font-weight:700; color:#262320; margin-top:2px;'>{html_lib.escape(mejor_cot_txt)}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with cp_top4:
+                st.markdown("<div style='padding-top: 26px;'></div>", unsafe_allow_html=True)
+                if st.button("🗑️", key=f"btn_del_plan_p_{proy_name}_{idx_p0}", disabled=(len(plan_items) <= 1), help="Eliminar partida del borrador", use_container_width=True):
+                    plan_items.pop(idx_p0)
+                    guardar_planificacion_presupuesto_proyecto(proy_name, plan_items, sincronizar_partidas_ppto=False)
+                    st.rerun()
+
+            # Filas de cotizaciones de esta partida
+            for idx_c0, cot_it in enumerate(cots_p):
+                idx_c1 = idx_c0 + 1
+                es_ent = bool(cot_it.get("entregado", False))
+                es_eleg = (elegida_idx == idx_c0)
+                contra_val = safe_str(cot_it.get("contratista", "")).strip()
+                opciones_c_row = list(dict.fromkeys(contratistas_disp + ([contra_val] if contra_val else [])))
+
+                k_con = f"plan_cot_con_{proy_name}_{idx_p0}_{idx_c0}"
+                k_mon = f"plan_cot_mon_{proy_name}_{idx_p0}_{idx_c0}"
+                k_ent = f"plan_cot_ent_{proy_name}_{idx_p0}_{idx_c0}"
+
+                st.session_state[k_con] = contra_val if contra_val in opciones_c_row else ""
+                st.session_state[k_mon] = float(safe_float(cot_it.get("monto", 0.0), 0.0))
+                st.session_state[k_ent] = es_ent
+
+                def _make_on_cot_change(i_p0, i_c0, kc, km, ke):
+                    def _cb_cot():
+                        curr_items = obtener_planificacion_presupuesto_proyecto(proy_name)
+                        if 0 <= i_p0 < len(curr_items):
+                            c_list = curr_items[i_p0].get("cotizaciones", [])
+                            if 0 <= i_c0 < len(c_list):
+                                c_list[i_c0]["contratista"] = safe_str(st.session_state.get(kc, "")).strip()
+                                c_list[i_c0]["monto"] = round(max(0.0, safe_float(st.session_state.get(km, 0.0), 0.0)), 2)
+                                c_list[i_c0]["entregado"] = bool(st.session_state.get(ke, False))
+                                guardar_planificacion_presupuesto_proyecto(proy_name, curr_items, sincronizar_partidas_ppto=False)
+                    return _cb_cot
+
+                cc1, cc2, cc3, cc4, cc5 = st.columns([1.2, 3.2, 2.2, 1.8, 1.6])
+                with cc1:
+                    bg_tag = "#E8F5E9" if es_ent else "#FFF8E7"
+                    col_tag = "#2E7D32" if es_ent else "#B76E00"
+                    txt_tag = "🟢 ENTREGADO" if es_ent else "⏳ PENDIENTE"
+                    st.markdown(
+                        f"<div style='padding-top:6px;'>"
+                        f"<span style='font-size:11.5px; font-weight:800; color:#262320;'>Cotización #{idx_c1}</span><br>"
+                        f"<span style='display:inline-block; margin-top:2px; background:{bg_tag}; color:{col_tag}; font-size:10px; font-weight:800; padding:2px 7px; border-radius:99px;'>{txt_tag}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                with cc2:
+                    st.selectbox(
+                        f"Contratista #{idx_c1}",
+                        options=opciones_c_row,
+                        key=k_con,
+                        on_change=_make_on_cot_change(idx_p0, idx_c0, k_con, k_mon, k_ent),
+                        label_visibility="collapsed",
+                    )
+                with cc3:
+                    st.number_input(
+                        f"Monto S/ #{idx_c1}",
+                        min_value=0.0,
+                        step=0.01,
+                        format="%.2f",
+                        key=k_mon,
+                        on_change=_make_on_cot_change(idx_p0, idx_c0, k_con, k_mon, k_ent),
+                        label_visibility="collapsed",
+                    )
+                with cc4:
+                    st.checkbox(
+                        "Entregado",
+                        key=k_ent,
+                        on_change=_make_on_cot_change(idx_p0, idx_c0, k_con, k_mon, k_ent),
+                    )
+                with cc5:
+                    if st.button(
+                        "⭐ Elegida" if es_eleg else "Marcar Elegida",
+                        key=f"btn_eleg_cot_{proy_name}_{idx_p0}_{idx_c0}",
+                        type="primary" if es_eleg else "secondary",
+                        use_container_width=True,
+                        help="Marca esta cotización como la más indicada en tu borrador comparativo",
+                    ):
+                        aplicar_cotizacion_planificada_a_presupuesto(proy_name, idx_p0, idx_c0)
+                        st.rerun()
+    return
     """Pestaña 2: Gestión exclusiva del Diseño (02. Diseño) — Entregables por estado (pendiente, en proceso, en revisión, observado, aprobado), control de cambios y Drive vinculado."""
     st.markdown("### 🎨 02. DISEÑO — GESTIÓN DE ENTREGABLES (PLANOS, RENDERS Y 3D)")
     st.caption(
@@ -1164,6 +1536,14 @@ def _render_tab_presupuesto(proy_name, proy_data):
     asignar Especialidad y Contratista (uso interno), o importar presupuestos de tablas / Excel / CSV.
     """
     asegurar_estructura_presupuesto_proyecto(proy_name, n_partidas_default=3, n_tareas_default=3)
+    if "proyectos" in st.session_state and not st.session_state.proyectos.empty:
+        m_p_sync = st.session_state.proyectos["Nombre"] == proy_name
+        if m_p_sync.any():
+            idx_p_sync = st.session_state.proyectos[m_p_sync].index[0]
+            if f"cfg_gg_pct_{proy_name}" in st.session_state and st.session_state.get(f"cfg_modo_gg_{proy_name}", "pct") == "pct":
+                st.session_state.proyectos.at[idx_p_sync, "GG_Pct"] = float(safe_float(st.session_state.get(f"cfg_gg_pct_{proy_name}"), 2.0))
+            if f"cfg_util_pct_{proy_name}" in st.session_state and st.session_state.get(f"cfg_modo_util_{proy_name}", "pct") == "pct":
+                st.session_state.proyectos.at[idx_p_sync, "Utilidades_Pct"] = float(safe_float(st.session_state.get(f"cfg_util_pct_{proy_name}"), 15.0))
     totales = recalcular_totales_presupuesto_proyecto(proy_name)
     params = obtener_parametros_presupuesto_proyecto(proy_name)
 
@@ -1301,7 +1681,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     if modo_gg_imp_tab == "pct":
                         in_gg_pct = st.number_input("% GG", value=float(parsed_imp.get("gg_pct", 2.0)), min_value=0.0, max_value=100.0, step=0.5, format="%.1f", key=f"in_gg_pct_tab_{proy_name}")
                         m_gg_imp_calc = redondear_arriba_10(parsed_imp["subtotal_casco"] * (in_gg_pct / 100.0))
-                        pct_gg_imp_calc = round((m_gg_imp_calc / parsed_imp["subtotal_casco"] * 100.0) if parsed_imp["subtotal_casco"] > 0 else in_gg_pct, 2)
+                        pct_gg_imp_calc = round(float(in_gg_pct), 2)
                         monto_fijo_gg_tab = 0.0
                     else:
                         in_gg_monto = st.number_input("Monto GG (S/)", value=float(parsed_imp.get("gg_monto", 0.0)), min_value=0.0, step=10.0, format="%.2f", key=f"in_gg_monto_tab_{proy_name}")
@@ -1320,7 +1700,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     if modo_util_imp_tab == "pct":
                         in_util_pct = st.number_input("% Util.", value=float(parsed_imp.get("utilidades_pct", 15.0)), min_value=0.0, max_value=100.0, step=0.5, format="%.1f", key=f"in_util_pct_tab_{proy_name}")
                         m_util_imp_calc = redondear_arriba_100(parsed_imp["subtotal_casco"] * (in_util_pct / 100.0))
-                        pct_util_imp_calc = round((m_util_imp_calc / parsed_imp["subtotal_casco"] * 100.0) if parsed_imp["subtotal_casco"] > 0 else in_util_pct, 2)
+                        pct_util_imp_calc = round(float(in_util_pct), 2)
                         monto_fijo_util_tab = 0.0
                     else:
                         in_util_monto = st.number_input("Monto Util. (S/)", value=float(parsed_imp.get("utilidades_monto", 0.0)), min_value=0.0, step=100.0, format="%.2f", key=f"in_util_monto_tab_{proy_name}")
@@ -2048,6 +2428,81 @@ def _render_tab_presupuesto(proy_name, proy_data):
         "</div>"
     )
     st.markdown(tabla_cierre_html, unsafe_allow_html=True)
+
+    # Módulo de Notas y Condiciones debajo del Presupuesto (Personalizadas + Predeterminados)
+    notas_ppto_activas = obtener_notas_presupuesto_proyecto(proy_name)
+    presets_notas_ppto = obtener_notas_predeterminadas_presupuesto()
+
+    if notas_ppto_activas:
+        items_notas_html = "".join(
+            f"<li style='margin-bottom:4px; color:#262320; font-size:13px; line-height:1.45;'>{html_lib.escape(n_txt)}</li>"
+            for n_txt in notas_ppto_activas
+        )
+        st.markdown(
+            f"<div style='background:#FAF8F5; border:1px solid #DFD9CE; border-left:4px solid #C85A32; border-radius:9px; padding:12px 16px; margin-top:-4px; margin-bottom:14px;'>"
+            f"<div style='font-size:11.5px; font-weight:800; color:#262320; text-transform:uppercase; letter-spacing:0.4px; margin-bottom:6px;'>📌 NOTAS Y CONDICIONES DEL PRESUPUESTO</div>"
+            f"<ul style='margin:0; padding-left:18px;'>{items_notas_html}</ul>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    with st.expander("📝 NOTAS DEL PRESUPUESTO — Escribir nota personalizada o usar predeterminados", expanded=True):
+        c_np_left, c_np_right = st.columns([5.4, 4.6])
+        rst_np_cnt = st.session_state.get(f"rst_np_in_{proy_name}", 0)
+        with c_np_left:
+            st.markdown("###### ✍️ Agregar Nota Personalizada")
+            nueva_nota_txt = st.text_input(
+                "Escribe la nota para este presupuesto:",
+                placeholder="Ej: El metraje se ajustará al real en obra.",
+                key=f"in_nueva_nota_ppto_{proy_name}_{rst_np_cnt}",
+            )
+            b_np1, b_np2 = st.columns([1.0, 1.35])
+            with b_np1:
+                if st.button("➕ Agregar al Presupuesto", key=f"btn_add_np_{proy_name}", use_container_width=True, type="primary"):
+                    if nueva_nota_txt and nueva_nota_txt.strip():
+                        agregar_nota_presupuesto_proyecto(proy_name, nueva_nota_txt.strip(), guardar_como_predeterminado=False)
+                        st.session_state[f"rst_np_in_{proy_name}"] = rst_np_cnt + 1
+                        st.rerun()
+            with b_np2:
+                if st.button("⭐ Agregar y Guardar Predeterminado", key=f"btn_add_save_np_{proy_name}", use_container_width=True):
+                    if nueva_nota_txt and nueva_nota_txt.strip():
+                        agregar_nota_presupuesto_proyecto(proy_name, nueva_nota_txt.strip(), guardar_como_predeterminado=True)
+                        st.session_state[f"rst_np_in_{proy_name}"] = rst_np_cnt + 1
+                        st.rerun()
+
+            if notas_ppto_activas:
+                st.markdown("<div style='margin-top:8px; font-size:12px; font-weight:700; color:#6E665E;'>Notas activas en este presupuesto:</div>", unsafe_allow_html=True)
+                for i_na, txt_na in enumerate(notas_ppto_activas):
+                    cn_txt, cn_del = st.columns([8.8, 1.2])
+                    with cn_txt:
+                        st.markdown(f"<div style='font-size:12.5px; color:#262320; padding:4px 0;'>• {html_lib.escape(txt_na)}</div>", unsafe_allow_html=True)
+                    with cn_del:
+                        if st.button("🗑️", key=f"btn_del_np_act_{proy_name}_{i_na}", help="Quitar esta nota del presupuesto", use_container_width=True):
+                            eliminar_nota_presupuesto_proyecto(proy_name, i_na)
+                            st.rerun()
+
+        with c_np_right:
+            st.markdown("###### ⭐ Notas Predeterminadas Guardadas")
+            st.caption("Haz clic en **➕ Usar** para insertar una nota predeterminada en este presupuesto.")
+            activas_low = {x.lower() for x in notas_ppto_activas}
+            for i_pr, txt_pr in enumerate(presets_notas_ppto):
+                ya_esta = txt_pr.lower() in activas_low
+                cp_txt, cp_use, cp_rm = st.columns([6.8, 2.0, 1.2])
+                with cp_txt:
+                    st.markdown(f"<div style='font-size:12px; color:#262320; padding:4px 0;'>• {html_lib.escape(txt_pr)}</div>", unsafe_allow_html=True)
+                with cp_use:
+                    if st.button(
+                        "✅ En uso" if ya_esta else "➕ Usar",
+                        key=f"btn_use_preset_np_{proy_name}_{i_pr}",
+                        disabled=ya_esta,
+                        use_container_width=True,
+                    ):
+                        agregar_nota_presupuesto_proyecto(proy_name, txt_pr, guardar_como_predeterminado=False)
+                        st.rerun()
+                with cp_rm:
+                    if st.button("🗑️", key=f"btn_rm_preset_np_{proy_name}_{i_pr}", help="Eliminar de predeterminados", use_container_width=True):
+                        eliminar_nota_predeterminada_presupuesto(txt_pr)
+                        st.rerun()
 
     col_bot_exp1, col_bot_exp2, col_bot_exp3 = st.columns([3.3, 3.2, 3.5])
     with col_bot_exp1:

@@ -528,7 +528,7 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str, sincronizar_pactado:
         calc_gg = subtotal_casco * (gg_pct / 100.0)
         gg_monto = redondear_arriba_10(calc_gg)
         # Recalcular % efectivo tras redondeo hacia arriba al 10
-        gg_pct = round((gg_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else gg_pct, 2)
+        gg_pct = round(float(gg_pct), 2)
 
     modo_util = params.get("modo_util", "pct")
     if modo_util == "monto":
@@ -538,7 +538,7 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str, sincronizar_pactado:
         calc_util = subtotal_casco * (util_pct / 100.0)
         util_monto = redondear_arriba_100(calc_util)
         # Recalcular % efectivo tras redondeo hacia arriba al 100
-        util_pct = round((util_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else util_pct, 2)
+        util_pct = round(float(util_pct), 2)
 
     base_imp = subtotal_casco + gg_monto + util_monto
     igv_monto = round(base_imp * 0.18, 2) if incluir_igv else 0.0
@@ -1357,6 +1357,7 @@ def generar_plantilla_cotizacion_venti(
     logo_bytes: bytes = None,
     gg_monto_fijo: float = None,
     gestion_monto_fijo: float = None,
+    notas_presupuesto: list = None,
 ) -> bytes:
     """
     Construye un archivo Excel (.xlsx) con el Formato Oficial de Cotización COTA.
@@ -1786,6 +1787,30 @@ def generar_plantilla_cotizacion_venti(
         ws1[f"{c_let}{row_usd}"].fill = fill_usd
         ws1[f"{c_let}{row_usd}"].border = border_closing
 
+    notas_xl = [str(n).strip() for n in (notas_presupuesto or []) if str(n or "").strip()]
+    if notas_xl:
+        row_n_hdr = row_usd + 2
+        ws1.row_dimensions[row_n_hdr].height = 20
+        ws1.merge_cells(f"C{row_n_hdr}:J{row_n_hdr}")
+        ws1[f"C{row_n_hdr}"] = "NOTAS Y CONDICIONES DEL PRESUPUESTO:"
+        ws1[f"C{row_n_hdr}"].font = f_partida
+        ws1[f"C{row_n_hdr}"].alignment = align_left
+        for c_idx in range(3, 11):
+            c_let = get_column_letter(c_idx)
+            ws1[f"{c_let}{row_n_hdr}"].fill = fill_partida
+            ws1[f"{c_let}{row_n_hdr}"].border = border_cell
+        for i_n, txt_n in enumerate(notas_xl, start=1):
+            r_n = row_n_hdr + i_n
+            ws1.row_dimensions[r_n].height = max(19, min(54, 18 * ((len(txt_n) // 85) + 1)))
+            ws1.merge_cells(f"C{r_n}:J{r_n}")
+            ws1[f"C{r_n}"] = f"• {txt_n}"
+            ws1[f"C{r_n}"].font = f_task
+            ws1[f"C{r_n}"].alignment = align_left
+            for c_idx in range(3, 11):
+                c_let = get_column_letter(c_idx)
+                ws1[f"{c_let}{r_n}"].fill = fill_meta_val
+                ws1[f"{c_let}{r_n}"].border = border_cell
+
     col_widths_h1 = {
         "A": 3,
         "B": 14,
@@ -2129,6 +2154,7 @@ def _construir_payload_presupuesto_export(
         "partidas_precargadas": partidas_precargadas,
         "subtotal_casco": subtotal_casco,
         "gg_pct_eff": gg_pct_eff,
+        "notas_presupuesto": obtener_notas_presupuesto_proyecto(proy_name),
         "gg_monto": gg_monto,
         "util_pct_eff": util_pct_eff,
         "util_monto": util_monto,
@@ -2174,6 +2200,7 @@ def exportar_proyecto_a_formato_venti(
         logo_bytes=logo_bytes,
         gg_monto_fijo=payload["gg_fijo"],
         gestion_monto_fijo=payload["ges_fijo"],
+        notas_presupuesto=payload.get("notas_presupuesto", []),
     )
 
 
@@ -2499,6 +2526,36 @@ def exportar_presupuesto_pdf(
     pdf.cell(w_mon, h_tot, safe_pdf_str("Dólares"), border=1, align="C", fill=True)
     pdf.cell(w_und + w_met + w_vu + w_vp, h_tot, "", border=1, align="C", fill=True)
     pdf.cell(w_sub, h_tot, f"$ {payload['presupuesto_dolares']:,.2f}", border=1, align="R", fill=True)
+    pdf.cell(w_mix, h_tot, "", border=1, align="C", fill=True)
+
+    notas_pdf = [str(n).strip() for n in payload.get("notas_presupuesto", []) if str(n or "").strip()]
+    if notas_pdf:
+        w_total_table = sum(widths_all)
+        y_n = y_tot + h_tot * 2.0 + 4.0
+        if y_n + 14.0 > page_bottom:
+            pdf.add_page()
+            y_n = 12.0
+        pdf.set_xy(margin_x, y_n)
+        pdf.set_fill_color(s_r, s_g, s_b)
+        pdf.set_text_color(38, 35, 32)
+        pdf.set_draw_color(208, 201, 189)
+        pdf.set_font("Helvetica", "B", 8.0)
+        pdf.cell(w_total_table, 6.0, safe_pdf_str("  NOTAS Y CONDICIONES DEL PRESUPUESTO:"), border=1, align="L", fill=True)
+        pdf.set_xy(margin_x, y_n + 6.0)
+        pdf.set_font("Helvetica", "", 7.8)
+        for txt_n in notas_pdf:
+            n_lines = _wrap_lines(safe_pdf_str(f"- {txt_n}"), w_total_table - 5.0)
+            h_n = max(5.2, len(n_lines) * 4.0 + 1.4)
+            if pdf.get_y() + h_n > page_bottom:
+                pdf.add_page()
+                pdf.set_y(12.0)
+            y_cur_n = pdf.get_y()
+            pdf.set_fill_color(255, 255, 255)
+            pdf.rect(margin_x, y_cur_n, w_total_table, h_n, style="DF")
+            pdf.set_xy(margin_x + 2.5, y_cur_n + 0.7)
+            pdf.multi_cell(w_total_table - 5.0, 4.0, "\n".join(n_lines), border=0, align="L")
+            pdf.set_xy(margin_x, y_cur_n + h_n)
+    if False:
     pdf.cell(w_mix, h_tot, "", border=1, align="C", fill=True)
 
     return bytes(pdf.output())
@@ -3266,7 +3323,7 @@ def parsear_presupuesto_flexible(rows_or_input, tc_default: float = 3.42) -> dic
     if resultado["gg_monto"] <= 0:
         calc_gg_flex = subtotal_casco * (resultado["gg_pct"] / 100.0)
         resultado["gg_monto"] = redondear_arriba_10(calc_gg_flex)
-        resultado["gg_pct"] = round((resultado["gg_monto"] / subtotal_casco * 100.0) if subtotal_casco > 0 else resultado["gg_pct"], 2)
+        resultado["gg_pct"] = round(float(resultado["gg_pct"]), 2)
     else:
         resultado["gg_monto"] = redondear_arriba_10(resultado["gg_monto"])
         resultado["gg_pct"] = round((resultado["gg_monto"] / subtotal_casco * 100.0) if subtotal_casco > 0 else 2.0, 2)
@@ -3274,7 +3331,7 @@ def parsear_presupuesto_flexible(rows_or_input, tc_default: float = 3.42) -> dic
     if resultado["utilidades_monto"] <= 0:
         calc_util_flex = subtotal_casco * (resultado["utilidades_pct"] / 100.0)
         resultado["utilidades_monto"] = redondear_arriba_100(calc_util_flex)
-        resultado["utilidades_pct"] = round((resultado["utilidades_monto"] / subtotal_casco * 100.0) if subtotal_casco > 0 else resultado["utilidades_pct"], 2)
+        resultado["utilidades_pct"] = round(float(resultado["utilidades_pct"]), 2)
     else:
         resultado["utilidades_monto"] = redondear_arriba_100(resultado["utilidades_monto"])
         resultado["utilidades_pct"] = round((resultado["utilidades_monto"] / subtotal_casco * 100.0) if subtotal_casco > 0 else 15.0, 2)
@@ -4253,6 +4310,13 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
             "fila_gestion": fila_ges,
             "fila_gg": fila_gg,
             "semana_activa": safe_str(data_guardada.get("semana_activa", "")).strip(),
+            "estado_diseno_general": safe_str(data_guardada.get("estado_diseno_general", "")).strip(),
+            "planificacion_presupuesto": list(data_guardada.get("planificacion_presupuesto", [])) if isinstance(data_guardada.get("planificacion_presupuesto"), list) else [],
+            "notas_presupuesto": [
+                str(n).strip()
+                for n in (data_guardada.get("notas_presupuesto", []) if isinstance(data_guardada.get("notas_presupuesto"), list) else [])
+                if str(n or "").strip()
+            ],
         }
         if sincronizar_partidas:
             guardar_cuadro_pagos_semanales_proyecto(proy_name, res_data)
@@ -4424,7 +4488,384 @@ def obtener_utilidades_recibidas_estudio(nombres_proyectos: list[str] | None = N
     }
 
 
+NOTAS_PRESUPUESTO_PREDETERMINADAS_DEFAULT = [
+    "El metraje se ajustará al real en obra.",
+    "El presupuesto tiene una validez de 15 días calendario.",
+    "No incluye trámites ni pagos de licencias municipales o permisos ante la junta de propietarios.",
+    "Cualquier partida adicional o modificación solicitada en obra será cotizada y aprobada previamente.",
+    "El tipo de cambio referencial se ajustará al vigente en la fecha de cada pago.",
+]
+
+
+def _limpiar_linea_nota_ppto(txt: str) -> str:
+    s = str(txt or "").strip()
+    s = re.sub(r"^[\•\-\*\u2022]+\s*", "", s).strip()
+    return s
+
+
+def _ruta_presets_notas_ppto() -> str:
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_dir, "brand_assets", "notas_presupuesto_presets.json")
+
+
+def obtener_notas_predeterminadas_presupuesto() -> list[str]:
+    """Retorna la lista de notas predeterminadas del estudio para presupuestos."""
+    if "notas_ppto_presets" not in st.session_state or not isinstance(st.session_state.get("notas_ppto_presets"), list):
+        cargadas = None
+        try:
+            ruta = _ruta_presets_notas_ppto()
+            if os.path.exists(ruta):
+                with open(ruta, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                if isinstance(raw, list):
+                    cargadas = [_limpiar_linea_nota_ppto(x) for x in raw if _limpiar_linea_nota_ppto(x)]
+        except Exception:
+            cargadas = None
+        st.session_state["notas_ppto_presets"] = (
+            cargadas if cargadas is not None else list(NOTAS_PRESUPUESTO_PREDETERMINADAS_DEFAULT)
+        )
+    return list(st.session_state["notas_ppto_presets"])
+
+
+def _persistir_presets_notas_ppto(lista: list[str]):
+    st.session_state["notas_ppto_presets"] = list(lista)
+    try:
+        ruta = _ruta_presets_notas_ppto()
+        os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        with open(ruta, "w", encoding="utf-8") as f:
+            json.dump(lista, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def guardar_nota_predeterminada_presupuesto(texto_nota: str) -> bool:
+    """Guarda una nueva nota predeterminada en la biblioteca del estudio."""
+    limp = _limpiar_linea_nota_ppto(texto_nota)
+    if not limp:
+        return False
+    actual = obtener_notas_predeterminadas_presupuesto()
+    if all(x.lower() != limp.lower() for x in actual):
+        actual.append(limp)
+        _persistir_presets_notas_ppto(actual)
+    return True
+
+
+def eliminar_nota_predeterminada_presupuesto(texto_nota: str) -> bool:
+    """Elimina una nota predeterminada de la biblioteca del estudio."""
+    limp = _limpiar_linea_nota_ppto(texto_nota)
+    if not limp:
+        return False
+    actual = obtener_notas_predeterminadas_presupuesto()
+    nueva = [x for x in actual if x.lower() != limp.lower()]
+    if len(nueva) != len(actual):
+        _persistir_presets_notas_ppto(nueva)
+        return True
+    return False
+
+
+def obtener_notas_presupuesto_proyecto(proy_name: str) -> list[str]:
+    """Obtiene la lista de notas personalizadas que aparecen debajo del presupuesto del proyecto."""
+    if not proy_name:
+        return []
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if isinstance(df_p, pd.DataFrame) and not df_p.empty and "Nombre" in df_p.columns:
+        m = df_p[df_p["Nombre"] == proy_name]
+        if not m.empty:
+            raw_json = safe_str(m.iloc[0].get("Pagos_Semanales_JSON", "")).strip()
+            if raw_json:
+                try:
+                    d = json.loads(raw_json)
+                    if isinstance(d, dict) and isinstance(d.get("notas_presupuesto"), list):
+                        return [_limpiar_linea_nota_ppto(x) for x in d["notas_presupuesto"] if _limpiar_linea_nota_ppto(x)]
+                except Exception:
+                    pass
+    mem = st.session_state.get(f"notas_ppto_proy_{proy_name}")
+    if isinstance(mem, list):
+        return [_limpiar_linea_nota_ppto(x) for x in mem if _limpiar_linea_nota_ppto(x)]
+    return []
+
+
+def guardar_notas_presupuesto_proyecto(proy_name: str, notas) -> list[str]:
+    """Guarda las notas personalizadas del presupuesto del proyecto (acepta lista o texto multilínea)."""
+    if isinstance(notas, str):
+        lineas_raw = notas.splitlines()
+    elif isinstance(notas, list):
+        lineas_raw = [str(x) for x in notas]
+    else:
+        lineas_raw = []
+    limpias = []
+    for ln in lineas_raw:
+        c = _limpiar_linea_nota_ppto(ln)
+        if c and c not in limpias:
+            limpias.append(c)
+    st.session_state[f"notas_ppto_proy_{proy_name}"] = list(limpias)
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if isinstance(df_p, pd.DataFrame) and not df_p.empty and "Nombre" in df_p.columns:
+        m = df_p["Nombre"] == proy_name
+        if m.any():
+            data_c = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+            data_c["notas_presupuesto"] = list(limpias)
+            guardar_cuadro_pagos_semanales_proyecto(proy_name, data_c)
+    return limpias
+
+
+def agregar_nota_presupuesto_proyecto(
+    proy_name: str,
+    texto_nota: str,
+    guardar_como_predeterminado: bool = False,
+) -> list[str]:
+    """Agrega una nota al presupuesto del proyecto y opcionalmente la guarda como predeterminado."""
+    limp = _limpiar_linea_nota_ppto(texto_nota)
+    actual = obtener_notas_presupuesto_proyecto(proy_name)
+    if limp and all(x.lower() != limp.lower() for x in actual):
+        actual.append(limp)
+        guardar_notas_presupuesto_proyecto(proy_name, actual)
+    if limp and guardar_como_predeterminado:
+        guardar_nota_predeterminada_presupuesto(limp)
+    return actual
+
+
+def eliminar_nota_presupuesto_proyecto(proy_name: str, idx_o_texto) -> list[str]:
+    """Elimina una nota del presupuesto del proyecto por índice (0-based) o por texto."""
+    actual = obtener_notas_presupuesto_proyecto(proy_name)
+    if isinstance(idx_o_texto, int):
+        if 0 <= idx_o_texto < len(actual):
+            actual.pop(idx_o_texto)
+    else:
+        limp = _limpiar_linea_nota_ppto(str(idx_o_texto or ""))
+        actual = [x for x in actual if x.lower() != limp.lower()]
+    return guardar_notas_presupuesto_proyecto(proy_name, actual)
+
+
+def _normalizar_item_planificacion_ppto(raw: dict, idx_1b: int) -> dict:
+    nom_raw = safe_str(raw.get("partida", raw.get("Partida", f"Partida {idx_1b}"))).strip() or f"Partida {idx_1b}"
+    nom_limp = limpiar_nombre_partida(nom_raw, idx_1b) or f"Partida {idx_1b}"
+    nom_comp = formatear_nombre_partida(idx_1b, nom_limp)
+    n_cots = max(1, min(15, int(safe_float(raw.get("num_cotizaciones", 2), 2) or 1)))
+    cots_raw = raw.get("cotizaciones", []) if isinstance(raw.get("cotizaciones"), list) else []
+    cots_norm = []
+    for i_c in range(n_cots):
+        c_it = cots_raw[i_c] if (i_c < len(cots_raw) and isinstance(cots_raw[i_c], dict)) else {}
+        cots_norm.append({
+            "contratista": safe_str(c_it.get("contratista", c_it.get("Contratista", ""))).strip(),
+            "monto": round(max(0.0, safe_float(c_it.get("monto", c_it.get("Monto", 0.0)), 0.0)), 2),
+            "entregado": bool(to_bool(c_it.get("entregado", c_it.get("Entregado", False)))),
+            "notas": safe_str(c_it.get("notas", c_it.get("Notas", ""))).strip(),
+        })
+    elegida = int(safe_float(raw.get("cotizacion_elegida", -1), -1))
+    if not (0 <= elegida < n_cots):
+        elegida = -1
+    return {
+        "id": safe_str(raw.get("id", "")).strip() or f"pp_{idx_1b}",
+        "partida": nom_comp,
+        "nombre_limpio": nom_limp,
+        "num_cotizaciones": n_cots,
+        "cotizacion_elegida": elegida,
+        "cotizaciones": cots_norm,
+    }
+
+
+def obtener_estado_diseno_proyecto(proy_name: str) -> str:
+    """Obtiene el estado general del diseño del proyecto."""
+    if not proy_name:
+        return "⚪ Pendiente"
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if isinstance(df_p, pd.DataFrame) and not df_p.empty and "Nombre" in df_p.columns:
+        m = df_p[df_p["Nombre"] == proy_name]
+        if not m.empty:
+            raw_json = safe_str(m.iloc[0].get("Pagos_Semanales_JSON", "")).strip()
+            if raw_json:
+                try:
+                    d = json.loads(raw_json)
+                    if isinstance(d, dict) and safe_str(d.get("estado_diseno_general", "")).strip():
+                        return safe_str(d["estado_diseno_general"]).strip()
+                except Exception:
+                    pass
+    mem = safe_str(st.session_state.get(f"est_diseno_gen_{proy_name}", "")).strip()
+    if mem:
+        return mem
+    df_f = st.session_state.get("fases", pd.DataFrame())
+    if isinstance(df_f, pd.DataFrame) and not df_f.empty and "Proyecto" in df_f.columns:
+        f_p = df_f[df_f["Proyecto"] == proy_name]
+        if not f_p.empty:
+            aprob_cnt = int((f_p["Aprobado_Cliente"].apply(to_bool) | f_p["Estado"].astype(str).str.contains("Aprob", case=False, na=False)).sum())
+            if aprob_cnt >= len(f_p):
+                return "🟢 Aprobado"
+            if aprob_cnt > 0:
+                return "🟡 En proceso"
+    return "⚪ Pendiente"
+
+
+def guardar_estado_diseno_proyecto(proy_name: str, nuevo_estado: str) -> str:
+    """Guarda el estado general del diseño del proyecto."""
+    est = safe_str(nuevo_estado).strip() or "⚪ Pendiente"
+    st.session_state[f"est_diseno_gen_{proy_name}"] = est
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if isinstance(df_p, pd.DataFrame) and not df_p.empty and "Nombre" in df_p.columns:
+        if (df_p["Nombre"] == proy_name).any():
+            data_c = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+            data_c["estado_diseno_general"] = est
+            guardar_cuadro_pagos_semanales_proyecto(proy_name, data_c)
+    return est
+
+
+def obtener_planificacion_presupuesto_proyecto(proy_name: str) -> list[dict]:
+    """
+    Obtiene la lista de partidas planificadas para el presupuesto del proyecto junto con sus cotizaciones
+    por contratista, monto y estado (Entregado / Pendiente), sincronizada con las partidas del proyecto.
+    """
+    if not proy_name:
+        return []
+    guardados = []
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if isinstance(df_p, pd.DataFrame) and not df_p.empty and "Nombre" in df_p.columns:
+        m = df_p[df_p["Nombre"] == proy_name]
+        if not m.empty:
+            raw_json = safe_str(m.iloc[0].get("Pagos_Semanales_JSON", "")).strip()
+            if raw_json:
+                try:
+                    d = json.loads(raw_json)
+                    if isinstance(d, dict) and isinstance(d.get("planificacion_presupuesto"), list):
+                        guardados = [x for x in d["planificacion_presupuesto"] if isinstance(x, dict)]
+                except Exception:
+                    pass
+    if not guardados:
+        mem = st.session_state.get(f"plan_ppto_{proy_name}")
+        if isinstance(mem, list):
+            guardados = [x for x in mem if isinstance(x, dict)]
+
+    df_parts = st.session_state.get("partidas", pd.DataFrame())
+    partidas_actuales = (
+        df_parts[df_parts["Proyecto"] == proy_name]["Nombre_Partida"].dropna().astype(str).tolist()
+        if isinstance(df_parts, pd.DataFrame) and not df_parts.empty and "Proyecto" in df_parts.columns
+        else []
+    )
+
+    if guardados:
+        return [_normalizar_item_planificacion_ppto(it, i + 1) for i, it in enumerate(guardados)]
+
+    return [
+        _normalizar_item_planificacion_ppto({"partida": f"0{i}. Partida {i}", "num_cotizaciones": 2}, i)
+        for i in range(1, 4)
+    ]
+
+
+def guardar_planificacion_presupuesto_proyecto(
+    proy_name: str,
+    items: list[dict],
+    sincronizar_partidas_ppto: bool = False,
+) -> list[dict]:
+    """Guarda el borrador de planificación de presupuesto (partidas y cotizaciones) de forma independiente al Presupuesto."""
+    norm_list = [
+        _normalizar_item_planificacion_ppto(it, i + 1)
+        for i, it in enumerate(items or [])
+        if isinstance(it, dict)
+    ]
+    if not norm_list:
+        norm_list = [_normalizar_item_planificacion_ppto({"partida": "01. Partida 1", "num_cotizaciones": 2}, 1)]
+
+    st.session_state[f"plan_ppto_{proy_name}"] = list(norm_list)
+
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if isinstance(df_p, pd.DataFrame) and not df_p.empty and "Nombre" in df_p.columns:
+        if (df_p["Nombre"] == proy_name).any():
+            data_c = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+            data_c["planificacion_presupuesto"] = list(norm_list)
+            guardar_cuadro_pagos_semanales_proyecto(proy_name, data_c)
+    return norm_list
+
+
+def resumen_planificacion_presupuesto(items: list[dict]) -> dict:
+    """Calcula métricas comparativas de las cotizaciones por partida (entregadas, pendientes y monto óptimo estimado)."""
+    tot_partidas = len(items or [])
+    tot_cots = 0
+    entregadas = 0
+    pendientes = 0
+    partidas_con_entrega = 0
+    monto_estimado = 0.0
+
+    for it in (items or []):
+        cots = it.get("cotizaciones", []) if isinstance(it, dict) else []
+        elegida = int(it.get("cotizacion_elegida", -1)) if isinstance(it, dict) else -1
+        tiene_ent = False
+        montos_entregados = []
+        montos_todos = []
+        for idx_c, c in enumerate(cots):
+            tot_cots += 1
+            m_c = round(safe_float(c.get("monto", 0.0), 0.0), 2)
+            is_ent = bool(c.get("entregado", False))
+            if is_ent:
+                entregadas += 1
+                tiene_ent = True
+                if m_c > 0:
+                    montos_entregados.append((idx_c, m_c, safe_str(c.get("contratista", ""))))
+            else:
+                pendientes += 1
+            if m_c > 0:
+                montos_todos.append((idx_c, m_c, safe_str(c.get("contratista", ""))))
+
+        if tiene_ent:
+            partidas_con_entrega += 1
+
+        if 0 <= elegida < len(cots) and safe_float(cots[elegida].get("monto", 0.0), 0.0) > 0:
+            monto_estimado += safe_float(cots[elegida].get("monto", 0.0), 0.0)
+        elif montos_entregados:
+            monto_estimado += min(x[1] for x in montos_entregados)
+        elif montos_todos:
+            monto_estimado += min(x[1] for x in montos_todos)
+
+    return {
+        "total_partidas": tot_partidas,
+        "total_cotizaciones": tot_cots,
+        "cotizaciones_entregadas": entregadas,
+        "cotizaciones_pendientes": pendientes,
+        "partidas_con_entrega": partidas_con_entrega,
+        "partidas_sin_entrega": max(0, tot_partidas - partidas_con_entrega),
+        "monto_estimado_optimo": round(monto_estimado, 2),
+    }
+
+
+def aplicar_cotizacion_planificada_a_presupuesto(
+    proy_name: str,
+    idx_partida_0b: int,
+    idx_cotizacion_0b: int,
+) -> bool:
+    """
+    Marca la cotización `idx_cotizacion_0b` como la elegida para la partida `idx_partida_0b`
+    en el borrador de planificación (sin alterar las partidas de 03. PRESUPUESTO).
+    """
+    items = obtener_planificacion_presupuesto_proyecto(proy_name)
+    if not (0 <= idx_partida_0b < len(items)):
+        return False
+    it = items[idx_partida_0b]
+    cots = it.get("cotizaciones", [])
+    if not (0 <= idx_cotizacion_0b < len(cots)):
+        return False
+    it["cotizacion_elegida"] = int(idx_cotizacion_0b)
+    guardar_planificacion_presupuesto_proyecto(proy_name, items, sincronizar_partidas_ppto=False)
+    return True
+
+
 def guardar_cuadro_pagos_semanales_proyecto(proy_name: str, data_cuadro: dict):
+    if isinstance(data_cuadro, dict) and "notas_presupuesto" not in data_cuadro:
+        notas_exist = obtener_notas_presupuesto_proyecto(proy_name)
+        if notas_exist:
+            data_cuadro = {**data_cuadro, "notas_presupuesto": notas_exist}
+    if isinstance(data_cuadro, dict):
+        df_p_prev = st.session_state.get("proyectos", pd.DataFrame())
+        if isinstance(df_p_prev, pd.DataFrame) and not df_p_prev.empty and "Nombre" in df_p_prev.columns:
+            m_prev = df_p_prev[df_p_prev["Nombre"] == proy_name]
+            if not m_prev.empty:
+                raw_prev = safe_str(m_prev.iloc[0].get("Pagos_Semanales_JSON", "")).strip()
+                if raw_prev:
+                    try:
+                        d_prev = json.loads(raw_prev)
+                        if isinstance(d_prev, dict):
+                            for k_pres in ("planificacion_presupuesto", "estado_diseno_general", "notas_presupuesto"):
+                                if k_pres not in data_cuadro and k_pres in d_prev:
+                                    data_cuadro = {**data_cuadro, k_pres: d_prev[k_pres]}
+                    except Exception:
+                        pass
     """Guarda el estado del Cuadro de Pagos Semanales en `st.session_state.proyectos`."""
     if "proyectos" not in st.session_state or st.session_state.proyectos.empty:
         return
