@@ -1274,9 +1274,23 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 n_p_det = len(parsed_imp["partidas"])
                 n_t_det = sum(len(p.get("tareas", [])) for p in parsed_imp["partidas"])
                 st.markdown("---")
-                st.markdown("###### ⚙️ Ajustar Parámetros de Gastos Generales y Utilidades")
-                c_imp_g1, c_imp_g2, c_imp_g3, c_imp_g4 = st.columns([1.3, 1.3, 1.1, 1.0])
-                with c_imp_g1:
+                es_modo_reemplazar = (st.session_state.get(f"rad_modo_imp_ppto_{proy_name}", "reemplazar") == "reemplazar")
+                if es_modo_reemplazar:
+                    st.markdown("###### ⚙️ Ajustar Parámetros de Gastos Generales y Utilidades")
+                c_imp_g1, c_imp_g2, c_imp_g3, c_imp_g4 = (st.columns([1.3, 1.3, 1.1, 1.0]) if es_modo_reemplazar else (None, None, None, None))
+                if not es_modo_reemplazar:
+                    m_gg_imp_calc = 0.0
+                    pct_gg_imp_calc = float(params.get("gg_pct", 2.0))
+                    modo_gg_imp_tab = str(params.get("modo_gg", "pct"))
+                    monto_fijo_gg_tab = float(params.get("monto_fijo_gg", 0.0))
+                    m_util_imp_calc = 0.0
+                    pct_util_imp_calc = float(params.get("utilidades_pct", 15.0))
+                    modo_util_imp_tab = str(params.get("modo_util", "pct"))
+                    monto_fijo_util_tab = float(params.get("monto_fijo_util", 0.0))
+                    in_tc_tab = float(params.get("tc", 3.42))
+                    in_igv_tab = bool(params.get("incluir_igv", False))
+                if es_modo_reemplazar:
+                  with c_imp_g1:
                     modo_gg_imp_tab = st.radio(
                         "Gastos Generales:",
                         options=["pct", "monto"],
@@ -1294,7 +1308,8 @@ def _render_tab_presupuesto(proy_name, proy_data):
                         m_gg_imp_calc = redondear_arriba_10(in_gg_monto)
                         pct_gg_imp_calc = round((m_gg_imp_calc / parsed_imp["subtotal_casco"] * 100.0) if parsed_imp["subtotal_casco"] > 0 else 0.0, 2)
                         monto_fijo_gg_tab = m_gg_imp_calc
-                with c_imp_g2:
+                if es_modo_reemplazar:
+                  with c_imp_g2:
                     modo_util_imp_tab = st.radio(
                         "Gestión y Supervisión:",
                         options=["pct", "monto"],
@@ -1312,9 +1327,11 @@ def _render_tab_presupuesto(proy_name, proy_data):
                         m_util_imp_calc = redondear_arriba_100(in_util_monto)
                         pct_util_imp_calc = round((m_util_imp_calc / parsed_imp["subtotal_casco"] * 100.0) if parsed_imp["subtotal_casco"] > 0 else 0.0, 2)
                         monto_fijo_util_tab = m_util_imp_calc
-                with c_imp_g3:
+                if es_modo_reemplazar:
+                  with c_imp_g3:
                     in_tc_tab = st.number_input("TC", value=float(parsed_imp.get("tc", params["tc"])), min_value=1.0, max_value=10.0, step=0.01, format="%.2f", key=f"in_tc_tab_{proy_name}")
-                with c_imp_g4:
+                if es_modo_reemplazar:
+                  with c_imp_g4:
                     st.markdown("<div style='padding-top: 26px;'></div>", unsafe_allow_html=True)
                     in_igv_tab = st.checkbox("IGV (18%)", value=bool(parsed_imp.get("igv_pct", 0.0) > 0 or parsed_imp.get("incluir_igv", False)), key=f"in_igv_tab_{proy_name}")
 
@@ -1339,10 +1356,10 @@ def _render_tab_presupuesto(proy_name, proy_data):
 
                 st.markdown(
                     f"**✅ Presupuesto detectado:** `{n_p_det}` Partida(s) · `{n_t_det}` Tarea(s) · "
-                    f"Sub Total Casco: `{format_currency(parsed_imp['subtotal_casco'])}` · "
-                    f"Gastos Generales: `{format_currency(parsed_imp['gg_monto'])}` ({parsed_imp['gg_pct']:g}%) · "
-                    f"Gestión/Utilidades: `{format_currency(parsed_imp['utilidades_monto'])}` ({parsed_imp['utilidades_pct']:g}%) · "
-                    f"**TOTAL: `{format_currency(parsed_imp['presupuesto_total'])}`**"
+                    f"Sub Total Casco: `{format_currency(parsed_imp['subtotal_casco'])}`" +
+                    (f" · Gastos Generales: `{format_currency(parsed_imp['gg_monto'])}` ({parsed_imp['gg_pct']:g}%) · " if es_modo_reemplazar else "") +
+                    (f"Gestión/Utilidades: `{format_currency(parsed_imp['utilidades_monto'])}` ({parsed_imp['utilidades_pct']:g}%) · " if es_modo_reemplazar else "") +
+                    (f"**TOTAL: `{format_currency(parsed_imp['presupuesto_total'])}`**" if es_modo_reemplazar else "")
                 )
                 modo_aplicar = st.radio(
                     "Modo de carga:",
@@ -1356,7 +1373,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                         proy_name=proy_name,
                         parsed_data=parsed_imp,
                         modo=modo_aplicar,
-                        actualizar_ficha=True,
+                        actualizar_ficha=(modo_aplicar == "reemplazar"),
                         incluir_partidas_vacias=True,
                     )
                     st.session_state[f"show_imp_ppto_{proy_name}"] = False
@@ -1605,7 +1622,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
             sel_ver_key = f"sel_ver_ppto_{proy_name}_{idx_p}"
 
             # Cabecera de la Partida: Nombre editable + N° de Tareas editable + Sub Total, Mix, Mover y Eliminar Partida
-            cp_nom, cp_cnt, cp_sub, cp_mix, cp_mv = st.columns([3.5, 1.6, 1.8, 1.1, 2.0])
+            cp_nom, cp_cnt, cp_sub, cp_mix, cp_mv = st.columns([3.1, 1.5, 1.6, 1.0, 2.8])
 
             key_pnom = f"ppto_pnom_{proy_name}_{idx_p}"
             key_ntasks = f"ppto_ntasks_{proy_name}_{idx_p}"
@@ -1671,7 +1688,25 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 )
             with cp_mv:
                 st.markdown("<div style='padding-top: 26px;'></div>", unsafe_allow_html=True)
-                c_u, c_d, c_del = st.columns([1, 1, 2.0])
+                c_ord, c_u, c_d, c_del = st.columns([1.2, 0.9, 0.9, 1.8])
+                with c_ord:
+                    key_ord_p = f"sel_ord_ppto_{proy_name}_{idx_p}"
+                    st.session_state[key_ord_p] = int(idx_p)
+                    def _make_on_ord_p(p_curr, k_ord):
+                        def _cb_ord():
+                            nueva_pos = int(st.session_state.get(k_ord, p_curr))
+                            if nueva_pos != p_curr:
+                                mover_partida_presupuesto(proy_name, p_curr, nueva_pos)
+                        return _cb_ord
+                    st.selectbox(
+                        "Orden",
+                        options=list(range(1, len(parts_proy) + 1)),
+                        format_func=lambda x: f"N° {x}",
+                        key=key_ord_p,
+                        on_change=_make_on_ord_p(idx_p, key_ord_p),
+                        label_visibility="collapsed",
+                        help="Seleccionar el número de orden de esta partida",
+                    )
                 with c_u:
                     if st.button("⬆", key=f"btn_mv_up_p_{proy_name}_{idx_p}", disabled=(idx_p == 1), help="Subir Partida completa", use_container_width=True):
                         mover_partida_presupuesto(proy_name, idx_p, "subir")
@@ -1764,7 +1799,8 @@ def _render_tab_presupuesto(proy_name, proy_data):
                         pass
             selected_indices = [i for i, checked in enumerate(eff_sel) if checked]
 
-            if rows_ed:
+            if rows_ed and len(selected_indices) > 0:
+              with st.container(border=True):
                 n_sel_t = len(selected_indices)
                 sel_set_t = set(selected_indices)
                 can_move_up_t = (
@@ -1778,7 +1814,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     and any((i + 1) < len(rows_ed) and (i + 1) not in sel_set_t for i in selected_indices)
                 )
 
-                col_act_info, col_act_u, col_act_d, col_act_del = st.columns([5.2, 1.6, 1.6, 1.6])
+                col_act_info, col_act_u, col_act_d, col_act_del, col_act_cls = st.columns([4.4, 1.5, 1.5, 1.6, 1.0])
                 with col_act_info:
                     lbl_sel = (
                         f"☑ {n_sel_t} tarea(s) seleccionada(s)"
@@ -1787,9 +1823,16 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     )
                     color_sel = "#C85A32" if n_sel_t > 0 else "#6E665E"
                     st.markdown(
-                        f"<div style='font-size:12px; font-weight:700; color:{color_sel}; padding-top:6px;'>{lbl_sel}</div>",
+                        f"<div class='cota-floating-task-window' style='font-size:12.5px; font-weight:700; color:{color_sel}; padding-top:6px;'>🛠️ Acciones de Tarea · {lbl_sel}</div>",
                         unsafe_allow_html=True,
                     )
+                with col_act_cls:
+                    if st.button("✖", key=f"btn_cls_t_{proy_name}_{idx_p}", use_container_width=True, help="Deseleccionar y cerrar ventana flotante"):
+                        st.session_state[sel_saved_key] = []
+                        if base_ppto_key in st.session_state:
+                            del st.session_state[base_ppto_key]
+                        st.session_state[c_ppto_key] = c_ppto_val + 1
+                        st.rerun()
                 with col_act_u:
                     if st.button(
                         "⬆ Subir",
@@ -1883,8 +1926,8 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     ),
                     "Moneda": st.column_config.SelectboxColumn("Moneda", options=["Soles", "Dólares"], width="small", required=True),
                     "Unidad": st.column_config.SelectboxColumn("Unidad", options=unidades_cat, width="small", required=True),
-                    "Metrado": st.column_config.NumberColumn("Metrado", min_value=0.01, step=1.0, format="%.2f", width="small", required=True),
-                    "Valor_Unitario": st.column_config.NumberColumn("Valor Unitario", min_value=0.0, step=10.0, format="%.2f", width="medium", required=True),
+                    "Metrado": st.column_config.NumberColumn("Metrado", min_value=0.01, step=0.01, format="%.2f", width="small", required=True),
+                    "Valor_Unitario": st.column_config.NumberColumn("Valor Unitario", min_value=0.0, step=0.01, format="%.2f", width="medium", required=True),
                     "Valor_Parcial": st.column_config.NumberColumn("Valor Parcial (S/.)", format="S/ %.2f", width="medium"),
                 },
                 on_change=aplicar_edicion_tabla_presupuesto_partida,
@@ -2444,7 +2487,33 @@ def _render_tab_obra(proy_name, proy_data):
         monto_pagado = float(pagados_por_partida_map.get(p_nom, 0.0))
         saldo = monto_pactado - monto_pagado
 
-        col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns([1.5, 1.8, 1.8, 1.5, 5.4])
+        col_ord_up, col_ord_dn, col_ord_sel, col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns([0.55, 0.55, 1.1, 1.4, 1.5, 1.6, 1.3, 4.0])
+        with col_ord_up:
+            if st.button("⬆", key=f"btn_obra_up_p_{proy_name}_{idx_p_1b}", disabled=(idx_p_1b == 1), help="Subir Partida", use_container_width=True):
+                mover_partida_presupuesto(proy_name, idx_p_1b, "subir")
+                st.rerun()
+        with col_ord_dn:
+            if st.button("⬇", key=f"btn_obra_dn_p_{proy_name}_{idx_p_1b}", disabled=(idx_p_1b == len(parts_proy)), help="Bajar Partida", use_container_width=True):
+                mover_partida_presupuesto(proy_name, idx_p_1b, "bajar")
+                st.rerun()
+        with col_ord_sel:
+            key_ord_obra = f"sel_ord_obra_{proy_name}_{idx_p_1b}"
+            st.session_state[key_ord_obra] = int(idx_p_1b)
+            def _make_on_ord_obra(p_curr_o, k_ord_o):
+                def _cb_ord_o():
+                    nueva_pos_o = int(st.session_state.get(k_ord_o, p_curr_o))
+                    if nueva_pos_o != p_curr_o:
+                        mover_partida_presupuesto(proy_name, p_curr_o, nueva_pos_o)
+                return _cb_ord_o
+            st.selectbox(
+                "Orden Partida",
+                options=list(range(1, len(parts_proy) + 1)),
+                format_func=lambda x: f"N° {x}",
+                key=key_ord_obra,
+                on_change=_make_on_ord_obra(idx_p_1b, key_ord_obra),
+                label_visibility="collapsed",
+                help="Seleccionar el número de orden de esta partida",
+            )
 
         with col_b1:
             with st.popover("✏️ RENOMBRAR"):

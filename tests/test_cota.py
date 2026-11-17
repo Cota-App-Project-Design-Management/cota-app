@@ -2543,6 +2543,77 @@ def test_multipagos_misma_semana_y_resumen_completo():
     assert '.replace("\\n", "&#10;")' in vp_src
     assert "qp_reset_" in vp_src
     assert 'st.button("➕ Agregar Tarea"' in vp_src
+    assert 'es_modo_reemplazar = (st.session_state.get(f"rad_modo_imp_ppto_{proy_name}", "reemplazar") == "reemplazar")' in vp_src
+    assert 'actualizar_ficha=(modo_aplicar == "reemplazar")' in vp_src
+    assert "if rows_ed and len(selected_indices) > 0:" in vp_src
+    assert "cota-floating-task-window" in vp_src
+    assert '"Metrado": st.column_config.NumberColumn("Metrado", min_value=0.01, step=0.01' in vp_src
+    assert '"Valor_Unitario": st.column_config.NumberColumn("Valor Unitario", min_value=0.0, step=0.01' in vp_src
+
+    # Verificar que aplicar_cotizacion_a_proyecto en modo="agregar" conserva GG, Util, TC e IGV del proyecto
+    from cota.cotizacion import aplicar_cotizacion_a_proyecto, parsear_presupuesto_flexible
+    proy_add = "Proy Agregar Partidas"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": proy_add,
+        "Cliente": "Cliente Add",
+        "Presupuesto": 0.0,
+        "Utilidades": 0.0,
+        "GG_Presupuesto": 0.0,
+        "TC_Presupuesto": 3.80,
+        "GG_Pct": 5.0,
+        "Utilidades_Pct": 20.0,
+        "Modo_GG": "pct",
+        "Monto_Fijo_GG": 0.0,
+        "Modo_Utilidades": "pct",
+        "Monto_Fijo_Utilidades": 0.0,
+        "Incluir_IGV": True,
+        "Pagos_Semanales_JSON": "",
+    }])
+    st.session_state["partidas"] = pd.DataFrame([{"Proyecto": proy_add, "Nombre_Partida": "01. DEMOLICIÓN"}])
+    st.session_state["p_info"] = pd.DataFrame([{
+        "Proyecto": proy_add, "Nombre_Partida": "01. DEMOLICIÓN", "Monto_Pactado": 1000.0,
+        "Nivel_Actual": "", "Contratista": "", "Inicio": "", "Fin": "", "Estado": "🟡 Planificado",
+        "Etapa": "Construcción", "Nivel_Inicio": "", "Nivel_Fin": "",
+    }])
+    st.session_state["tasks"] = pd.DataFrame([{
+        "Proyecto": proy_add, "Partida": "01. DEMOLICIÓN", "Orden": 1, "Codigo_Item": "1.01",
+        "Tarea": "1.01 Desmontaje inicial", "Especialidad": "Ninguna", "Contratista": "",
+        "Estado": "🟡 Planificado", "Supervisado": "No", "Inicio": "2026-11-16", "Fin": "",
+        "Causa_Cumplimiento": "", "Culpa_Contratista": False, "Permitir_Cruce": False,
+        "Dependencia": "", "Notas": "", "Moneda": "Soles", "Unidad": "glb",
+        "Metrado": 1.0, "Valor_Unitario": 1000.0, "Presupuesto": 1000.0,
+    }])
+    tabla_extra = (
+        "| Item | Partida / Tarea | Unidad | Metraje | V. Unitario | Valor Parcial |\n"
+        "|---|---|---|---|---|---|\n"
+        "| 1 | PINTURA Y ACABADOS | | | | |\n"
+        "| 1.01 | Pintura látex muros | m2 | 50 | 20 | 1000 |\n"
+    )
+    parsed_extra = parsear_presupuesto_flexible(tabla_extra, tc_default=3.42)
+    parsed_extra["gg_pct"] = 2.0
+    parsed_extra["utilidades_pct"] = 15.0
+    parsed_extra["incluir_igv"] = False
+    aplicar_cotizacion_a_proyecto(proy_add, parsed_extra, modo="agregar", actualizar_ficha=False, incluir_partidas_vacias=True)
+    row_add = st.session_state["proyectos"][st.session_state["proyectos"]["Nombre"] == proy_add].iloc[0]
+    assert float(row_add["TC_Presupuesto"]) == 3.80
+    assert bool(row_add["Incluir_IGV"]) is True
+    partidas_add = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == proy_add]["Nombre_Partida"].tolist()
+    assert len(partidas_add) == 2
+    assert "PINTURA Y ACABADOS" in partidas_add[1]
+    from cota.cotizacion import mover_partida_presupuesto, mover_partida_a_posicion_presupuesto, agregar_partida_presupuesto, renombrar_partida_presupuesto
+    agregar_partida_presupuesto(proy_add, n_tareas_default=1)
+    renombrar_partida_presupuesto(proy_add, 3, "03. Partida 3", "CARPINTERÍA")
+    # Mover Partida 3 directamente a la posición 1 (seleccionando número de orden 1)
+    assert mover_partida_a_posicion_presupuesto(proy_add, 3, 1) is True
+    partidas_reord = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == proy_add]["Nombre_Partida"].tolist()
+    assert "CARPINTERÍA" in partidas_reord[0]
+    assert "DEMOLICIÓN" in partidas_reord[1]
+    assert "PINTURA Y ACABADOS" in partidas_reord[2]
+    # Subir / bajar partida
+    assert mover_partida_presupuesto(proy_add, 2, "bajar") is True
+    partidas_reord2 = st.session_state["partidas"][st.session_state["partidas"]["Proyecto"] == proy_add]["Nombre_Partida"].tolist()
+    assert "PINTURA Y ACABADOS" in partidas_reord2[1]
+    assert "DEMOLICIÓN" in partidas_reord2[2]
 
     # Deduplicación por ts y por id de pago
     assert aplicar_edicion_inline_cuadro_pagos(proy, json.dumps({

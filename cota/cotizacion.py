@@ -1141,13 +1141,23 @@ def mover_partida_presupuesto(
     parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
     n = len(parts_proy)
     curr_pos = int(idx_partida_1based) - 1
-    target_pos = curr_pos - 1 if direccion == "subir" else curr_pos + 1
+    if isinstance(direccion, int) or (isinstance(direccion, str) and direccion.strip().isdigit()):
+        target_pos = int(direccion) - 1
+    elif direccion == "subir":
+        target_pos = curr_pos - 1
+    elif direccion == "bajar":
+        target_pos = curr_pos + 1
+    else:
+        return False
+    if target_pos == curr_pos:
+        return False
 
     if not (0 <= curr_pos < n and 0 <= target_pos < n):
         return False
 
     p_actuales = parts_proy["Nombre_Partida"].tolist()
-    p_actuales[curr_pos], p_actuales[target_pos] = p_actuales[target_pos], p_actuales[curr_pos]
+    p_movida = p_actuales.pop(curr_pos)
+    p_actuales.insert(target_pos, p_movida)
 
     map_renombre = {}
     for i_new, old_p_name in enumerate(p_actuales, start=1):
@@ -1194,6 +1204,15 @@ def mover_partida_presupuesto(
     _limpiar_estado_widgets_ppto(proy_name)
     recalcular_totales_presupuesto_proyecto(proy_name)
     return True
+
+
+def mover_partida_a_posicion_presupuesto(
+    proy_name: str,
+    idx_partida_1based: int,
+    nueva_pos_1based: int,
+) -> bool:
+    """Mueve una Partida directamente al número de orden `nueva_pos_1based` (1..N) y renumera todas las partidas y tareas."""
+    return mover_partida_presupuesto(proy_name, idx_partida_1based, int(nueva_pos_1based))
 
 
 def aplicar_edicion_tabla_presupuesto_partida(
@@ -3298,7 +3317,7 @@ def aplicar_cotizacion_a_proyecto(
             st.session_state.p_info[col] = pd.Series([None] * len(st.session_state.p_info), index=st.session_state.p_info.index, dtype=object)
 
     mask_proy = st.session_state.proyectos["Nombre"] == proy_name
-    if actualizar_ficha and mask_proy.any():
+    if actualizar_ficha and modo == "reemplazar" and mask_proy.any():
         idx_p = st.session_state.proyectos[mask_proy].index[0]
         if parsed_data.get("presupuesto_total", 0.0) > 0:
             st.session_state.proyectos.at[idx_p, "Presupuesto"] = float(parsed_data["presupuesto_total"])
@@ -3350,6 +3369,24 @@ def aplicar_cotizacion_a_proyecto(
             else p["nombre_completo"]
         )
         monto_pactado = float(p.get("monto_pactado", 0.0))
+        if modo != "reemplazar" and not (nombres_partidas_override and p_code in nombres_partidas_override):
+            partidas_exist_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name]["Nombre_Partida"].tolist()
+            limp_new = limpiar_nombre_partida(p.get("nombre", "") or p_nom_final).strip().lower()
+            match_exist = next(
+                (
+                    (idx_e, nom_e)
+                    for idx_e, nom_e in enumerate(partidas_exist_proy, start=1)
+                    if limpiar_nombre_partida(nom_e, idx_e).strip().lower() == limp_new
+                ),
+                None,
+            )
+            if match_exist is not None:
+                p_code = str(match_exist[0])
+                p_nom_final = match_exist[1]
+            else:
+                next_p_idx = len(partidas_exist_proy) + len(nuevas_partidas_rows) + 1
+                p_code = str(next_p_idx)
+                p_nom_final = formatear_nombre_partida(next_p_idx, limpiar_nombre_partida(p.get("nombre", "") or p_nom_final))
 
         mask_pi_exist = (st.session_state.p_info["Proyecto"] == proy_name) & (st.session_state.p_info["Nombre_Partida"] == p_nom_final)
         if mask_pi_exist.any():
@@ -3379,7 +3416,14 @@ def aplicar_cotizacion_a_proyecto(
         partidas_importadas += 1
 
         for idx_t, t in enumerate(p.get("tareas", []), start=1):
-            t_cod = safe_str(t.get("codigo", "")) or f"{p_code}.{idx_t:02d}"
+            if modo != "reemplazar":
+                existing_t_cnt = int(((st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == p_nom_final)).sum())
+                ord_t = existing_t_cnt + idx_t
+                t_cod = f"{p_code}.{ord_t:02d}"
+                idx_t = ord_t
+            else:
+                ord_t = idx_t
+                t_cod = safe_str(t.get("codigo", "")) or f"{p_code}.{idx_t:02d}"
             t_desc = safe_str(t.get("descripcion", ""))
             if t_cod and not t_desc.startswith(t_cod):
                 nombre_tarea = f"{t_cod} {t_desc}".strip()
@@ -3443,6 +3487,7 @@ def aplicar_cotizacion_a_proyecto(
 
     return {
         "partidas_importadas": partidas_importadas,
+        **({"_recalc": recalcular_totales_presupuesto_proyecto(proy_name)} if modo != "reemplazar" else {}),
         "tareas_importadas": tareas_importadas,
         "presupuesto_total": float(parsed_data.get("presupuesto_total", 0.0)),
         "utilidades_monto": float(parsed_data.get("utilidades_monto", 0.0)),

@@ -731,6 +731,22 @@ def get_app_css(brand_color: str = None) -> str:
             white-space: nowrap !important;
         }
 
+        /* 14. VENTANA FLOTANTE DE ACCIONES DE TAREAS SELECCIONADAS */
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.cota-floating-task-window) {
+            position: fixed !important;
+            bottom: 28px !important;
+            left: 50% !important;
+            transform: translateX(-50%) !important;
+            z-index: 9990 !important;
+            width: min(720px, 92vw) !important;
+            background: rgba(255, 255, 255, 0.98) !important;
+            border: 2px solid var(--clay-primary) !important;
+            border-radius: 14px !important;
+            box-shadow: 0 18px 42px rgba(38, 35, 32, 0.24), 0 4px 12px rgba(200, 90, 50, 0.16) !important;
+            padding: 12px 18px !important;
+            backdrop-filter: blur(8px) !important;
+        }
+
         .st-key-sb_socio_activo_sidebar div[data-baseweb="select"] input {
             min-height: 0 !important;
             height: 24px !important;
