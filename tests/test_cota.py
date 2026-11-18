@@ -2303,6 +2303,10 @@ def test_selector_socio_activo_sidebar_chip():
         vm_code = f.read()
     assert 'st.selectbox("Líder de Proyecto", lista_socios, index=' in vm_code
     assert 'st.selectbox("Responsable", lista_socios, index=' in vm_code
+    assert "Estado de Proyecto" in vm_code
+    assert "ESTADO DE PROYECTO" in vm_code
+    assert "GESTIÓN DE DISEÑO" not in vm_code
+    assert "Etapa Diseño" not in vm_code
 
 
 def test_cruces_contratistas_y_permitir_cruce():
@@ -2365,21 +2369,21 @@ def test_cruces_contratistas_y_permitir_cruce():
         if col not in st.session_state["tasks"].columns:
             st.session_state["tasks"][col] = ""
 
-    # 1. Detectar cruce entre proyectos (prioritario) + cruce dentro del mismo proyecto en Proyecto Alpha
+    # 1. Detectar cruce únicamente entre proyectos distintos (ignora cruces dentro del mismo proyecto)
     info_alpha = detectar_cruces_contratistas(
         st.session_state["tasks"], proy_name="Proyecto Alpha", df_proyectos=st.session_state["proyectos"]
     )
-    assert len(info_alpha["activos"]) == 2
+    assert len(info_alpha["activos"]) == 1
     assert len(info_alpha["permitidos"]) == 0
     c_cross = info_alpha["activos"][0]
-    c_same = info_alpha["activos"][1]
+    assert not any(c["mismo_proyecto"] for c in info_alpha["activos"])
     assert c_cross["mismo_proyecto"] is False
     assert c_cross["conflicto_proyecto"] == "Proyecto Beta"
     assert c_cross["cruce_inicio"] == datetime.date(2026, 11, 23)
     assert c_cross["cruce_fin"] == datetime.date(2026, 11, 23)
     assert c_cross["dias_cruce"] == 1
-    assert c_same["mismo_proyecto"] is True
-    assert c_same["dias_cruce"] == 1
+
+
 
     # Proyecto Beta también ve el cruce contra Proyecto Alpha (ignorando tarea completada y proyecto archivado)
     info_beta = detectar_cruces_contratistas(
@@ -2395,7 +2399,7 @@ def test_cruces_contratistas_y_permitir_cruce():
     info_after = detectar_cruces_contratistas(
         st.session_state["tasks"], proy_name="Proyecto Alpha", df_proyectos=st.session_state["proyectos"]
     )
-    assert len(info_after["activos"]) == 1
+    assert len(info_after["activos"]) == 0
     assert len(info_after["permitidos"]) == 1
     assert info_after["permitidos"][0]["conflicto_proyecto"] == "Proyecto Beta"
 
@@ -2404,7 +2408,7 @@ def test_cruces_contratistas_y_permitir_cruce():
     info_rev = detectar_cruces_contratistas(
         st.session_state["tasks"], proy_name="Proyecto Alpha", df_proyectos=st.session_state["proyectos"]
     )
-    assert len(info_rev["activos"]) == 2
+    assert len(info_rev["activos"]) == 1
 
     # 4. Edición directa en tabla vía on_table_edit persiste Permitir_Cruce como booleano
     base_k = "base_df_tasks_Proyecto Beta_03. INSTALACIONES SANITARIAS"
@@ -2426,9 +2430,19 @@ def test_cruces_contratistas_y_permitir_cruce():
     with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f:
         vp_code = f.read()
     tab_obra_code = vp_code.split("def _render_tab_obra")[1].split("def _render_pagos_tooltip_controller")[0]
-    assert "render_alertas_cruce_contratistas(proy_name)" in tab_obra_code
+    assert "render_alertas_cruce_contratistas(proy_name)" not in tab_obra_code
+    with open("D:/cota-app/cota/ui/components.py", "r", encoding="utf-8") as f:
+        comp_src = f.read()
+    part_alert_src = comp_src.split("def render_alertas_cruce_partida")[1].split("def render_header")[0]
+    assert "st.warning(" not in part_alert_src
     assert "render_alertas_cruce_partida(proy_name, p_nom)" in tab_obra_code
     assert '"Permitir_Cruce": st.column_config.CheckboxColumn(' in tab_obra_code
+    assert "_render_obra_date_range_controller(" in tab_obra_code
+    assert "def _render_obra_date_range_controller(" in vp_code
+    assert "OBRA_DATE_BRIDGE_" in vp_code
+    assert "rng_cal_obra_" not in tab_obra_code
+    assert "btn_set_rng_" not in tab_obra_code
+    assert "sel_t_obra_fast_" not in tab_obra_code
 
 
 def test_python311_fstring_no_backslash_syntax():
@@ -2746,5 +2760,24 @@ def test_multipagos_misma_semana_y_resumen_completo():
     st.session_state["fases"] = pd.DataFrame([{"Proyecto": proy, "Fase": "01. Layout", "Estado": "🟡 En proceso"}])
     sanitizar_fases_estudio()
     assert "Orden" in st.session_state["fases"].columns
+
+    # Pendientes diarios sincronizados con Control Operativo + 01. RESUMEN sin Gestión del Diseño
+    from cota.db import COLS_TODO, agregar_pendiente_operativo, completar_pendiente_operativo, obtener_pendientes_operativos
+    st.session_state["todo_list"] = pd.DataFrame(columns=COLS_TODO)
+    agregar_pendiente_operativo(proy, "Compras / FF&E", "Confirmar spots de piso", "Alvaro")
+    agregar_pendiente_operativo("Otro Proyecto", "Pagos", "Otro pendiente", "Alvaro")
+    df_td_proy = obtener_pendientes_operativos(proy)
+    assert len(df_td_proy) == 1 and df_td_proy.iloc[0]["Tarea"] == "Confirmar spots de piso"
+    assert len(obtener_pendientes_operativos()) == 2
+    assert completar_pendiente_operativo(df_td_proy.index[0]) is True
+    assert obtener_pendientes_operativos(proy).empty
+    assert len(obtener_pendientes_operativos("Otro Proyecto")) == 1
+
+    tab_res_src = vp_src.split("def _render_tab_resumen")[1].split("def _contar_estados_diseno")[0]
+    assert "sel_estado_proy_resumen_" in tab_res_src
+    assert "GESTIÓN DEL DISEÑO" not in tab_res_src
+    assert "RESUMEN ECONÓMICO Y DE TAREAS" in tab_res_src
+    assert "PENDIENTES DIARIOS" in tab_res_src
+    assert "obtener_pendientes_operativos" in tab_res_src
 
 

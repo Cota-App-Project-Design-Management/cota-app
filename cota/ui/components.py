@@ -319,27 +319,27 @@ def render_alertas_cruce_partida(proy_name: str, part_name: str) -> list[dict]:
     )
     activos_p = [
         c for c in info.get("activos", [])
-        if c.get("partida") == part_name or (c.get("mismo_proyecto") and c.get("conflicto_partida") == part_name)
+        if c.get("partida") == part_name and not c.get("mismo_proyecto", False)
     ]
     if not activos_p:
         return []
 
     for i_ap, c in enumerate(activos_p):
-        es_otro = not c.get("mismo_proyecto", False)
+        c_proy_other = html_lib.escape(safe_str(c.get("conflicto_proyecto", "")))
         pref_dest = (
-            f"otro proyecto (**{c['conflicto_proyecto']}** — {c['conflicto_partida']})"
-            if es_otro
-            else f"este mismo proyecto ({c['conflicto_partida']})"
+            f"<b>{c_proy_other}</b> ({html_lib.escape(safe_str(c.get('conflicto_partida', '')))})"
+            if c_proy_other
+            else html_lib.escape(safe_str(c.get("conflicto_partida", "")))
         )
         rango_c = _format_rango_cruce_es(c.get("cruce_inicio"), c.get("cruce_fin"))
-        col_w, col_act = st.columns([8.1, 1.9])
+        col_w, col_act = st.columns([8.4, 1.6])
         with col_w:
-            st.warning(
-                f"⚠️ **Cruce de tareas ({c['contratista']})**: **{c['tarea']}** se cruza el **{rango_c}** "
-                f"con **{c['conflicto_tarea']}** en {pref_dest}."
+            st.markdown(
+                f"<div style='background:#FAF6F2; border:1px solid #EADFD5; border-left:3px solid #D98A2B; border-radius:6px; padding:6px 10px; font-size:12px; color:#4A453E; line-height:1.4;'>⚠️ <b>Cruce con otro proyecto ({html_lib.escape(safe_str(c.get('contratista', '')))})</b>: <b>{html_lib.escape(safe_str(c.get('tarea', '')))}</b> coincide el <b>{rango_c}</b> con <b>{html_lib.escape(safe_str(c.get('conflicto_tarea', '')))}</b> en {pref_dest}.</div>",
+                unsafe_allow_html=True,
             )
         with col_act:
-            st.markdown("<div style='padding-top: 6px;'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='padding-top: 1px;'></div>", unsafe_allow_html=True)
             if st.button(
                 "✓ Permitir cruce",
                 key=f"btn_perm_part_cruce_{proy_name}_{part_name}_{c['idx_task']}_{c['conflicto_idx']}_{i_ap}",

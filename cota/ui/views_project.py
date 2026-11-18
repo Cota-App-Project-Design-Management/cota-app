@@ -21,6 +21,7 @@ from cota.config import (
     PRIORIDADES_PUNCH,
     STATUS_COBROS,
     STATUS_FASES,
+    STATUS_PROYECTOS,
     STATUS_PUNCH,
     STATUS_TASKS,
     TIPOS_COBRO,
@@ -34,6 +35,9 @@ from cota.db import (
     COLS_FASES,
     COLS_PAGOS,
     COLS_PUNCH,
+    agregar_pendiente_operativo,
+    completar_pendiente_operativo,
+    obtener_pendientes_operativos,
     COLS_TASKS,
     _normalizar_estado_diseno,
     _normalizar_supervisado,
@@ -334,9 +338,33 @@ def _render_tab_resumen(proy_name, proy_data):
 
     col_d1, col_d2 = st.columns([1, 1.1])
     with col_d1:
-        st.markdown("#### FICHA TÉCNICA DEL PROYECTO")
+        c_ft_hdr, c_ft_est = st.columns([5.3, 4.7])
+        with c_ft_hdr:
+            st.markdown("#### FICHA TÉCNICA DEL PROYECTO")
+        with c_ft_est:
+            est_actual_res = safe_str(proy_data.get('Estado', STATUS_PROYECTOS[0])) or STATUS_PROYECTOS[0]
+            if est_actual_res not in STATUS_PROYECTOS:
+                est_actual_res = STATUS_PROYECTOS[0]
+            k_est_res = f"sel_estado_proy_resumen_{proy_name}"
+            if k_est_res not in st.session_state or st.session_state[k_est_res] != est_actual_res:
+                st.session_state[k_est_res] = est_actual_res
+
+            def _on_change_est_proy_res():
+                nuevo_est_r = st.session_state.get(k_est_res, STATUS_PROYECTOS[0])
+                m_ep_r = st.session_state.proyectos['Nombre'] == proy_name
+                if m_ep_r.any():
+                    st.session_state.proyectos.loc[m_ep_r, 'Estado'] = nuevo_est_r
+                    clear_base_dfs()
+
+            st.selectbox(
+                "📌 Estado del Proyecto",
+                options=STATUS_PROYECTOS,
+                key=k_est_res,
+                on_change=_on_change_est_proy_res,
+            )
         drive_link_val = safe_str(proy_data.get('Link_Drive', '')).strip()
         info_items = [
+            ("Estado del Proyecto", safe_str(proy_data.get('Estado', STATUS_PROYECTOS[0])) or STATUS_PROYECTOS[0]),
             ("Líder de Diseño", proy_data.get('Encargado', 'N/A')),
             ("Cliente", proy_data.get('Cliente', 'N/A')),
             ("Tipología", proy_data.get('Tipo_Proyecto', 'Diseño Interior')),
@@ -382,11 +410,28 @@ def _render_tab_resumen(proy_name, proy_data):
         render_chat_notas_proyecto(proy_name, socios_disp, key_prefix="res")
 
     with col_d2:
+        _render_panel_derecho_resumen(
+            proy_name=proy_name,
+            ppto_venta=ppto_venta,
+            total_casco_pactado=total_casco_pactado,
+            total_cobrado_cliente=total_cobrado_cliente,
+            total_pagado_maestros=total_pagado_maestros,
+            util_proy=util_proy,
+            util_ges_recibida=util_ges_recibida,
+            hon_diseno=hon_diseno,
+            gg_ppto=gg_ppto,
+            caja_gastada=caja_gastada,
+            caja_restante=caja_restante,
+            info_t=info_t,
+            pct_tareas=pct_tareas,
+            socios_disp=socios_disp,
+        )
+        return
         ch_f1, ch_f2 = st.columns([6.2, 3.8])
         with ch_f1:
-            st.markdown(f"#### 🎨 GESTIÓN DEL DISEÑO ({n_fases} ETAPAS)")
+            pass
         with ch_f2:
-            with st.popover("🎨 ETAPAS DE DISEÑO", use_container_width=True):
+            with st.popover("Etapas", use_container_width=True):
                 st.markdown("##### Activar / Desactivar Etapas de Diseño")
                 st.caption("Selecciona del banco las etapas de diseño (Moodboard, Planos, 3D, Renders) que aplican a este proyecto.")
                 with st.form(f"form_res_banco_fases_{proy_name}"):
@@ -437,7 +482,130 @@ def _render_tab_resumen(proy_name, proy_data):
                 unsafe_allow_html=True
             )
         else:
-            st.info("No hay etapas de diseño activas para este proyecto. Usa el botón '🎨 ETAPAS DE DISEÑO' para activar las que correspondan.")
+            pass
+
+
+def _render_panel_derecho_resumen(
+    proy_name: str,
+    ppto_venta: float,
+    total_casco_pactado: float,
+    total_cobrado_cliente: float,
+    total_pagado_maestros: float,
+    util_proy: float,
+    util_ges_recibida: float,
+    hon_diseno: float,
+    gg_ppto: float,
+    caja_gastada: float,
+    caja_restante: float,
+    info_t: dict,
+    pct_tareas: float,
+    socios_disp: list[str],
+):
+    """Columna derecha de 01. RESUMEN: Resumen Económico, Estado de Tareas y Pendientes Diarios sincronizados con Control Operativo."""
+    st.markdown("#### 💰 RESUMEN ECONÓMICO Y DE TAREAS")
+    saldo_cobrar = max(0.0, ppto_venta - total_cobrado_cliente)
+    pct_cobrado = min(100.0, max(0.0, (total_cobrado_cliente / ppto_venta * 100.0) if ppto_venta > 0 else 0.0))
+    saldo_contratistas = total_casco_pactado - total_pagado_maestros
+    col_caja_txt = "#4A7C59" if caja_restante >= 0 else "#C93B2B"
+    col_saldo_con = "#262320" if saldo_contratistas >= 0 else "#C93B2B"
+
+    df_t_proy = (
+        st.session_state.tasks[st.session_state.tasks["Proyecto"] == proy_name]
+        if "tasks" in st.session_state and isinstance(st.session_state.tasks, pd.DataFrame) and not st.session_state.tasks.empty
+        else pd.DataFrame()
+    )
+    t_tot = int(info_t.get("total", 0))
+    t_comp = int(info_t.get("completadas", 0))
+    t_proc = int(info_t.get("en_proceso", 0))
+    t_retr = 0
+    if not df_t_proy.empty and "Estado" in df_t_proy.columns:
+        t_retr = int(df_t_proy["Estado"].astype(str).str.contains(r"Retras|espera", case=False, na=False).sum())
+    t_plan = max(0, t_tot - t_comp - t_proc - t_retr)
+    retr_html = (
+        f"<span style='color:#C93B2B;'>⚠️ Retraso/Espera: <b>{t_retr}</b></span>"
+        if t_retr > 0
+        else ""
+    )
+
+    eco_html = (
+        "<div style='background:#FFFFFF; border:1px solid #DFD9CE; border-radius:10px; padding:12px 14px; margin-bottom:14px;'>"
+        "  <div style='display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:12.5px; margin-bottom:10px;'>"
+        "    <div style='background:#FAF8F5; border:1px solid #EFECE6; border-radius:8px; padding:8px 10px;'>"
+        "      <div style='font-size:10.5px; color:#6E665E; text-transform:uppercase; font-weight:700;'>Cobranza Cliente</div>"
+        f"      <div style='font-size:14px; font-weight:700; color:#4A7C59; font-family:monospace;'>{format_currency(total_cobrado_cliente)} <span style='font-size:11px; color:#6E665E; font-weight:500;'>({pct_cobrado:.0f}%)</span></div>"
+        f"      <div style='font-size:11px; color:#6E665E;'>Por cobrar: {format_currency(saldo_cobrar)}</div>"
+        "    </div>"
+        "    <div style='background:#FAF8F5; border:1px solid #EFECE6; border-radius:8px; padding:8px 10px;'>"
+        "      <div style='font-size:10.5px; color:#6E665E; text-transform:uppercase; font-weight:700;'>Pagos Contratistas</div>"
+        f"      <div style='font-size:14px; font-weight:700; color:#262320; font-family:monospace;'>{format_currency(total_pagado_maestros)}</div>"
+        f"      <div style='font-size:11px; color:{col_saldo_con};'>Saldo casco: {format_currency(saldo_contratistas)}</div>"
+        "    </div>"
+        "    <div style='background:#FAF8F5; border:1px solid #EFECE6; border-radius:8px; padding:8px 10px;'>"
+        "      <div style='font-size:10.5px; color:#6E665E; text-transform:uppercase; font-weight:700;'>Utilidades / Gestión</div>"
+        f"      <div style='font-size:14px; font-weight:700; color:#4A7C59; font-family:monospace;'>{format_currency(util_proy)}</div>"
+        f"      <div style='font-size:11px; color:#6E665E;'>Recibido: {format_currency(util_ges_recibida)} · Hon.: {format_currency(hon_diseno)}</div>"
+        "    </div>"
+        "    <div style='background:#FAF8F5; border:1px solid #EFECE6; border-radius:8px; padding:8px 10px;'>"
+        "      <div style='font-size:10.5px; color:#6E665E; text-transform:uppercase; font-weight:700;'>Caja Chica (GG)</div>"
+        f"      <div style='font-size:14px; font-weight:700; color:{col_caja_txt}; font-family:monospace;'>{format_currency(caja_restante)}</div>"
+        f"      <div style='font-size:11px; color:#6E665E;'>Gastado: {format_currency(caja_gastada)} de {format_currency(gg_ppto)}</div>"
+        "    </div>"
+        "  </div>"
+        "  <div style='border-top:1px solid #EFECE6; padding-top:9px;'>"
+        "    <div style='display:flex; justify-content:space-between; align-items:center; font-size:11.5px; margin-bottom:5px;'>"
+        f"      <span style='font-weight:700; color:#262320;'>🔨 Tareas del Proyecto ({t_comp}/{t_tot} completadas)</span>"
+        f"      <span style='font-family:monospace; font-weight:700; color:#C85A32;'>{pct_tareas:.0f}%</span>"
+        "    </div>"
+        "    <div style='background:#EFECE6; border-radius:4px; height:6px; overflow:hidden; margin-bottom:7px;'>"
+        f"      <div style='background:#C85A32; width:{max(0.0, min(100.0, pct_tareas)):.1f}%; height:100%;'></div>"
+        "    </div>"
+        "    <div style='display:flex; flex-wrap:wrap; gap:10px; font-size:11.5px; color:#4A453E;'>"
+        f"      <span>🔵 En proceso: <b>{t_proc}</b></span>"
+        f"      <span>🟡 Planificadas: <b>{t_plan}</b></span>"
+        f"      <span>✅ Listas: <b>{t_comp}</b></span>"
+        f"      {retr_html}"
+        "    </div>"
+        "  </div>"
+        "</div>"
+    )
+    st.markdown(eco_html, unsafe_allow_html=True)
+
+    c_td_hdr, c_td_btn = st.columns([6.2, 3.8])
+    with c_td_hdr:
+        st.markdown("#### 📋 PENDIENTES DIARIOS")
+        st.caption("Sincronizados con **Control Operativo** del estudio.")
+    with c_td_btn:
+        st.markdown("<div style='padding-top: 6px;'></div>", unsafe_allow_html=True)
+        with st.popover("➕ NUEVO PENDIENTE", use_container_width=True):
+            with st.form(f"form_res_new_todo_{proy_name}", clear_on_submit=True):
+                idx_soc_def = socios_disp.index(st.session_state.get("socio_activo")) if st.session_state.get("socio_activo") in socios_disp else 0
+                td_resp = st.selectbox("Responsable", socios_disp, index=idx_soc_def)
+                td_cat = st.selectbox("Clasificación", ["Compras / FF&E", "Pagos", "Proveedores", "Coordinación Cliente", "Supervisión Obra"])
+                td_txt = st.text_input("Detalle del Pendiente", placeholder="")
+                if st.form_submit_button("AGREGAR PENDIENTE", type="primary", use_container_width=True) and td_txt and td_txt.strip():
+                    agregar_pendiente_operativo(proy_name, td_cat, td_txt.strip(), td_resp)
+                    st.rerun()
+
+    df_todos_proy = obtener_pendientes_operativos(proy_name)
+    if df_todos_proy.empty:
+        st.info("No hay pendientes diarios activos para este proyecto. Los que agregues aquí o en Control Operativo aparecerán sincronizados.")
+    else:
+        for idx_td, r_td in df_todos_proy.iterrows():
+            c_td_card, c_td_ok = st.columns([8.0, 2.0])
+            cat_td = html_lib.escape(safe_str(r_td.get("Categoria", "Tarea")))
+            tar_td = html_lib.escape(safe_str(r_td.get("Tarea", "")))
+            resp_td = html_lib.escape(safe_str(r_td.get("Responsable", "")).upper())
+            c_td_card.markdown(
+                f"<div style='background:#FFFFFF; padding:8px 11px; border:1px solid #DFD9CE; border-left:3px solid #C85A32; border-radius:6px; margin-bottom:6px;'>"
+                f"<b style='color:#6E665E; font-size:10.5px; text-transform:uppercase;'>[{cat_td}]</b> "
+                f"<span style='color:#262320; font-size:12.5px; font-weight:500;'>{tar_td}</span><br>"
+                f"<small style='color:#C85A32; font-family:monospace; font-weight:600;'>RESP: {resp_td}</small>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            if c_td_ok.button("✓ LISTO", key=f"res_todo_done_{proy_name}_{idx_td}_{r_td.get('ID', idx_td)}", use_container_width=True):
+                completar_pendiente_operativo(idx_td)
+                st.rerun()
 
 
 def _contar_estados_diseno(fases_df: pd.DataFrame, df_ent_proy: pd.DataFrame) -> dict[str, dict[str, int]]:
@@ -1581,6 +1749,904 @@ def _render_table_dnd_controller(
     components.html(html_code, height=0, scrolling=False)
 
 
+def _render_obra_date_range_controller(
+    proy_name: str,
+    idx_p_1b: int,
+    p_nom: str,
+    df_tasks_p: pd.DataFrame,
+    proy_inicio,
+    counter_key: str,
+):
+    """
+    Controlador invisible que integra el selector de rango de fechas (Inicio -> Fin en un solo
+    calendario con resaltado continuo de días) directamente al hacer clic en Inicio o Fin dentro
+    de la tabla st.data_editor de 05. PARTIDAS Y TAREAS.
+    """
+    if df_tasks_p is None or df_tasks_p.empty:
+        return
+
+    safe_proy_id = re.sub(r"[^a-zA-Z0-9_]", "_", str(proy_name or ""))
+    bridge_label = f"OBRA_DATE_BRIDGE_{safe_proy_id}_{idx_p_1b}"
+    bridge_key = f"obra_date_bridge_in_{safe_proy_id}_{idx_p_1b}"
+    last_ts_key = f"_last_obra_date_ts_{safe_proy_id}_{idx_p_1b}"
+
+    def _parse_iso_o_fecha(val):
+        s_v = safe_str(val).strip()
+        if not s_v:
+            return None
+        try:
+            return datetime.date.fromisoformat(s_v[:10])
+        except Exception:
+            return parse_date(s_v)
+
+    def _on_obra_range_bridge():
+        raw_val = safe_str(st.session_state.get(bridge_key, "")).strip()
+        if not raw_val:
+            return
+        try:
+            msg = json.loads(raw_val)
+        except Exception:
+            st.session_state[bridge_key] = ""
+            return
+        ts_val = msg.get("ts")
+        if ts_val is not None and st.session_state.get(last_ts_key) == ts_val:
+            st.session_state[bridge_key] = ""
+            return
+        if ts_val is not None:
+            st.session_state[last_ts_key] = ts_val
+
+        action = safe_str(msg.get("action", "set_range")).strip()
+        try:
+            row_idx = int(msg.get("row_idx", -1))
+        except Exception:
+            row_idx = -1
+
+        mask_t_cb = (
+            (st.session_state.tasks["Proyecto"] == proy_name)
+            & (st.session_state.tasks["Partida"] == p_nom)
+        )
+        indices_p_global = st.session_state.tasks[mask_t_cb].index.tolist()
+        if 0 <= row_idx < len(indices_p_global):
+            g_idx = indices_p_global[row_idx]
+            if action == "clear_range":
+                st.session_state.tasks.at[g_idx, "Inicio"] = ""
+                st.session_state.tasks.at[g_idx, "Fin"] = ""
+            elif action == "set_range":
+                d_ini = _parse_iso_o_fecha(msg.get("inicio"))
+                d_fin = _parse_iso_o_fecha(msg.get("fin")) or d_ini
+                if d_ini is not None:
+                    if d_fin is None or d_fin < d_ini:
+                        d_fin = d_ini
+                    st.session_state.tasks.at[g_idx, "Inicio"] = d_ini.strftime("%d/%m/%Y")
+                    st.session_state.tasks.at[g_idx, "Fin"] = d_fin.strftime("%d/%m/%Y")
+            st.session_state[counter_key] = int(st.session_state.get(counter_key, 0)) + 1
+            clear_base_dfs()
+        st.session_state[bridge_key] = ""
+
+    st.text_input(
+        bridge_label,
+        key=bridge_key,
+        label_visibility="collapsed",
+        on_change=_on_obra_range_bridge,
+    )
+
+    default_anchor = parse_date(proy_inicio) or datetime.date.today()
+    today_iso = datetime.date.today().strftime("%Y-%m-%d")
+    tasks_meta = []
+    for i_t, (_, r_t) in enumerate(df_tasks_p.iterrows()):
+        d_i = parse_date(r_t.get("Inicio"))
+        d_f = parse_date(r_t.get("Fin"))
+        if d_i is not None and (d_f is None or d_f < d_i):
+            d_f = d_i
+        cod_item = safe_str(r_t.get("Codigo_Item", f"{idx_p_1b}.{i_t+1:02d}")).strip()
+        desc_t = extraer_descripcion_tarea(r_t.get("Tarea", ""), cod_item)
+        tasks_meta.append({
+            "rowIdx": i_t,
+            "code": cod_item,
+            "label": desc_t,
+            "inicio": d_i.strftime("%Y-%m-%d") if d_i else "",
+            "fin": d_f.strftime("%Y-%m-%d") if d_f else "",
+        })
+
+    import time
+    payload_str = json.dumps({
+        "safeId": safe_proy_id,
+        "partIdx": int(idx_p_1b),
+        "anchorId": f"anchor_obra_tasks_{safe_proy_id}_{idx_p_1b}",
+        "bridgeLabel": bridge_label,
+        "defaultIso": default_anchor.strftime("%Y-%m-%d"),
+        "todayIso": today_iso,
+        "tasks": tasks_meta,
+        "nonce": time.time(),
+    }).replace("</", "<" + chr(92) + "/")
+
+    html_template = """<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0; padding:0; overflow:hidden; background:transparent;">
+<script>
+(function() {
+    const payload = __PAYLOAD_JSON__;
+    const parentWin = window.parent;
+    const parentDoc = parentWin.document;
+    const ctrlKey = payload.safeId + '_' + payload.partIdx;
+    const bridgeLabel = payload.bridgeLabel;
+    const tasksMeta = payload.tasks || [];
+
+    parentWin.__cotaObraDateControllers = parentWin.__cotaObraDateControllers || {};
+    if (parentWin.__cotaObraDateControllers[ctrlKey] && typeof parentWin.__cotaObraDateControllers[ctrlKey].cleanup === 'function') {
+        try { parentWin.__cotaObraDateControllers[ctrlKey].cleanup(); } catch (e) {}
+    }
+
+    function ensureCalStyles() {
+        let stEl = parentDoc.getElementById('cota_obra_range_cal_styles');
+        if (!stEl) {
+            stEl = parentDoc.createElement('style');
+            stEl.id = 'cota_obra_range_cal_styles';
+            parentDoc.head.appendChild(stEl);
+        }
+        stEl.textContent = `
+            #cota_obra_range_cal_popup {
+                position: fixed;
+                z-index: 2147483647;
+                width: 286px;
+                background: #FFFFFF;
+                border: 1px solid #DFD7CC;
+                border-radius: 12px;
+                box-shadow: 0 14px 36px rgba(38, 35, 32, 0.22), 0 2px 8px rgba(38, 35, 32, 0.08);
+                padding: 12px 12px 10px 12px;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                color: #262320;
+                user-select: none;
+                box-sizing: border-box;
+            }
+            .cota-cal-task-hdr {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 6px;
+                padding-bottom: 8px;
+                margin-bottom: 8px;
+                border-bottom: 1px solid #EFEAE2;
+            }
+            .cota-cal-task-title {
+                font-size: 11.5px;
+                font-weight: 700;
+                color: #262320;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                flex: 1 1 auto;
+            }
+            .cota-cal-close-btn {
+                border: none;
+                background: transparent;
+                color: #8C8275;
+                cursor: pointer;
+                font-size: 14px;
+                line-height: 1;
+                padding: 2px 5px;
+                border-radius: 5px;
+            }
+            .cota-cal-close-btn:hover {
+                background: #F4EFE8;
+                color: #262320;
+            }
+            .cota-cal-nav {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-bottom: 8px;
+                gap: 4px;
+            }
+            .cota-cal-nav-btn {
+                width: 28px;
+                height: 28px;
+                border: none;
+                background: transparent;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 700;
+                color: #5A5248;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .cota-cal-nav-btn:hover {
+                background: #F4EFE8;
+                color: #C85A32;
+            }
+            .cota-cal-sel-wrap {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
+            .cota-cal-sel {
+                border: 1px solid transparent;
+                background: #FAF8F5;
+                color: #262320;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 3px 6px;
+                border-radius: 6px;
+                cursor: pointer;
+                outline: none;
+            }
+            .cota-cal-sel:hover, .cota-cal-sel:focus {
+                border-color: #DFD7CC;
+                background: #FFFFFF;
+            }
+            .cota-cal-wkdays {
+                display: grid;
+                grid-template-columns: repeat(7, 1fr);
+                text-align: center;
+                font-size: 11px;
+                font-weight: 700;
+                color: #8C8275;
+                margin-bottom: 4px;
+            }
+            .cota-cal-wkdays > div {
+                padding: 3px 0;
+            }
+            .cota-cal-grid {
+                display: grid;
+                grid-template-columns: repeat(7, 1fr);
+                row-gap: 2px;
+                column-gap: 0;
+            }
+            .cota-cal-cell {
+                position: relative;
+                height: 32px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                cursor: pointer;
+                padding: 0;
+                margin: 0;
+                border: none;
+                background: transparent;
+            }
+            .cota-cal-band {
+                position: absolute;
+                top: 2px;
+                bottom: 2px;
+                left: 0;
+                right: 0;
+                pointer-events: none;
+                background: transparent;
+            }
+            .cota-cal-num {
+                position: relative;
+                z-index: 2;
+                width: 28px;
+                height: 28px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 12.5px;
+                font-weight: 500;
+                color: #262320;
+                transition: background 0.1s ease, color 0.1s ease;
+            }
+            .cota-cal-cell.is-muted .cota-cal-num {
+                color: #BCB3A7;
+            }
+            .cota-cal-cell.is-today .cota-cal-num {
+                box-shadow: inset 0 -2px 0 #C85A32;
+                font-weight: 700;
+            }
+            .cota-cal-cell:hover .cota-cal-num {
+                background: rgba(200, 90, 50, 0.14);
+            }
+            .cota-cal-cell.in-range .cota-cal-band {
+                background: rgba(200, 90, 50, 0.16);
+            }
+            .cota-cal-cell.in-range .cota-cal-num {
+                color: #9A3B1B;
+                font-weight: 700;
+            }
+            .cota-cal-cell.range-start .cota-cal-band {
+                left: 50%;
+                right: 0;
+                background: rgba(200, 90, 50, 0.16);
+            }
+            .cota-cal-cell.range-end .cota-cal-band {
+                left: 0;
+                right: 50%;
+                background: rgba(200, 90, 50, 0.16);
+            }
+            .cota-cal-cell.range-single .cota-cal-band {
+                background: transparent;
+            }
+            .cota-cal-cell.range-start .cota-cal-num,
+            .cota-cal-cell.range-end .cota-cal-num,
+            .cota-cal-cell.range-single .cota-cal-num {
+                background: #C85A32 !important;
+                color: #FFFFFF !important;
+                font-weight: 700;
+                box-shadow: 0 2px 6px rgba(200, 90, 50, 0.35);
+            }
+            .cota-cal-footer {
+                margin-top: 9px;
+                padding-top: 8px;
+                border-top: 1px solid #EFEAE2;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 6px;
+            }
+            .cota-cal-status {
+                font-size: 11px;
+                font-weight: 600;
+                color: #7B7166;
+                flex: 1 1 auto;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .cota-cal-status strong {
+                color: #C85A32;
+            }
+            .cota-cal-actions {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
+            .cota-cal-mini-btn {
+                border: 1px solid #DFD7CC;
+                background: #FAF8F5;
+                color: #5A5248;
+                font-size: 10.5px;
+                font-weight: 600;
+                padding: 3px 7px;
+                border-radius: 5px;
+                cursor: pointer;
+            }
+            .cota-cal-mini-btn:hover {
+                border-color: #C85A32;
+                color: #C85A32;
+                background: #FFF6EE;
+            }
+        `;
+    }
+
+    function findBridgeInput() {
+        let inp = parentDoc.querySelector('input[aria-label="' + bridgeLabel + '"]');
+        if (inp) return inp;
+        const inputs = parentDoc.querySelectorAll('div[data-testid="stTextInput"] input');
+        for (let i = 0; i < inputs.length; i++) {
+            const el = inputs[i];
+            if ((el.getAttribute('aria-label') || '').indexOf(bridgeLabel) >= 0) return el;
+        }
+        return null;
+    }
+
+    function sendBridgePayload(obj) {
+        const inp = findBridgeInput();
+        if (!inp) return;
+        const valStr = JSON.stringify(Object.assign({ ts: Date.now() }, obj));
+        const winProto = (parentWin.HTMLInputElement || window.HTMLInputElement).prototype;
+        const nativeSetter = Object.getOwnPropertyDescriptor(winProto, 'value').set;
+        const tracker = inp._valueTracker;
+        if (tracker) tracker.setValue('');
+        nativeSetter.call(inp, valStr);
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+        inp.dispatchEvent(new Event('change', { bubbles: true }));
+        try { inp.focus({ preventScroll: true }); } catch (e) {}
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+        inp.blur();
+    }
+
+    function parseIso(s) {
+        if (!s || typeof s !== 'string') return null;
+        const m = s.match(/^(\\d{4})-(\\d{2})-(\\d{2})$/);
+        if (!m) return null;
+        return { y: parseInt(m[1], 10), m: parseInt(m[2], 10) - 1, d: parseInt(m[3], 10) };
+    }
+    function fmtIso(y, m, d) {
+        return y + '-' + String(m + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    }
+    function fmtShort(iso) {
+        if (!iso) return '—';
+        const p = iso.split('-');
+        return p[2] + '/' + p[1] + '/' + p[0];
+    }
+    function diffDays(isoA, isoB) {
+        const a = parseIso(isoA), b = parseIso(isoB);
+        if (!a || !b) return 0;
+        return Math.round((Date.UTC(b.y, b.m, b.d) - Date.UTC(a.y, a.m, a.d)) / 86400000);
+    }
+
+    const MONTHS_ES = [
+        'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+        'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+    ];
+
+    let openState = null;
+
+    function closePopup() {
+        const old = parentDoc.getElementById('cota_obra_range_cal_popup');
+        if (old && old.parentNode) old.parentNode.removeChild(old);
+        openState = null;
+    }
+
+    function dismissGlidePortal() {
+        const portal = parentDoc.getElementById('portal');
+        if (!portal) return;
+        const portalInp = portal.querySelector('input, .gdg-input');
+        if (portalInp) {
+            try {
+                portalInp.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
+                }));
+                portalInp.blur();
+            } catch (e) {}
+        }
+    }
+
+    function openRangePopup(rowIdx, clickX, clickY) {
+        const meta = tasksMeta[rowIdx];
+        if (!meta) return;
+        ensureCalStyles();
+        closePopup();
+
+        const initIso = meta.inicio || payload.defaultIso || payload.todayIso;
+        const initParsed = parseIso(initIso) || parseIso(payload.todayIso);
+
+        openState = {
+            ownerKey: ctrlKey,
+            rowIdx: rowIdx,
+            viewYear: initParsed.y,
+            viewMonth: initParsed.m,
+            savedStart: meta.inicio || '',
+            savedEnd: meta.fin || meta.inicio || '',
+            picking: false,
+            pickStart: '',
+            hoverIso: '',
+        };
+
+        const popup = parentDoc.createElement('div');
+        popup.id = 'cota_obra_range_cal_popup';
+        popup.dataset.ownerKey = ctrlKey;
+
+        const popW = 286;
+        const popH = 342;
+        let left = Math.round(clickX - popW / 2);
+        left = Math.max(12, Math.min(parentWin.innerWidth - popW - 12, left));
+        let top = Math.round(clickY + 14);
+        if (top + popH > parentWin.innerHeight - 12) {
+            top = Math.max(12, Math.round(clickY - popH - 14));
+        }
+        top = Math.max(12, Math.min(parentWin.innerHeight - popH - 12, top));
+        popup.style.left = left + 'px';
+        popup.style.top = top + 'px';
+
+        const hdr = parentDoc.createElement('div');
+        hdr.className = 'cota-cal-task-hdr';
+        const titleEl = parentDoc.createElement('div');
+        titleEl.className = 'cota-cal-task-title';
+        titleEl.textContent = (meta.code ? meta.code + ' — ' : '') + (meta.label || 'Tarea');
+        titleEl.title = titleEl.textContent;
+        const closeBtn = parentDoc.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'cota-cal-close-btn';
+        closeBtn.textContent = '✕';
+        closeBtn.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            closePopup();
+        });
+        hdr.appendChild(titleEl);
+        hdr.appendChild(closeBtn);
+        popup.appendChild(hdr);
+
+        const nav = parentDoc.createElement('div');
+        nav.className = 'cota-cal-nav';
+        const prevBtn = parentDoc.createElement('button');
+        prevBtn.type = 'button';
+        prevBtn.className = 'cota-cal-nav-btn';
+        prevBtn.textContent = '←';
+
+        const selWrap = parentDoc.createElement('div');
+        selWrap.className = 'cota-cal-sel-wrap';
+        const selMonth = parentDoc.createElement('select');
+        selMonth.className = 'cota-cal-sel';
+        MONTHS_ES.forEach(function(mName, mIdx) {
+            const opt = parentDoc.createElement('option');
+            opt.value = String(mIdx);
+            opt.textContent = mName;
+            selMonth.appendChild(opt);
+        });
+        const selYear = parentDoc.createElement('select');
+        selYear.className = 'cota-cal-sel';
+        const todayParsed = parseIso(payload.todayIso) || initParsed;
+        const minY = Math.min(initParsed.y - 3, todayParsed.y - 2);
+        const maxY = Math.max(initParsed.y + 5, todayParsed.y + 5);
+        for (let yVal = minY; yVal <= maxY; yVal++) {
+            const opt = parentDoc.createElement('option');
+            opt.value = String(yVal);
+            opt.textContent = String(yVal);
+            selYear.appendChild(opt);
+        }
+        selWrap.appendChild(selMonth);
+        selWrap.appendChild(selYear);
+
+        const nextBtn = parentDoc.createElement('button');
+        nextBtn.type = 'button';
+        nextBtn.className = 'cota-cal-nav-btn';
+        nextBtn.textContent = '→';
+
+        nav.appendChild(prevBtn);
+        nav.appendChild(selWrap);
+        nav.appendChild(nextBtn);
+        popup.appendChild(nav);
+
+        const wkRow = parentDoc.createElement('div');
+        wkRow.className = 'cota-cal-wkdays';
+        ['D', 'L', 'M', 'M', 'J', 'V', 'S'].forEach(function(w) {
+            const d = parentDoc.createElement('div');
+            d.textContent = w;
+            wkRow.appendChild(d);
+        });
+        popup.appendChild(wkRow);
+
+        const gridEl = parentDoc.createElement('div');
+        gridEl.className = 'cota-cal-grid';
+        popup.appendChild(gridEl);
+
+        const footer = parentDoc.createElement('div');
+        footer.className = 'cota-cal-footer';
+        const statusEl = parentDoc.createElement('div');
+        statusEl.className = 'cota-cal-status';
+        const actionsEl = parentDoc.createElement('div');
+        actionsEl.className = 'cota-cal-actions';
+
+        const todayBtn = parentDoc.createElement('button');
+        todayBtn.type = 'button';
+        todayBtn.className = 'cota-cal-mini-btn';
+        todayBtn.textContent = 'Hoy';
+        todayBtn.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            const tp = parseIso(payload.todayIso);
+            if (tp && openState) {
+                openState.viewYear = tp.y;
+                openState.viewMonth = tp.m;
+                renderMonth();
+            }
+        });
+
+        const clearBtn = parentDoc.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.className = 'cota-cal-mini-btn';
+        clearBtn.textContent = 'Limpiar';
+        clearBtn.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            const rIdx = openState ? openState.rowIdx : rowIdx;
+            closePopup();
+            sendBridgePayload({ action: 'clear_range', row_idx: rIdx });
+        });
+
+        actionsEl.appendChild(todayBtn);
+        actionsEl.appendChild(clearBtn);
+        footer.appendChild(statusEl);
+        footer.appendChild(actionsEl);
+        popup.appendChild(footer);
+
+        function updateHighlightOnly() {
+            if (!openState) return;
+            let effStart = '';
+            let effEnd = '';
+            if (openState.picking && openState.pickStart) {
+                const anchorEnd = openState.hoverIso || openState.pickStart;
+                if (anchorEnd < openState.pickStart) {
+                    effStart = anchorEnd;
+                    effEnd = openState.pickStart;
+                } else {
+                    effStart = openState.pickStart;
+                    effEnd = anchorEnd;
+                }
+                const days = diffDays(effStart, effEnd) + 1;
+                statusEl.innerHTML = '<strong>' + fmtShort(effStart) + ' → ' + fmtShort(effEnd) + '</strong> (' + days + 'd)';
+            } else if (openState.savedStart) {
+                effStart = openState.savedStart;
+                effEnd = openState.savedEnd || openState.savedStart;
+                const days = diffDays(effStart, effEnd) + 1;
+                statusEl.textContent = fmtShort(effStart) + ' → ' + fmtShort(effEnd) + ' (' + days + 'd)';
+            } else {
+                statusEl.textContent = 'Clic 1: Inicio · Clic 2: Fin';
+            }
+
+            const cells = gridEl.children;
+            for (let i = 0; i < cells.length; i++) {
+                const cell = cells[i];
+                const iso = cell.dataset.iso;
+                cell.classList.remove('in-range', 'range-start', 'range-end', 'range-single');
+                if (effStart && effEnd) {
+                    if (effStart === effEnd && iso === effStart) {
+                        cell.classList.add('range-single');
+                    } else if (iso === effStart) {
+                        cell.classList.add('range-start');
+                    } else if (iso === effEnd) {
+                        cell.classList.add('range-end');
+                    } else if (iso > effStart && iso < effEnd) {
+                        cell.classList.add('in-range');
+                    }
+                }
+            }
+        }
+
+        function onDayClick(iso) {
+            if (!openState) return;
+            if (!openState.picking) {
+                openState.picking = true;
+                openState.pickStart = iso;
+                openState.hoverIso = iso;
+                updateHighlightOnly();
+            } else {
+                const d1 = openState.pickStart;
+                const d2 = iso;
+                const inicio = d1 <= d2 ? d1 : d2;
+                const fin = d1 <= d2 ? d2 : d1;
+                const rIdx = openState.rowIdx;
+                openState.picking = false;
+                openState.savedStart = inicio;
+                openState.savedEnd = fin;
+                updateHighlightOnly();
+                setTimeout(function() {
+                    closePopup();
+                    sendBridgePayload({
+                        action: 'set_range',
+                        row_idx: rIdx,
+                        inicio: inicio,
+                        fin: fin
+                    });
+                }, 60);
+            }
+        }
+
+        function renderMonth() {
+            if (!openState) return;
+            selMonth.value = String(openState.viewMonth);
+            selYear.value = String(openState.viewYear);
+            gridEl.innerHTML = '';
+
+            const firstDow = new Date(openState.viewYear, openState.viewMonth, 1).getDay();
+            for (let slot = 0; slot < 42; slot++) {
+                const dayOffset = slot - firstDow + 1;
+                const dtObj = new Date(openState.viewYear, openState.viewMonth, dayOffset);
+                const y = dtObj.getFullYear();
+                const m = dtObj.getMonth();
+                const d = dtObj.getDate();
+                const iso = fmtIso(y, m, d);
+
+                const btn = parentDoc.createElement('button');
+                btn.type = 'button';
+                btn.className = 'cota-cal-cell';
+                btn.dataset.iso = iso;
+                if (m !== openState.viewMonth) btn.classList.add('is-muted');
+                if (iso === payload.todayIso) btn.classList.add('is-today');
+
+                const band = parentDoc.createElement('span');
+                band.className = 'cota-cal-band';
+                const num = parentDoc.createElement('span');
+                num.className = 'cota-cal-num';
+                num.textContent = String(d);
+
+                btn.appendChild(band);
+                btn.appendChild(num);
+
+                btn.addEventListener('mouseenter', function() {
+                    if (openState && openState.picking && openState.hoverIso !== iso) {
+                        openState.hoverIso = iso;
+                        updateHighlightOnly();
+                    }
+                });
+                btn.addEventListener('click', function(ev) {
+                    ev.stopPropagation();
+                    onDayClick(iso);
+                });
+                gridEl.appendChild(btn);
+            }
+            updateHighlightOnly();
+        }
+
+        prevBtn.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            if (!openState) return;
+            openState.viewMonth -= 1;
+            if (openState.viewMonth < 0) {
+                openState.viewMonth = 11;
+                openState.viewYear -= 1;
+            }
+            renderMonth();
+        });
+        nextBtn.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            if (!openState) return;
+            openState.viewMonth += 1;
+            if (openState.viewMonth > 11) {
+                openState.viewMonth = 0;
+                openState.viewYear += 1;
+            }
+            renderMonth();
+        });
+        selMonth.addEventListener('change', function(ev) {
+            ev.stopPropagation();
+            if (!openState) return;
+            openState.viewMonth = parseInt(selMonth.value, 10);
+            renderMonth();
+        });
+        selYear.addEventListener('change', function(ev) {
+            ev.stopPropagation();
+            if (!openState) return;
+            openState.viewYear = parseInt(selYear.value, 10);
+            renderMonth();
+        });
+
+        popup.addEventListener('mousedown', function(ev) { ev.stopPropagation(); });
+        popup.addEventListener('pointerdown', function(ev) { ev.stopPropagation(); });
+        popup.addEventListener('click', function(ev) { ev.stopPropagation(); });
+
+        renderMonth();
+        parentDoc.body.appendChild(popup);
+    }
+
+    function getSelectedCellInfo(editorWrap) {
+        const selCell =
+            editorWrap.querySelector('tbody td[aria-selected="true"], [role="gridcell"][aria-selected="true"]') ||
+            editorWrap.querySelector('tbody td:focus, [role="gridcell"]:focus') ||
+            editorWrap.querySelector('tbody td[tabindex="0"], [role="gridcell"][tabindex="0"]');
+        if (!selCell) return null;
+
+        let colName = '';
+        const ariaCol = selCell.getAttribute('aria-colindex');
+        if (ariaCol) {
+            const th = editorWrap.querySelector(
+                'thead th[aria-colindex="' + ariaCol + '"], [role="columnheader"][aria-colindex="' + ariaCol + '"]'
+            );
+            if (th) colName = (th.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+        }
+        if (!colName && selCell.parentElement) {
+            const cells = Array.from(selCell.parentElement.children);
+            const cIdx = cells.indexOf(selCell);
+            const ths = Array.from(editorWrap.querySelectorAll('thead th, [role="columnheader"]'));
+            if (cIdx >= 0 && cIdx < ths.length) {
+                colName = (ths[cIdx].textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+            }
+        }
+
+        const tr = selCell.closest('tr, [role="row"]');
+        if (!tr) return null;
+        let rowIdx = -1;
+        const ariaRow = parseInt(tr.getAttribute('aria-rowindex') || '', 10);
+        if (!isNaN(ariaRow)) {
+            const hdrRow = editorWrap.querySelector('thead tr, [role="row"][aria-rowindex="1"]');
+            const hdrAria = hdrRow ? parseInt(hdrRow.getAttribute('aria-rowindex') || '1', 10) : 1;
+            rowIdx = ariaRow - hdrAria - 1;
+        }
+        if (rowIdx < 0 && tr.parentElement) {
+            rowIdx = Array.from(tr.parentElement.children).indexOf(tr);
+        }
+        return { colName: colName, rowIdx: rowIdx };
+    }
+
+    function findEditorWrap() {
+        const anchor = parentDoc.getElementById(payload.anchorId);
+        if (!anchor) return null;
+        let block = anchor.closest('[data-testid="stElementContainer"], [data-testid="element-container"], .element-container') || anchor.parentElement;
+        let sib = block ? block.nextElementSibling : null;
+        let hops = 0;
+        while (sib && hops < 5) {
+            if (sib.matches && sib.matches('div[data-testid="stDataEditor"]')) return sib;
+            const nested = sib.querySelector ? sib.querySelector('div[data-testid="stDataEditor"]') : null;
+            if (nested) return nested;
+            sib = sib.nextElementSibling;
+            hops++;
+        }
+        let p = anchor.parentElement;
+        while (p && !p.querySelector('div[data-testid="stDataEditor"]')) {
+            p = p.parentElement;
+        }
+        return p ? p.querySelector('div[data-testid="stDataEditor"]') : null;
+    }
+
+    function handleGridInteraction(ev, editorWrap) {
+        if (ev.button && ev.button !== 0) return;
+        if (ev.target && ev.target.closest && ev.target.closest('[data-testid="stElementToolbar"], button, input, select, a')) {
+            return;
+        }
+        const canvas = editorWrap.querySelector('canvas');
+        if (canvas) {
+            const rect = canvas.getBoundingClientRect();
+            if (ev.clientX < rect.left || ev.clientX > rect.right - 12 || ev.clientY < rect.top + 36 || ev.clientY > rect.bottom - 8) {
+                closePopup();
+                return;
+            }
+        }
+        const cx = ev.clientX;
+        const cy = ev.clientY;
+        setTimeout(function() {
+            const info = getSelectedCellInfo(editorWrap);
+            if (!info) {
+                closePopup();
+                return;
+            }
+            if ((info.colName === 'inicio' || info.colName === 'fin') && info.rowIdx >= 0 && info.rowIdx < tasksMeta.length) {
+                dismissGlidePortal();
+                openRangePopup(info.rowIdx, cx, cy);
+                setTimeout(dismissGlidePortal, 70);
+            } else {
+                closePopup();
+            }
+        }, 55);
+    }
+
+    function initController() {
+        const editorWrap = findEditorWrap();
+        if (!editorWrap) return false;
+
+        function onClick(ev) {
+            handleGridInteraction(ev, editorWrap);
+        }
+        function onDblClick(ev) {
+            const info = getSelectedCellInfo(editorWrap);
+            if (info && (info.colName === 'inicio' || info.colName === 'fin') && info.rowIdx >= 0 && info.rowIdx < tasksMeta.length) {
+                dismissGlidePortal();
+                setTimeout(dismissGlidePortal, 60);
+            }
+        }
+        function onDocMouseDown(ev) {
+            const popup = parentDoc.getElementById('cota_obra_range_cal_popup');
+            if (!popup) return;
+            if (popup.contains(ev.target)) return;
+            if (editorWrap.contains(ev.target)) return;
+            closePopup();
+        }
+        function onDocKeyDown(ev) {
+            if (ev.key === 'Escape') {
+                closePopup();
+            }
+        }
+
+        editorWrap.addEventListener('click', onClick, true);
+        editorWrap.addEventListener('dblclick', onDblClick, true);
+        parentDoc.addEventListener('mousedown', onDocMouseDown, true);
+        parentDoc.addEventListener('keydown', onDocKeyDown, true);
+
+        parentWin.__cotaObraDateControllers[ctrlKey] = {
+            cleanup: function() {
+                editorWrap.removeEventListener('click', onClick, true);
+                editorWrap.removeEventListener('dblclick', onDblClick, true);
+                parentDoc.removeEventListener('mousedown', onDocMouseDown, true);
+                parentDoc.removeEventListener('keydown', onDocKeyDown, true);
+                const popup = parentDoc.getElementById('cota_obra_range_cal_popup');
+                if (popup && popup.dataset.ownerKey === ctrlKey) {
+                    closePopup();
+                }
+            }
+        };
+        return true;
+    }
+
+    if (!initController()) {
+        let attempts = 0;
+        const timer = setInterval(function() {
+            attempts++;
+            if (initController() || attempts > 25) {
+                clearInterval(timer);
+            }
+        }, 150);
+    }
+})();
+</script>
+</body>
+</html>
+"""
+    html_code = html_template.replace("__PAYLOAD_JSON__", payload_str)
+    components.html(html_code, height=0, scrolling=False)
+
+
 def _render_tab_presupuesto(proy_name, proy_data):
     """
     Pestaña 3: Constructor y Editor de Presupuesto All-in-One dentro de COTA.
@@ -2682,6 +3748,23 @@ def _render_tab_entregables(proy_name, proy_data):
 def _render_tab_obra(proy_name, proy_data):
     """Pestaña 5: Partidas y Tareas (Sincronizada con 03. Presupuesto, con Cronograma Gantt y Rango Rápido de Fechas)."""
     st.markdown("### 🏗️ 05. PARTIDAS Y TAREAS")
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stTextInput"]:has(input[aria-label^="OBRA_DATE_BRIDGE_"]) {
+            position: absolute !important;
+            width: 1px !important;
+            height: 1px !important;
+            opacity: 0 !important;
+            overflow: hidden !important;
+            pointer-events: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.caption(
         "Control operativo de contratistas, cronograma Gantt de obra y supervisión por partida. "
         "Las partidas y tareas mantienen exactamente el mismo orden que en **03. PRESUPUESTO**."
@@ -2745,7 +3828,7 @@ def _render_tab_obra(proy_name, proy_data):
                     clear_base_dfs()
                     st.rerun()
 
-    render_alertas_cruce_contratistas(proy_name)
+
     with st.expander("📊 CRONOGRAMA GANTT POR PARTIDA Y TAREAS (INICIO → FIN Y ESTADOS)", expanded=False):
         if not df_all_t_proy.empty:
             df_gantt_raw = df_all_t_proy.copy()
@@ -2995,7 +4078,7 @@ def _render_tab_obra(proy_name, proy_data):
         monto_pagado = float(pagados_por_partida_map.get(p_nom, 0.0))
         saldo = monto_pactado - monto_pagado
 
-        col_ord_up, col_ord_dn, col_ord_sel, col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns([0.55, 0.55, 1.1, 1.4, 1.5, 1.6, 1.3, 4.0])
+        col_ord_up, col_ord_dn, col_ord_sel, col_b1, col_b2, col_b3, col_b4, col_sug, col_b5 = st.columns([0.5, 0.5, 1.0, 1.3, 1.4, 1.55, 1.25, 1.35, 3.65])
         with col_ord_up:
             if st.button("⬆", key=f"btn_obra_up_p_{proy_name}_{idx_p_1b}", disabled=(idx_p_1b == 1), help="Subir Partida", use_container_width=True):
                 mover_partida_presupuesto(proy_name, idx_p_1b, "subir")
@@ -3139,6 +4222,30 @@ def _render_tab_obra(proy_name, proy_data):
         display_t['Permitir_Cruce'] = display_t['Permitir_Cruce'].apply(to_bool) if 'Permitir_Cruce' in display_t.columns else False
         st.session_state[base_t_key] = display_t.copy()
 
+        with col_sug:
+            with st.popover("🔍 SUGERIR"):
+                if st.button("Buscar disponibles", key=f"sug_{proy_name}_{p_nom}_{idx_part}", use_container_width=True, help="Sugerir contratista disponible para esta partida"):
+                    encontrado_sug = False
+                    for _, row_s in st.session_state[base_t_key].iterrows():
+                        if pd.notna(row_s.get('Especialidad')) and str(row_s.get('Especialidad')).strip() not in ["Ninguna", ""]:
+                            sug = sugerir_contratista(
+                                row_s['Especialidad'],
+                                proy_data.get('Ubicación', 'Lima'),
+                                row_s.get('Inicio'),
+                                row_s.get('Fin'),
+                                st.session_state.maestro,
+                                st.session_state.tasks,
+                                st.session_state.df_historial,
+                            )
+                            if sug:
+                                encontrado_sug = True
+                                st.info(f"**{row_s.get('Tarea')}**: {sug}")
+                    if not encontrado_sug:
+                        st.caption("Asigna una especialidad a las tareas para sugerir contratistas.")
+
+        safe_proy_id_obra = re.sub(r"[^a-zA-Z0-9_]", "_", str(proy_name or ""))
+        st.markdown(f"<div id='anchor_obra_tasks_{safe_proy_id_obra}_{idx_p_1b}'></div>", unsafe_allow_html=True)
+
         st.data_editor(
             st.session_state[base_t_key],
             use_container_width=True,
@@ -3190,7 +4297,15 @@ def _render_tab_obra(proy_name, proy_data):
         )
 
         render_alertas_cruce_partida(proy_name, p_nom)
-        # Barra rápida: Selector de Rango de Fechas (Inicio → Fin en el mismo calendario con resaltado) + Sugerir Contratista
+        _render_obra_date_range_controller(
+            proy_name,
+            idx_p_1b,
+            p_nom,
+            df_tasks_p,
+            proy_data.get("Inicio"),
+            counter_key,
+        )
+        continue  # Rango integrado directo en la tabla; bloque inferior omitido
         if not df_tasks_p.empty:
             opciones_t_obra = [
                 (i_t, f"{safe_str(r_t.get('Codigo_Item', f'{idx_p_1b}.{i_t+1:02d}'))} — {extraer_descripcion_tarea(r_t.get('Tarea', ''), r_t.get('Codigo_Item', ''))}")
@@ -3202,7 +4317,7 @@ def _render_tab_obra(proy_name, proy_data):
                     "Tarea seleccionada:",
                     options=[o[0] for o in opciones_t_obra],
                     format_func=lambda x: dict(opciones_t_obra).get(x, ""),
-                    key=f"sel_t_obra_fast_{proy_name}_{idx_p_1b}",
+                    # (legacy selector removido)
                     label_visibility="collapsed",
                 )
             fila_t_sel = df_tasks_p.iloc[idx_t_sel_obra]
@@ -3216,7 +4331,7 @@ def _render_tab_obra(proy_name, proy_data):
                     "📅 Inicio → Fin (mismo calendario):",
                     value=(d_ini_sel, d_fin_sel),
                     format="DD/MM/YYYY",
-                    key=f"rng_cal_obra_{proy_name}_{idx_p_1b}_{idx_t_sel_obra}",
+                    # (legacy rango removido)
                     label_visibility="collapsed",
                     help="Selecciona la fecha de Inicio y ahí mismo la fecha de Fin; el calendario resaltará todos los días que durará la tarea.",
                 )
@@ -3225,7 +4340,7 @@ def _render_tab_obra(proy_name, proy_data):
                 if isinstance(rango_fechas_sel, (tuple, list)) and len(rango_fechas_sel) == 2:
                     dias_dur = (rango_fechas_sel[1] - rango_fechas_sel[0]).days + 1
                     dur_txt = f" ({dias_dur}d)"
-                if st.button(f"📅 Fijar{dur_txt}", key=f"btn_set_rng_{proy_name}_{idx_p_1b}", use_container_width=True, help="Aplicar rango de fechas Inicio → Fin a la tarea seleccionada"):
+                if False:
                     if isinstance(rango_fechas_sel, (tuple, list)) and len(rango_fechas_sel) >= 1:
                         f_i_new = rango_fechas_sel[0]
                         f_f_new = rango_fechas_sel[1] if len(rango_fechas_sel) > 1 else f_i_new
@@ -3237,7 +4352,7 @@ def _render_tab_obra(proy_name, proy_data):
                             st.session_state[counter_key] = c_val + 1
                             st.rerun()
             with cr_sug:
-                if st.button("🔍 Sugerir", key=f"sug_{proy_name}_{p_nom}_{idx_part}", use_container_width=True, help="Sugerir contratista disponible para esta partida"):
+                if False:
                     for _, row_s in st.session_state[base_t_key].iterrows():
                         if pd.notna(row_s.get('Especialidad')) and str(row_s.get('Especialidad')).strip() not in ["Ninguna", ""]:
                             sug = sugerir_contratista(

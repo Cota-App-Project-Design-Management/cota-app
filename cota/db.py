@@ -1012,6 +1012,72 @@ def eliminar_item_catalogo_estudio(clave: str, valor: str) -> bool:
 
 
 # ==========================================
+# CONTROL OPERATIVO DIARIO Y PENDIENTES SINCRONIZADOS
+# ==========================================
+
+def obtener_pendientes_operativos(proy_name: str | None = None) -> pd.DataFrame:
+    """
+    Retorna los pendientes diarios activos (Check == False) de `st.session_state.todo_list`,
+    opcionalmente filtrados por `proy_name`, conservando los índices originales para su edición/cierre.
+    """
+    if "todo_list" not in st.session_state or not isinstance(st.session_state.todo_list, pd.DataFrame):
+        st.session_state.todo_list = pd.DataFrame(columns=COLS_TODO)
+    df_td = st.session_state.todo_list
+    for col in COLS_TODO:
+        if col not in df_td.columns:
+            df_td[col] = False if col == "Check" else ""
+    if df_td.empty:
+        return df_td.copy()
+    mask_act = ~df_td["Check"].apply(to_bool)
+    if proy_name is not None:
+        proy_clean = str(proy_name or "").strip()
+        mask_act = mask_act & (df_td["Proyecto"].astype(str).str.strip() == proy_clean)
+    return df_td[mask_act].copy()
+
+
+def agregar_pendiente_operativo(
+    proy_name: str,
+    categoria: str,
+    tarea: str,
+    responsable: str = "",
+) -> dict | None:
+    """Agrega un pendiente diario a `st.session_state.todo_list` sincronizado con Control Operativo."""
+    txt = str(tarea or "").strip()
+    if not txt:
+        return None
+    if "todo_list" not in st.session_state or not isinstance(st.session_state.todo_list, pd.DataFrame):
+        st.session_state.todo_list = pd.DataFrame(columns=COLS_TODO)
+    for col in COLS_TODO:
+        if col not in st.session_state.todo_list.columns:
+            st.session_state.todo_list[col] = False if col == "Check" else ""
+    nuevo = {
+        "ID": datetime.datetime.now().timestamp(),
+        "Proyecto": str(proy_name or "General").strip() or "General",
+        "Categoria": str(categoria or "Compras / FF&E").strip() or "Compras / FF&E",
+        "Tarea": txt,
+        "Responsable": str(responsable or "").strip(),
+        "Check": False,
+    }
+    st.session_state.todo_list = pd.concat(
+        [st.session_state.todo_list, pd.DataFrame([nuevo])[COLS_TODO]],
+        ignore_index=True,
+    )
+    clear_base_dfs()
+    return nuevo
+
+
+def completar_pendiente_operativo(row_index) -> bool:
+    """Marca como listo/elimina un pendiente diario por su índice en `st.session_state.todo_list`."""
+    if "todo_list" not in st.session_state or not isinstance(st.session_state.todo_list, pd.DataFrame):
+        return False
+    if row_index not in st.session_state.todo_list.index:
+        return False
+    st.session_state.todo_list = st.session_state.todo_list.drop(row_index).reset_index(drop=True)
+    clear_base_dfs()
+    return True
+
+
+# ==========================================
 # SISTEMA DE NOTAS TIPO CHAT POR SOCIO
 # ==========================================
 

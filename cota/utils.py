@@ -282,7 +282,7 @@ def detectar_cruces_contratistas(
 ) -> dict:
     """
     Detecta cruces de fechas cuando un mismo contratista tiene dos o más tareas con fechas
-    solapadas (entre distintos proyectos o dentro del mismo proyecto).
+    solapadas (únicamente entre proyectos distintos).
     Retorna {'activos': [...], 'permitidos': [...]}.
     """
     res = {"activos": [], "permitidos": []}
@@ -356,7 +356,7 @@ def detectar_cruces_contratistas(
                     continue
                 b = items[j]
                 mismo_proy = a["proyecto"] == b["proyecto"]
-                if mismo_proy and j < i:
+                if mismo_proy or (proy_name is None and j < i):
                     continue
                 if a["inicio"] <= b["fin"] and b["inicio"] <= a["fin"]:
                     c_ini = max(a["inicio"], b["inicio"])

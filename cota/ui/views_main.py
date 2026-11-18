@@ -555,7 +555,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                             f"<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px; font-size: 12.5px;'>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Ubicación</span><br><b style='color:#262320;'>{ubi_p}</b></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Cronograma</span><br><b style='color:#262320;'>{ini_p} → {fin_p}</b></div>"
-                            f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Etapa Diseño</span><br><b style='color:#C85A32;'>{fase_actual_str}</b></div>"
+                            f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Estado de Proyecto</span><br><b style='color:{col_st};'>{safe_str(proy.get('Estado', '')) or est}</b></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Tareas en Proceso</span><br><b style='color:#262320; font-family:monospace;'>{info_t['en_proceso']} en proceso</b> <span style='color:#6E665E; font-size:11px;'>({info_t['completadas']}/{info_t['total']} listas)</span></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Ppto. Contrato</span><br><b style='color:#262320; font-family:monospace;'>{format_currency(ppto_p)}</b></div>"
                             f"<div><span style='color:#6E665E; font-size:11px; text-transform:uppercase;'>Honorarios Diseño</span><br><b style='color:#4A7C59; font-family:monospace;'>{format_currency(hon_p)}</b></div>"
@@ -624,27 +624,28 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                                         st.success("Datos actualizados correctamente.")
                                         st.rerun()
 
+
                         with c_btn_fases:
-                            with st.popover("🎨 GESTIÓN DE DISEÑO", use_container_width=True):
-                                st.markdown("##### Etapas de Diseño (02. Diseño)")
-                                st.caption("Activa o desactiva las etapas de diseño (Moodboard, Plano Preliminar, 3D, Renders, Planos) de este proyecto.")
-                                with st.form(f"f_banco_fases_card_{ukey}"):
-                                    opciones_f_card = list(dict.fromkeys(nombres_banco_all + fases_activas_proy))
-                                    sel_f_card = st.multiselect(
-                                        "Etapas de diseño activas:",
-                                        options=opciones_f_card,
-                                        default=fases_activas_proy if fases_activas_proy else nombres_banco_def,
-                                    )
-                                    nueva_f_card = st.text_input("➕ Crear nueva etapa de diseño (opcional):", placeholder="")
-                                    if st.form_submit_button("GUARDAR ETAPAS DE DISEÑO", type="primary", use_container_width=True):
-                                        fases_finales = list(sel_f_card)
-                                        if nueva_f_card.strip():
-                                            nf_obj = agregar_fase_banco(nueva_f_card.strip())
-                                            if nf_obj["Fase"] not in fases_finales:
-                                                fases_finales.append(nf_obj["Fase"])
-                                        sincronizar_fases_proyecto(p_nom, fases_finales, proy.get('Inicio'))
-                                        st.success("Etapas de diseño actualizadas.")
+                            with st.popover("📌 ESTADO DE PROYECTO", use_container_width=True):
+                                est_actual_card = safe_str(proy.get("Estado", "")) or est
+                                st.markdown("##### 📌 Estado del Proyecto")
+                                st.caption(f"Actual: **{est_actual_card}**")
+                                for idx_opt_e, est_opt in enumerate(STATUS_PROYECTOS):
+                                    es_act_est = (est_opt == est_actual_card)
+                                    lbl_opt = f"{'✅ ' if es_act_est else ''}{est_opt}"
+                                    if st.button(
+                                        lbl_opt,
+                                        key=f"btn_quick_est_{ukey}_{idx_opt_e}",
+                                        type="primary" if es_act_est else "secondary",
+                                        use_container_width=True,
+                                        disabled=es_act_est,
+                                    ):
+                                        st.session_state.proyectos.at[idx_p, "Estado"] = est_opt
+                                        clear_base_dfs()
                                         st.rerun()
+
+
+
 
                         with c_btn3:
                             notas_chat_card = obtener_notas_chat_proyecto(p_nom)
