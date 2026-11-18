@@ -2659,6 +2659,13 @@ def _render_tab_presupuesto(proy_name, proy_data):
         m_p_sync = st.session_state.proyectos["Nombre"] == proy_name
         if m_p_sync.any():
             idx_p_sync = st.session_state.proyectos[m_p_sync].index[0]
+            _pend_cfg = st.session_state.pop(f"_pending_sync_ppto_cfg_{proy_name}", None)
+            if isinstance(_pend_cfg, dict):
+                for _k_suf, _v_soles in _pend_cfg.items():
+                    if _k_suf in ("util", "gg"):
+                        st.session_state[f"cfg_modo_{_k_suf}_{proy_name}"] = "monto"
+                        st.session_state[f"cfg_{_k_suf}_monto_{proy_name}"] = float(safe_float(_v_soles, 0.0))
+                        st.session_state.pop(f"cfg_{_k_suf}_pct_{proy_name}", None)
             if f"cfg_gg_pct_{proy_name}" in st.session_state and st.session_state.get(f"cfg_modo_gg_{proy_name}", "pct") == "pct":
                 st.session_state.proyectos.at[idx_p_sync, "GG_Pct"] = float(safe_float(st.session_state.get(f"cfg_gg_pct_{proy_name}"), 2.0))
             if f"cfg_util_pct_{proy_name}" in st.session_state and st.session_state.get(f"cfg_modo_util_{proy_name}", "pct") == "pct":
@@ -4826,8 +4833,8 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
                     const newPref = nextMon === 'Dólares' ? '$' : 'S/ ';
                     tr.querySelectorAll('td[data-pref]').forEach(tdP => {{
                         tdP.setAttribute('data-pref', newPref);
-                        const rv = parseFloat(tdP.getAttribute('data-raw-val')) || 0;
-                        renderAmountCellInner(tdP, rv, tdP.getAttribute('data-cota-note-text') || '');
+                        if (!tdP) return;
+                        // Rerun de Streamlit actualiza formato de moneda sin mutar el DOM de React
                     }});
                 }}
                 recalculateTableDOM(fsWrap);
@@ -5147,6 +5154,23 @@ def _render_pagos_tooltip_controller(proy_name: str, safe_proy_id: str, data_cua
         }};
 
         ensureInteractiveStyles();
+        try {{
+            const fsWrapHeal = parentDoc.getElementById('cota_cuadro_pagos_fs_wrap_' + safeId);
+            if (fsWrapHeal) {{
+                fsWrapHeal.querySelectorAll('td.cota-editable-cell').forEach(td => {{
+                    if (!td.querySelector('.cota-cell-total-txt')) return;
+                    Array.from(td.childNodes).forEach(node => {{
+                        if (node.nodeType === 3 && (node.nodeValue || '').trim() !== '') {{
+                            if (node.parentNode === td) td.removeChild(node);
+                        }} else if (node.nodeType === 1 && node.tagName === 'SPAN') {{
+                            if (!node.classList.contains('cota-cell-total-txt') && !node.classList.contains('cota-cell-corner-dot')) {{
+                                if (node.parentNode === td) td.removeChild(node);
+                            }}
+                        }}
+                    }});
+                }});
+            }}
+        }} catch (e) {{}}
         syncFsState();
     }})();
     </script>
@@ -5742,7 +5766,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                     f"data-cota-note-partida='{esc_part}' data-cota-note-semana='{esc_sem_short}' "
                     f"data-cota-note-monto='{esc_mon}' data-cota-note-text='{esc_not}' data-cota-payments-json='{esc_pay_json}' data-cota-default-contractor='{esc_def_con}' data-cota-note-manual='{esc_nota_man}' "
                     f"style='position:relative; padding:6px 9px; text-align:right; border:{border_grid}; color:{color_txt}; font-weight:600; font-variant-numeric:tabular-nums; background:#FFFDF9;'>"
-                    f"{disp_inner}"
+                    f"<span class='cota-cell-total-txt' style='color:inherit;'>{disp_inner}</span>"
                     f"{corner_dot_c}"
                     f"</td>"
                 )
@@ -5752,7 +5776,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
                     f"data-col-field='{esc_col_f}' data-raw-val='{v_num:.2f}' data-is-pp='{'1' if is_pp else '0'}' data-pref='{esc_pref}' "
                     f"data-cota-note-partida='{esc_part}' data-cota-note-semana='{esc_sem_short}' "
                     f"data-cota-payments-json='{esc_pay_json}' data-cota-default-contractor='{esc_def_con}' "
-                    f"style='position:relative; padding:6px 9px; text-align:right; border:{border_grid}; color:{color_txt}; font-weight:600; font-variant-numeric:tabular-nums;'>{val_str}</td>"
+                    f"style='position:relative; padding:6px 9px; text-align:right; border:{border_grid}; color:{color_txt}; font-weight:600; font-variant-numeric:tabular-nums;'><span class='cota-cell-total-txt' style='color:inherit;'>{val_str}</span></td>"
                 )
         return "".join(tds)
 

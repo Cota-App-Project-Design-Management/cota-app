@@ -1453,6 +1453,12 @@ def test_aplicar_edicion_inline_cuadro_pagos():
     assert data_after["filas_contratistas"][0]["Notas_Pagos"]["SEMANA 1"] == "Avance 1ra semana"
     assert data_after["filas_contratistas"][0]["Descripcion"] == "OBRAS CIVILES - FRENTE 1"
     assert data_after["fila_gestion"]["TOTAL"] == 12000.0
+    row_p_after = st.session_state["proyectos"].iloc[0]
+    assert row_p_after["Utilidades"] == 12000.0
+    assert row_p_after["Modo_Utilidades"] == "exacto"
+    assert row_p_after["Monto_Fijo_Utilidades"] == 12000.0
+    assert st.session_state[f"cfg_modo_util_{proy_test}"] == "monto"
+    assert st.session_state[f"cfg_util_monto_{proy_test}"] == 12000.0
 
     # 2. Alternar 'Por Pagar' en SEMANA 2
     payload_toggle = json.dumps({"action": "toggle_por_pagar", "col": "SEMANA 2", "ts": 1002})
@@ -1470,6 +1476,114 @@ def test_aplicar_edicion_inline_cuadro_pagos():
     assert aplicar_edicion_inline_cuadro_pagos(proy_test, payload_del) is True
     data_after4 = obtener_cuadro_pagos_semanales_proyecto(proy_test)
     assert len(data_after4["filas_contratistas"]) == 1
+
+
+def test_cuadro_pagos_gestion_y_gg_sincronizan_proyecto():
+    import json
+    import streamlit as st
+    from cota.cotizacion import (
+        aplicar_edicion_inline_cuadro_pagos,
+        guardar_cuadro_pagos_semanales_proyecto,
+        obtener_cuadro_pagos_semanales_proyecto,
+        recalcular_totales_presupuesto_proyecto,
+    )
+
+    proy = "Proyecto Sync Gestion GG"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": proy,
+        "Cliente": "Cliente Demo",
+        "TC_Presupuesto": 3.60,
+        "GG_Pct": 2.0,
+        "Utilidades_Pct": 15.0,
+        "Incluir_IGV": False,
+        "Modo_GG": "pct",
+        "Monto_Fijo_GG": 0.0,
+        "Modo_Utilidades": "pct",
+        "Monto_Fijo_Utilidades": 0.0,
+        "Presupuesto": 0.0,
+        "Utilidades": 0.0,
+        "GG_Presupuesto": 0.0,
+        "Pagos_Semanales_JSON": "",
+    }])
+    st.session_state["partidas"] = pd.DataFrame([{"Proyecto": proy, "Nombre_Partida": "01. Obra"}])
+    st.session_state["p_info"] = pd.DataFrame([{"Proyecto": proy, "Nombre_Partida": "01. Obra", "Monto_Pactado": 10000.0}])
+    st.session_state["tasks"] = pd.DataFrame([{
+        "Proyecto": proy,
+        "Partida": "01. Obra",
+        "Orden": 1,
+        "Codigo_Item": "1.01",
+        "Tarea": "1.01 Partida Base",
+        "Moneda": "Soles",
+        "Unidad": "glb",
+        "Metrado": 1.0,
+        "Valor_Unitario": 10000.0,
+        "Presupuesto": 10000.0,
+    }])
+    st.session_state[f"cfg_modo_util_{proy}"] = "pct"
+    st.session_state[f"cfg_util_pct_{proy}"] = 15.0
+    st.session_state[f"cfg_modo_gg_{proy}"] = "pct"
+    st.session_state[f"cfg_gg_pct_{proy}"] = 2.0
+
+    data_ini = obtener_cuadro_pagos_semanales_proyecto(proy)
+    guardar_cuadro_pagos_semanales_proyecto(proy, data_ini)
+
+    # 1. Editar TOTAL exacto de Gestión (S/ 850.00) y Gastos Generales (S/ 123.00)
+    payload_soles = json.dumps({
+        "action": "edit_cells",
+        "ts": 3101,
+        "edits": [
+            {"row_type": "gestion", "row_idx": 0, "field": "TOTAL", "value": 850.0},
+            {"row_type": "gg", "row_idx": 0, "field": "TOTAL", "value": 123.0},
+        ],
+    })
+    assert aplicar_edicion_inline_cuadro_pagos(proy, payload_soles) is True
+
+    row_p = st.session_state["proyectos"].iloc[0]
+    assert row_p["Modo_Utilidades"] == "exacto"
+    assert row_p["Monto_Fijo_Utilidades"] == 850.0
+    assert row_p["Utilidades"] == 850.0
+    assert row_p["Utilidades_Pct"] == 8.5
+    assert row_p["Modo_GG"] == "exacto"
+    assert row_p["Monto_Fijo_GG"] == 123.0
+    assert row_p["GG_Presupuesto"] == 123.0
+    assert row_p["GG_Pct"] == 1.23
+    assert row_p["Presupuesto"] == 10973.0
+    assert st.session_state[f"cfg_modo_util_{proy}"] == "monto"
+    assert st.session_state[f"cfg_util_monto_{proy}"] == 850.0
+    assert f"cfg_util_pct_{proy}" not in st.session_state
+    assert st.session_state[f"cfg_modo_gg_{proy}"] == "monto"
+    assert st.session_state[f"cfg_gg_monto_{proy}"] == 123.0
+    assert f"cfg_gg_pct_{proy}" not in st.session_state
+
+    # Recalculos posteriores y recargas del cuadro deben preservar los valores exactos
+    tot_rep = recalcular_totales_presupuesto_proyecto(proy, sincronizar_pactado=False)
+    assert tot_rep["utilidades_monto"] == 850.0
+    assert tot_rep["gg_monto"] == 123.0
+    data_rep = obtener_cuadro_pagos_semanales_proyecto(proy)
+    assert data_rep["fila_gestion"]["TOTAL"] == 850.0
+    assert data_rep["fila_gg"]["TOTAL"] == 123.0
+
+    # 2. Editar Gestión en Dólares ($ 250.00 @ TC 3.60 -> S/ 900.00) y Gastos Generales en 0.00
+    payload_usd = json.dumps({
+        "action": "edit_cells",
+        "ts": 3102,
+        "edits": [
+            {"row_type": "gestion", "row_idx": 0, "field": "Moneda", "value": "Dólares"},
+            {"row_type": "gestion", "row_idx": 0, "field": "TOTAL", "value": 250.0},
+            {"row_type": "gg", "row_idx": 0, "field": "TOTAL", "value": 0.0},
+        ],
+    })
+    assert aplicar_edicion_inline_cuadro_pagos(proy, payload_usd) is True
+
+    row_p2 = st.session_state["proyectos"].iloc[0]
+    assert row_p2["Utilidades"] == 900.0
+    assert row_p2["GG_Presupuesto"] == 0.0
+    assert row_p2["Presupuesto"] == 10900.0
+
+    data_usd = obtener_cuadro_pagos_semanales_proyecto(proy)
+    assert data_usd["fila_gestion"]["Moneda"] == "Dólares"
+    assert data_usd["fila_gestion"]["TOTAL"] == 250.0
+    assert data_usd["fila_gg"]["TOTAL"] == 0.0
 
 
 def test_chat_notas_responder_editar_borrar():
@@ -2148,6 +2262,12 @@ def test_cuadro_pagos_registro_multipagos_y_resumen_exportacion():
     assert "Tipo de Pago:" in js_ui
     assert "Adelanto" in js_ui and "Valorización" in js_ui and "Liquidación" in js_ui
     assert "A quién hacer los pagos" in js_ui
+    assert "updateCellDomAfterMutation(" not in js_ui
+    assert "cell.innerHTML = badgeHtml" not in js_ui
+    with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f:
+        vp_code_pagos = f.read()
+    assert "cota-cell-total-txt" in vp_code_pagos
+    assert "renderAmountCellInner(tdP" not in vp_code_pagos
 
 
 def test_pagos_gestion_supervision_a_utilidades_estudio():
@@ -2779,5 +2899,100 @@ def test_multipagos_misma_semana_y_resumen_completo():
     assert "RESUMEN ECONÓMICO Y DE TAREAS" in tab_res_src
     assert "PENDIENTES DIARIOS" in tab_res_src
     assert "obtener_pendientes_operativos" in tab_res_src
+
+
+def test_finanzas_estudio_anual_y_filtros():
+    import datetime
+    from cota.ui.views_main import (
+        FINANZAS_KPIS_CONFIG,
+        asignar_anio_proyecto,
+        calcular_datos_finanzas_estudio,
+    )
+
+    assert asignar_anio_proyecto({"Inicio": "2024-03-10", "Fin": "2025-01-15"}) == "2024"
+    assert asignar_anio_proyecto({"Inicio": "", "Fin": "2025-08-20"}) == "2025"
+    assert asignar_anio_proyecto({"Inicio": "", "Fin": ""}) == "Sin fecha"
+
+    df_proy = pd.DataFrame([
+        {
+            "Nombre": "Proy 2024", "Cliente": "Cli A", "Inicio": "2024-05-01", "Fin": "2024-09-01",
+            "Presupuesto": 100000.0, "Utilidades": 15000.0, "GG_Presupuesto": 3000.0, "Honorarios_Diseno": 5000.0,
+        },
+        {
+            "Nombre": "Proy 2025", "Cliente": "Cli B", "Inicio": "2025-11-15", "Fin": "2026-02-10",
+            "Presupuesto": 200000.0, "Utilidades": 30000.0, "GG_Presupuesto": 6000.0, "Honorarios_Diseno": 0.0,
+        },
+        {
+            "Nombre": "Proy 2026", "Cliente": "Cli C", "Inicio": "2026-04-01", "Fin": "2026-08-01",
+            "Presupuesto": 50000.0, "Utilidades": 10000.0, "GG_Presupuesto": 2000.0, "Honorarios_Diseno": 2500.0,
+        },
+    ])
+    df_cob = pd.DataFrame([
+        {"Proyecto": "Proy 2024", "Monto_Cobrado": 90000.0},
+        {"Proyecto": "Proy 2026", "Monto_Cobrado": 25000.0},
+    ])
+    df_pag = pd.DataFrame([{"Proyecto": "Proy 2025", "Monto": 80000.0}])
+    df_gg = pd.DataFrame([
+        {"Proyecto": "Proy 2024", "Monto": 1200.0},
+        {"Proyecto": "Proy 2026", "Monto": 500.0},
+    ])
+    df_mat = pd.DataFrame([{"Proyecto": "Proy 2025", "Costo_Real": 12000.0}])
+    df_ing = pd.DataFrame([
+        {"Proyecto": "Proy 2024", "Categoria": "Utilidad", "Monto": 10000.0, "Fecha": "2024-08-01"},
+        {"Proyecto": "Proy 2025", "Categoria": "Gastos Generales / GG", "Monto": 1500.0, "Fecha": "2025-12-01"},
+        {"Proyecto": "General", "Categoria": "Utilidad", "Monto": 2000.0, "Fecha": "2026-06-15"},
+    ])
+    util_rec_info = {
+        "por_proyecto": {
+            "Proy 2025": {"gestion_pagado": 18000.0},
+            "Proy 2026": {"gestion_pagado": 4000.0},
+        }
+    }
+
+    res_all = calcular_datos_finanzas_estudio(
+        df_proy, df_cob, df_pag, df_gg, df_mat, df_ing, util_rec_info,
+        anios_filtro=None, fecha_ref=datetime.date(2026, 11, 18),
+    )
+    assert res_all["anios_disponibles"] == ["2024", "2025", "2026"]
+    kg_all = res_all["kpis_globales"]
+    assert kg_all["num_proyectos"] == 3
+    assert kg_all["tot_ventas"] == 350000.0
+    assert kg_all["tot_utilidades"] == 55000.0
+    assert kg_all["tot_caja_ppto"] == 11000.0
+    assert kg_all["tot_caja_gastada"] == 1700.0
+    assert kg_all["util_ejecutadas"] == 34000.0
+    assert kg_all["gg_cobrados"] == 1500.0
+    assert kg_all["tot_util_ejec_mas_gg"] == 35500.0
+    assert kg_all["tot_hon"] == 7500.0
+
+    # Validar estructura por año y presencia de todos los KPI configurados
+    anual_by_y = {r["Año"]: r for r in res_all["resumen_anual"]}
+    for k_cfg in FINANZAS_KPIS_CONFIG:
+        assert k_cfg["id"] in anual_by_y["2025"]
+    assert anual_by_y["2025"]["ventas"] == 200000.0
+    assert anual_by_y["2025"]["gg_ppto"] == 6000.0
+    assert anual_by_y["2025"]["util_recibidas"] == 18000.0
+    assert anual_by_y["2025"]["gg_cobrados"] == 1500.0
+    assert anual_by_y["2025"]["egresos_obra"] == 92000.0
+    assert anual_by_y["2026"]["util_recibidas"] == 6000.0  # 4000 Proy 2026 + 2000 General
+
+    # Filtrar solo 2025 y 2026 debe actualizar KPIs y filas de proyecto
+    res_sub = calcular_datos_finanzas_estudio(
+        df_proy, df_cob, df_pag, df_gg, df_mat, df_ing, util_rec_info,
+        anios_filtro=["2025", "2026"], fecha_ref=datetime.date(2026, 11, 18),
+    )
+    assert res_sub["anios_activos"] == ["2025", "2026"]
+    assert res_sub["kpis_globales"]["num_proyectos"] == 2
+    assert res_sub["kpis_globales"]["tot_ventas"] == 250000.0
+    assert res_sub["kpis_globales"]["tot_caja_ppto"] == 8000.0
+    assert [r["Proyecto"] for r in res_sub["rows_fin"]] == ["Proy 2025", "Proy 2026"]
+
+    import inspect
+    import cota.ui.views_main as vm_mod
+    vm_src = inspect.getsource(vm_mod)
+    assert "COMPARATIVA FINANCIERA ANUAL" in vm_src
+    assert 'key="fin_filtro_anios"' in vm_src
+    assert 'key="fin_filtro_kpis"' in vm_src
+    assert 'options=["📅 Anual", "🏗️ Por Proyecto"]' in vm_src
 
 

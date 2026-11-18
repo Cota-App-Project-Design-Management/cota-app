@@ -113,7 +113,9 @@ def obtener_parametros_presupuesto_proyecto(proy_name: str) -> dict:
         params["gg_pct"] = safe_float(gg_raw, 2.0)
 
     modo_gg_raw = safe_str(row.get("Modo_GG", "pct")).strip().lower()
-    if modo_gg_raw in ["monto", "fijo", "exacto"]:
+    if modo_gg_raw == "exacto":
+        params["modo_gg"] = "exacto"
+    elif modo_gg_raw in ["monto", "fijo"]:
         params["modo_gg"] = "monto"
     else:
         params["modo_gg"] = "pct"
@@ -124,7 +126,9 @@ def obtener_parametros_presupuesto_proyecto(proy_name: str) -> dict:
         params["utilidades_pct"] = safe_float(util_raw, 15.0)
 
     modo_util_raw = safe_str(row.get("Modo_Utilidades", "pct")).strip().lower()
-    if modo_util_raw in ["monto", "fijo", "exacto"]:
+    if modo_util_raw == "exacto":
+        params["modo_util"] = "exacto"
+    elif modo_util_raw in ["monto", "fijo"]:
         params["modo_util"] = "monto"
     else:
         params["modo_util"] = "pct"
@@ -522,8 +526,8 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str, sincronizar_pactado:
     subtotal_casco = round(subtotal_casco, 2)
 
     modo_gg = params.get("modo_gg", "pct")
-    if modo_gg == "monto":
-        gg_monto = redondear_arriba_10(params.get("monto_fijo_gg", 0.0))
+    if modo_gg in ("monto", "exacto"):
+        gg_monto = round(max(0.0, safe_float(params.get("monto_fijo_gg", 0.0), 0.0)), 2) if modo_gg == "exacto" else redondear_arriba_10(params.get("monto_fijo_gg", 0.0))
         gg_pct = round((gg_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else 0.0, 2)
     else:
         calc_gg = subtotal_casco * (gg_pct / 100.0)
@@ -532,8 +536,8 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str, sincronizar_pactado:
         gg_pct = round(float(gg_pct), 2)
 
     modo_util = params.get("modo_util", "pct")
-    if modo_util == "monto":
-        util_monto = redondear_arriba_100(params.get("monto_fijo_util", 0.0))
+    if modo_util in ("monto", "exacto"):
+        util_monto = round(max(0.0, safe_float(params.get("monto_fijo_util", 0.0), 0.0)), 2) if modo_util == "exacto" else redondear_arriba_100(params.get("monto_fijo_util", 0.0))
         util_pct = round((util_monto / subtotal_casco * 100.0) if subtotal_casco > 0 else 0.0, 2)
     else:
         calc_util = subtotal_casco * (util_pct / 100.0)
@@ -4296,10 +4300,12 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
                     nuevas_filas_c.append(_normalizar_fila_pago(f_old, cols_pago, f_old.get("Descripcion", ""), f_old.get("Partida", "")))
 
             filas_c = nuevas_filas_c
-            if util_proy > 0 or sincronizar_partidas:
-                fila_ges["TOTAL"] = util_proy
-            if gg_proy > 0 or sincronizar_partidas:
-                fila_gg["TOTAL"] = gg_proy
+            modo_util_row = safe_str(proy_row.get("Modo_Utilidades", "")).strip().lower()
+            if util_proy > 0 or sincronizar_partidas or modo_util_row == "exacto":
+                fila_ges["TOTAL"] = _monto_fila_cuadro_desde_soles(util_proy, fila_ges, tc_val)
+            modo_gg_row = safe_str(proy_row.get("Modo_GG", "")).strip().lower()
+            if gg_proy > 0 or sincronizar_partidas or modo_gg_row == "exacto":
+                fila_gg["TOTAL"] = _monto_fila_cuadro_desde_soles(gg_proy, fila_gg, tc_val)
 
         res_data = {
             "num_semanas": num_sem,
@@ -4886,6 +4892,92 @@ def guardar_cuadro_pagos_semanales_proyecto(proy_name: str, data_cuadro: dict):
         st.session_state.proyectos.at[idx_p, "Pagos_Semanales_JSON"] = json.dumps(data_cuadro, ensure_ascii=False)
 
 
+def _monto_soles_desde_fila_cuadro(fila: dict, tc_cuadro: float) -> float:
+    """Convierte el campo TOTAL de una fila del Cuadro de Pagos a Soles usando `tc_cuadro`."""
+    tot_val = max(0.0, safe_float((fila or {}).get("TOTAL", 0.0), 0.0))
+    moneda_f = safe_str((fila or {}).get("Moneda", "Soles")).lower()
+    if ("dolar" in moneda_f or "dólar" in moneda_f or "usd" in moneda_f) and tc_cuadro > 0:
+        return round(tot_val * tc_cuadro, 2)
+    return round(tot_val, 2)
+
+
+def _monto_fila_cuadro_desde_soles(monto_soles: float, fila: dict, tc_cuadro: float) -> float:
+    """Convierte un monto en Soles a la moneda de `fila` ('Soles' o 'Dólares') usando `tc_cuadro`."""
+    soles_val = round(max(0.0, safe_float(monto_soles, 0.0)), 2)
+    moneda_f = safe_str((fila or {}).get("Moneda", "Soles")).lower()
+    if ("dolar" in moneda_f or "dólar" in moneda_f or "usd" in moneda_f) and tc_cuadro > 0:
+        return round(soles_val / tc_cuadro, 2)
+    return soles_val
+
+
+def _aplicar_widget_cfg_ppto_seguro(proy_name: str, tipo: str, monto_soles: float):
+    """Actualiza las claves de sesión de 03. PRESUPUESTO sin fallar si los widgets ya se renderizaron."""
+    suf = "util" if tipo == "util" else "gg"
+    pend_key = f"_pending_sync_ppto_cfg_{proy_name}"
+    pend_map = dict(st.session_state.get(pend_key, {}) if isinstance(st.session_state.get(pend_key), dict) else {})
+    pend_map[suf] = round(max(0.0, safe_float(monto_soles, 0.0)), 2)
+    st.session_state[pend_key] = pend_map
+    try:
+        st.session_state[f"cfg_modo_{suf}_{proy_name}"] = "monto"
+        st.session_state[f"cfg_{suf}_monto_{proy_name}"] = float(pend_map[suf])
+        st.session_state.pop(f"cfg_{suf}_pct_{proy_name}", None)
+    except Exception:
+        pass
+
+
+def _sincronizar_gestion_gg_cuadro_a_proyecto(
+    proy_name: str,
+    tc_cuadro: float,
+    fila_ges=None,
+    fila_gg=None,
+):
+    """
+    Sincroniza los montos TOTAL editados en Gestión y/o Gastos Generales del Cuadro de Pagos
+    hacia Utilidades, GG_Presupuesto y Presupuesto del proyecto en modo 'exacto'.
+    """
+    if (fila_ges is None and fila_gg is None) or "proyectos" not in st.session_state:
+        return
+    df_p = st.session_state.proyectos
+    if df_p.empty or "Nombre" not in df_p.columns:
+        return
+    mask = df_p["Nombre"] == proy_name
+    if not mask.any():
+        return
+    idx_p = df_p[mask].index[0]
+    tc_eff = safe_float(tc_cuadro, 3.60)
+    if tc_eff <= 0:
+        tc_eff = 3.60
+
+    for col_txt in ("Modo_GG", "Modo_Utilidades"):
+        if col_txt not in df_p.columns:
+            df_p[col_txt] = ""
+        elif df_p[col_txt].dtype != object:
+            df_p[col_txt] = df_p[col_txt].fillna("").astype(str).replace({"nan": "", "None": ""}).astype(object)
+    for col_num in ("Monto_Fijo_GG", "Monto_Fijo_Utilidades", "GG_Presupuesto", "Utilidades"):
+        if col_num not in df_p.columns:
+            df_p[col_num] = 0.0
+        else:
+            df_p[col_num] = pd.to_numeric(df_p[col_num], errors="coerce").fillna(0.0).astype(float)
+
+    if fila_ges is not None:
+        soles_ges = _monto_soles_desde_fila_cuadro(fila_ges, tc_eff)
+        df_p.at[idx_p, "Modo_Utilidades"] = "exacto"
+        df_p.at[idx_p, "Monto_Fijo_Utilidades"] = float(soles_ges)
+        df_p.at[idx_p, "Utilidades"] = float(soles_ges)
+        _aplicar_widget_cfg_ppto_seguro(proy_name, "util", soles_ges)
+
+    if fila_gg is not None:
+        soles_gg = _monto_soles_desde_fila_cuadro(fila_gg, tc_eff)
+        df_p.at[idx_p, "Modo_GG"] = "exacto"
+        df_p.at[idx_p, "Monto_Fijo_GG"] = float(soles_gg)
+        df_p.at[idx_p, "GG_Presupuesto"] = float(soles_gg)
+        _aplicar_widget_cfg_ppto_seguro(proy_name, "gg", soles_gg)
+
+    df_parts = st.session_state.get("partidas", pd.DataFrame())
+    if not df_parts.empty and "Proyecto" in df_parts.columns and not df_parts[df_parts["Proyecto"] == proy_name].empty:
+        recalcular_totales_presupuesto_proyecto(proy_name, sincronizar_pactado=False)
+
+
 def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
     """
     Aplica ediciones realizadas directamente sobre el Cuadro de Pagos principal (tanto en vista normal
@@ -4926,6 +5018,8 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
             return False
         st.session_state[last_ts_key] = ts_val
 
+    sync_flags = {"gestion": False, "gg": False}
+
     def _apply_single_edit(ed: dict):
         r_type = safe_str(ed.get("row_type", "contratista")).strip()
         r_idx = int(ed.get("row_idx", 0) or 0)
@@ -4954,6 +5048,8 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
                 s_v = safe_str(val).strip()
                 if field == "Moneda":
                     target["Moneda"] = "Dólares" if ("dolar" in s_v.lower() or "dólar" in s_v.lower() or "usd" in s_v.lower()) else "Soles"
+                    if r_type in ("gestion", "gg"):
+                        sync_flags[r_type] = True
                 elif field == "Descripcion":
                     if s_v:
                         target["Descripcion"] = s_v
@@ -4967,6 +5063,8 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
                 else:
                     num_v = safe_float(val, 0.0)
                 target[field] = round(max(0.0, num_v), 2)
+            if r_type in ("gestion", "gg") and field == "TOTAL" and val is not None:
+                sync_flags[r_type] = True
             if has_nota_pago and field in cols_pago:
                 np_map = dict(target.get("Notas_Pagos", {}) if isinstance(target.get("Notas_Pagos"), dict) else {})
                 if nota_pago_val:
@@ -5131,6 +5229,13 @@ def aplicar_edicion_inline_cuadro_pagos(proy_name: str, payload_raw) -> bool:
     ]
     data_cuadro["fila_gestion"] = _normalizar_fila_pago(fila_ges, cols_pago, "Gestión y supervisión de obras")
     data_cuadro["fila_gg"] = _normalizar_fila_pago(fila_gg, cols_pago, "Gastos Generales")
+    if sync_flags["gestion"] or sync_flags["gg"]:
+        _sincronizar_gestion_gg_cuadro_a_proyecto(
+            proy_name,
+            safe_float(data_cuadro.get("tc", 3.60), 3.60),
+            fila_ges=data_cuadro["fila_gestion"] if sync_flags["gestion"] else None,
+            fila_gg=data_cuadro["fila_gg"] if sync_flags["gg"] else None,
+        )
     guardar_cuadro_pagos_semanales_proyecto(proy_name, data_cuadro)
     return True
 

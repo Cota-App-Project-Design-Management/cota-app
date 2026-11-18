@@ -881,49 +881,438 @@ def _render_tab_contratistas(fecha_hoy, df_hoy):
             st.dataframe(pd.DataFrame({"Tipo de Proyecto": tipos_cat}), use_container_width=True, hide_index=True)
 
 
-def _render_tab_finanzas_estudio(fecha_hoy):
-    """Consolidado de finanzas, utilidades, caja chica y rentabilidad del estudio."""
-    df_p_act = get_proyectos_activos(st.session_state.proyectos)
-    nombres_activos = df_p_act['Nombre'].tolist()
+FINANZAS_KPIS_CONFIG = [
+    {"id": "ventas", "label": "Ventas (Total Contratos)", "color": "#262320", "default": True},
+    {"id": "utilidades", "label": "Utilidades Proyectadas", "color": "#4A7C59", "default": True},
+    {"id": "gg_ppto", "label": "Gastos Generales (GG)", "color": "#D98A2B", "default": True},
+    {"id": "util_recibidas", "label": "Utilidades Recibidas", "color": "#C85A32", "default": True},
+    {"id": "gg_cobrados", "label": "GG Cobrados", "color": "#B58445", "default": False},
+    {"id": "util_mas_gg", "label": "Util. Recibidas + GG Cobrados", "color": "#9A4322", "default": False},
+    {"id": "caja_ejecutada", "label": "Caja Chica Ejecutada", "color": "#C93B2B", "default": False},
+    {"id": "cobrado_clientes", "label": "Cobrado a Clientes", "color": "#2E6F8E", "default": False},
+    {"id": "egresos_obra", "label": "Pagos Obra + FF&E", "color": "#6E665E", "default": False},
+    {"id": "honorarios", "label": "Honorarios de Diseño", "color": "#7A638E", "default": False},
+]
+_FINANZAS_KPI_MAP = {k["label"]: k for k in FINANZAS_KPIS_CONFIG}
 
-    # 1. Total Contratos y Honorarios
-    tot_ventas = sum(safe_float(v) for v in df_p_act['Presupuesto'])
-    tot_hon = sum(safe_float(h) for h in df_p_act.get('Honorarios_Diseno', []))
 
-    # 2. Utilidades Proyectadas (Total de la columna Utilidades de proyectos activos)
-    tot_utilidades = sum(safe_float(u) for u in df_p_act.get('Utilidades', []))
-    if tot_utilidades == 0.0 and tot_ventas > 0:
-        tot_utilidades = tot_ventas * 0.20
+def asignar_anio_proyecto(row, label_sin_fecha: str = "Sin fecha") -> str:
+    """Determina el año financiero único de un proyecto priorizando Inicio y luego Fin."""
+    if row is None or not hasattr(row, "get"):
+        return label_sin_fecha
+    d_ini = parse_date(row.get("Inicio"))
+    if d_ini is not None:
+        return str(d_ini.year)
+    d_fin = parse_date(row.get("Fin"))
+    if d_fin is not None:
+        return str(d_fin.year)
+    return label_sin_fecha
 
-    # 3. Caja Chica Ejecutada vs Presupuesto Total para Caja Chica (GG_Presupuesto)
-    tot_caja_ppto = sum(safe_float(g) for g in df_p_act.get('GG_Presupuesto', []))
-    df_gg = st.session_state.gg_log if 'gg_log' in st.session_state else pd.DataFrame(columns=['Proyecto', 'Monto'])
-    if not df_gg.empty and 'Proyecto' in df_gg.columns:
-        df_gg = df_gg[df_gg['Proyecto'].isin(nombres_activos)]
-    tot_caja_gastada = pd.to_numeric(df_gg['Monto'], errors='coerce').sum() if not df_gg.empty and 'Monto' in df_gg.columns else 0.0
-    saldo_caja = tot_caja_ppto - tot_caja_gastada
+
+def _ordenar_anios_financieros(anios_iter) -> list[str]:
+    """Ordena años cronológicamente dejando cualquier etiqueta sin año al final."""
+    unicos = {str(a).strip() for a in anios_iter if str(a).strip()}
+    numericos = sorted((a for a in unicos if a.isdigit()), key=int)
+    otros = sorted(a for a in unicos if not a.isdigit())
+    return numericos + otros
+
+
+def _mapa_sumas_por_proyecto(df: pd.DataFrame, col_monto: str, col_proy: str = "Proyecto") -> dict[str, float]:
+    """Agrupa montos numéricos por nombre de proyecto de forma segura."""
+    if df is None or df.empty or col_proy not in df.columns or col_monto not in df.columns:
+        return {}
+    s_num = pd.to_numeric(df[col_monto], errors="coerce").fillna(0.0)
+    grouped = s_num.groupby(df[col_proy].fillna("").astype(str)).sum()
+    return {str(k): float(v) for k, v in grouped.items()}
+
+
+def calcular_datos_finanzas_estudio(
+    df_proyectos: pd.DataFrame,
+    df_cob: pd.DataFrame,
+    df_pag: pd.DataFrame,
+    df_gg: pd.DataFrame,
+    df_mat: pd.DataFrame,
+    df_ing: pd.DataFrame,
+    util_rec_info: dict,
+    anios_filtro=None,
+    fecha_ref=None,
+) -> dict:
+    """Consolida métricas financieras por proyecto y por año para la pestaña FINANZAS."""
+    df_p = (
+        df_proyectos.copy()
+        if isinstance(df_proyectos, pd.DataFrame) and not df_proyectos.empty
+        else pd.DataFrame(columns=COLS_PROY)
+    )
+    nombres_base = [safe_str(n) for n in df_p["Nombre"].tolist()] if "Nombre" in df_p.columns else []
+    nombres_set = set(nombres_base)
+
+    cob_map = _mapa_sumas_por_proyecto(df_cob, "Monto_Cobrado")
+    pag_map = _mapa_sumas_por_proyecto(df_pag, "Monto")
+    gg_map = _mapa_sumas_por_proyecto(df_gg, "Monto")
+    mat_map = _mapa_sumas_por_proyecto(df_mat, "Costo_Real")
+
+    ing_util_map: dict[str, float] = {}
+    ing_gg_map: dict[str, float] = {}
+    ing_otros_map: dict[str, float] = {}
+    gen_util_anio: dict[str, float] = {}
+    gen_gg_anio: dict[str, float] = {}
+
+    if isinstance(df_ing, pd.DataFrame) and not df_ing.empty and "Monto" in df_ing.columns:
+        valid_proys = nombres_set | {"General"}
+        df_ing_sub = (
+            df_ing[df_ing["Proyecto"].isin(valid_proys)].reset_index(drop=True)
+            if "Proyecto" in df_ing.columns
+            else df_ing.reset_index(drop=True)
+        )
+        if not df_ing_sub.empty:
+            cat_s = df_ing_sub["Categoria"].astype(str) if "Categoria" in df_ing_sub.columns else pd.Series("", index=df_ing_sub.index)
+            montos_s = pd.to_numeric(df_ing_sub["Monto"], errors="coerce").fillna(0.0)
+            is_u_arr = cat_s.str.contains("Utilidad|Honorario", case=False, na=False)
+            is_g_arr = cat_s.str.contains("Gasto|Caja|GG", case=False, na=False)
+            for idx_i, r_ing in df_ing_sub.iterrows():
+                m_val = float(montos_s.loc[idx_i])
+                p_ing = safe_str(r_ing.get("Proyecto", "General")) or "General"
+                is_u = bool(is_u_arr.loc[idx_i])
+                is_g = bool(is_g_arr.loc[idx_i]) and not is_u
+                if p_ing in nombres_set:
+                    if is_u:
+                        ing_util_map[p_ing] = round(ing_util_map.get(p_ing, 0.0) + m_val, 2)
+                    elif is_g:
+                        ing_gg_map[p_ing] = round(ing_gg_map.get(p_ing, 0.0) + m_val, 2)
+                    else:
+                        ing_otros_map[p_ing] = round(ing_otros_map.get(p_ing, 0.0) + m_val, 2)
+                elif p_ing == "General":
+                    d_ing = parse_date(r_ing.get("Fecha"))
+                    yr_gen = str(d_ing.year) if d_ing is not None else (str(fecha_ref.year) if fecha_ref is not None else "Sin fecha")
+                    if is_u:
+                        gen_util_anio[yr_gen] = round(gen_util_anio.get(yr_gen, 0.0) + m_val, 2)
+                    elif is_g:
+                        gen_gg_anio[yr_gen] = round(gen_gg_anio.get(yr_gen, 0.0) + m_val, 2)
+
+    raw_util_sum = sum(safe_float(u) for u in df_p.get("Utilidades", []))
+    raw_ventas_sum = sum(safe_float(v) for v in df_p.get("Presupuesto", []))
+    usar_fallback_20 = (raw_util_sum == 0.0 and raw_ventas_sum > 0.0)
+    por_proy_rec = util_rec_info.get("por_proyecto", {}) if isinstance(util_rec_info, dict) else {}
+
+    proy_records = []
+    for _, pr in df_p.iterrows():
+        p_name = safe_str(pr.get("Nombre", ""))
+        anio_p = asignar_anio_proyecto(pr)
+        ppto_p = round(safe_float(pr.get("Presupuesto", 0.0)), 2)
+        hon_p = round(safe_float(pr.get("Honorarios_Diseno", 0.0)), 2)
+        util_p = round(safe_float(pr.get("Utilidades", 0.0)), 2)
+        modo_u = safe_str(pr.get("Modo_Utilidades", "")).strip().lower()
+        if usar_fallback_20 and util_p == 0.0 and ppto_p > 0 and modo_u not in ("exacto", "monto", "fijo"):
+            util_p = round(ppto_p * 0.20, 2)
+        gg_ppto_p = round(safe_float(pr.get("GG_Presupuesto", 0.0)), 2)
+        caja_p = round(gg_map.get(p_name, 0.0), 2)
+        cob_p = round(cob_map.get(p_name, 0.0), 2)
+        pag_p = round(pag_map.get(p_name, 0.0), 2)
+        ffe_p = round(mat_map.get(p_name, 0.0), 2)
+        egresos_p = round(pag_p + caja_p + ffe_p, 2)
+
+        ges_pag_p = round(float(por_proy_rec.get(p_name, {}).get("gestion_pagado", 0.0)), 2)
+        util_rec_p = round(ges_pag_p + ing_util_map.get(p_name, 0.0), 2)
+        gg_cob_p = round(ing_gg_map.get(p_name, 0.0), 2)
+        util_mas_gg_p = round(util_rec_p + gg_cob_p, 2)
+        u_ej_tabla_p = round(util_mas_gg_p + ing_otros_map.get(p_name, 0.0), 2)
+
+        proy_records.append({
+            "Proyecto": p_name,
+            "Cliente": safe_str(pr.get("Cliente", "")),
+            "Año": anio_p,
+            "ventas": ppto_p,
+            "utilidades": util_p,
+            "gg_ppto": gg_ppto_p,
+            "util_recibidas": util_rec_p,
+            "gg_cobrados": gg_cob_p,
+            "util_mas_gg": util_mas_gg_p,
+            "u_ej_tabla": u_ej_tabla_p,
+            "caja_ejecutada": caja_p,
+            "cobrado_clientes": cob_p,
+            "egresos_obra": egresos_p,
+            "honorarios": hon_p,
+        })
+
+    anios_disponibles = _ordenar_anios_financieros(
+        [r["Año"] for r in proy_records] + list(gen_util_anio.keys()) + list(gen_gg_anio.keys())
+    )
+    if anios_filtro is None:
+        anios_activos = list(anios_disponibles)
+    else:
+        filtro_set = {str(a) for a in anios_filtro}
+        anios_activos = [a for a in anios_disponibles if a in filtro_set]
+
+    anios_act_set = set(anios_activos)
+    recs_filtrados = [r for r in proy_records if r["Año"] in anios_act_set]
+
+    por_anio_acc: dict[str, dict] = {}
+    for yr in anios_activos:
+        por_anio_acc[yr] = {
+            "Año": yr,
+            "Proyectos": 0,
+            **{k["id"]: 0.0 for k in FINANZAS_KPIS_CONFIG},
+        }
+        por_anio_acc[yr]["util_recibidas"] = round(gen_util_anio.get(yr, 0.0), 2)
+        por_anio_acc[yr]["gg_cobrados"] = round(gen_gg_anio.get(yr, 0.0), 2)
+        por_anio_acc[yr]["util_mas_gg"] = round(
+            por_anio_acc[yr]["util_recibidas"] + por_anio_acc[yr]["gg_cobrados"], 2
+        )
+
+    for rec in recs_filtrados:
+        acc = por_anio_acc[rec["Año"]]
+        acc["Proyectos"] += 1
+        for k_cfg in FINANZAS_KPIS_CONFIG:
+            kid = k_cfg["id"]
+            acc[kid] = round(acc[kid] + float(rec[kid]), 2)
+
+    resumen_anual = []
+    for yr in anios_activos:
+        row_y = por_anio_acc[yr]
+        v_y = row_y["ventas"]
+        row_y["margen_pct"] = round((row_y["utilidades"] / v_y * 100.0) if v_y > 0 else 0.0, 1)
+        resumen_anual.append(row_y)
+
+    tot_ventas = round(sum(r["ventas"] for r in resumen_anual), 2)
+    tot_hon = round(sum(r["honorarios"] for r in resumen_anual), 2)
+    tot_utilidades = round(sum(r["utilidades"] for r in resumen_anual), 2)
+    tot_caja_ppto = round(sum(r["gg_ppto"] for r in resumen_anual), 2)
+    tot_caja_gastada = round(sum(r["caja_ejecutada"] for r in resumen_anual), 2)
+    saldo_caja = round(tot_caja_ppto - tot_caja_gastada, 2)
     pct_caja = (tot_caja_gastada / tot_caja_ppto * 100.0) if tot_caja_ppto > 0 else 0.0
-
-    # 4. Utilidades Ejecutadas + Gastos Generales Cobrados
-    df_ing = st.session_state.ingresos_socios if 'ingresos_socios' in st.session_state else pd.DataFrame(columns=['Proyecto', 'Categoria', 'Monto'])
-    if not df_ing.empty and 'Proyecto' in df_ing.columns:
-        df_ing_act = df_ing[df_ing['Proyecto'].isin(nombres_activos + ['General'])].copy()
-    else:
-        df_ing_act = pd.DataFrame(columns=['Proyecto', 'Categoria', 'Monto'])
-
-    if not df_ing_act.empty and 'Categoria' in df_ing_act.columns and 'Monto' in df_ing_act.columns:
-        cat_s = df_ing_act['Categoria'].astype(str)
-        mask_util = cat_s.str.contains('Utilidad|Honorario', case=False, na=False)
-        mask_gg = cat_s.str.contains('Gasto|Caja|GG', case=False, na=False)
-        util_ejecutadas = float(pd.to_numeric(df_ing_act.loc[mask_util, 'Monto'], errors='coerce').fillna(0.0).sum())
-        gg_cobrados = float(pd.to_numeric(df_ing_act.loc[mask_gg, 'Monto'], errors='coerce').fillna(0.0).sum())
-    else:
-        util_ejecutadas = 0.0
-        gg_cobrados = 0.0
-
-    util_rec_info = obtener_utilidades_recibidas_estudio(nombres_activos)
-    util_ejecutadas = round(util_ejecutadas + float(util_rec_info.get("gestion_pagado_total", 0.0)), 2)
+    pct_util_contratos = (tot_utilidades / tot_ventas * 100.0) if tot_ventas > 0 else 0.0
+    util_ejecutadas = round(sum(r["util_recibidas"] for r in resumen_anual), 2)
+    gg_cobrados = round(sum(r["gg_cobrados"] for r in resumen_anual), 2)
     tot_util_ejec_mas_gg = round(util_ejecutadas + gg_cobrados, 2)
+    tot_cobrado = round(sum(r["cobrado_clientes"] for r in resumen_anual), 2)
+    tot_egresos = round(sum(r["egresos_obra"] for r in resumen_anual), 2)
+
+    rows_fin = [
+        {
+            "Proyecto": r["Proyecto"],
+            "Año": r["Año"],
+            "Cliente": r["Cliente"],
+            "Total Contrato": format_currency(r["ventas"]),
+            "Utilidades": format_currency(r["utilidades"]),
+            "GG (Ppto.)": format_currency(r["gg_ppto"]),
+            "Caja Chica (Ejec. / Ppto.)": f"{format_currency(r['caja_ejecutada'])} / {format_currency(r['gg_ppto'])}",
+            "Util. Ejec. + GG Cobrados": format_currency(r["u_ej_tabla"]),
+            "Cobrado Cliente": format_currency(r["cobrado_clientes"]),
+            "Pagos Obra + FF&E": format_currency(r["egresos_obra"]),
+        }
+        for r in recs_filtrados
+    ]
+
+    return {
+        "anios_disponibles": anios_disponibles,
+        "anios_activos": anios_activos,
+        "kpis_globales": {
+            "num_proyectos": len(recs_filtrados),
+            "tot_ventas": tot_ventas,
+            "tot_hon": tot_hon,
+            "tot_utilidades": tot_utilidades,
+            "pct_util_contratos": pct_util_contratos,
+            "tot_caja_ppto": tot_caja_ppto,
+            "tot_caja_gastada": tot_caja_gastada,
+            "saldo_caja": saldo_caja,
+            "pct_caja": pct_caja,
+            "util_ejecutadas": util_ejecutadas,
+            "gg_cobrados": gg_cobrados,
+            "tot_util_ejec_mas_gg": tot_util_ejec_mas_gg,
+            "tot_cobrado": tot_cobrado,
+            "tot_egresos": tot_egresos,
+        },
+        "resumen_anual": resumen_anual,
+        "proy_records": recs_filtrados,
+        "rows_fin": rows_fin,
+    }
+
+
+def _render_finanzas_chart_y_resumen(fin_data: dict, kpis_sel: list[str], vista_graf: str):
+    """Renderiza el gráfico comparativo (Anual por defecto o Por Proyecto) y la tabla consolidada anual."""
+    anios_act = fin_data["anios_activos"]
+    resumen_anual = fin_data["resumen_anual"]
+    proy_recs = fin_data["proy_records"]
+
+    if not anios_act:
+        st.info("Selecciona al menos un año en el filtro superior para visualizar las métricas.")
+        return
+    if not kpis_sel:
+        st.info("Selecciona al menos un KPI en el filtro superior para visualizar el gráfico.")
+        return
+
+    kpis_validos = [k for k in kpis_sel if k in _FINANZAS_KPI_MAP]
+    if not kpis_validos:
+        st.info("Selecciona al menos un KPI válido para visualizar el gráfico.")
+        return
+    colores_sel = [_FINANZAS_KPI_MAP[k]["color"] for k in kpis_validos]
+
+    if vista_graf == "🏗️ Por Proyecto":
+        st.markdown("#### COMPARATIVA FINANCIERA POR PROYECTO")
+        chart_rows = []
+        for rec in proy_recs:
+            for k_lbl in kpis_validos:
+                kid = _FINANZAS_KPI_MAP[k_lbl]["id"]
+                chart_rows.append({
+                    "Proyecto": rec["Proyecto"],
+                    "Año": rec["Año"],
+                    "KPI": k_lbl,
+                    "Monto": rec[kid],
+                })
+        if not chart_rows:
+            st.info("No hay proyectos en los años seleccionados.")
+            return
+        df_ch_p = pd.DataFrame(chart_rows)
+        chart_p = alt.Chart(df_ch_p).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+            x=alt.X("Proyecto:N", title=None, axis=alt.Axis(labelAngle=-15, labelColor="#262320", labelFontWeight="bold")),
+            y=alt.Y("Monto:Q", title="Monto (S/)", axis=alt.Axis(gridColor="#DFD9CE", labelColor="#6E665E")),
+            xOffset=alt.XOffset("KPI:N", sort=kpis_validos),
+            color=alt.Color(
+                "KPI:N",
+                scale=alt.Scale(domain=kpis_validos, range=colores_sel),
+                legend=alt.Legend(title="Indicador Financiero", orient="top", labelColor="#262320", titleColor="#6E665E"),
+            ),
+            tooltip=["Proyecto", "Año", "KPI", alt.Tooltip("Monto:Q", title="Monto (S/)", format=",.2f")],
+        ).properties(height=310).configure_view(strokeOpacity=0)
+        st.altair_chart(chart_p, use_container_width=True)
+        return
+
+    st.markdown("#### COMPARATIVA FINANCIERA ANUAL")
+    st.caption("Evolución anual según los años y KPIs seleccionados (cada proyecto se asigna al año de su fecha de Inicio o Fin).")
+
+    chart_rows_a = []
+    for r_y in resumen_anual:
+        v_y = r_y["ventas"]
+        for k_lbl in kpis_validos:
+            kid = _FINANZAS_KPI_MAP[k_lbl]["id"]
+            m_val = r_y[kid]
+            pct_v = round((m_val / v_y * 100.0) if v_y > 0 else 0.0, 1)
+            chart_rows_a.append({
+                "Año": r_y["Año"],
+                "Proyectos": r_y["Proyectos"],
+                "KPI": k_lbl,
+                "Monto": m_val,
+                "Pct_Ventas": f"{pct_v:.1f}%",
+            })
+
+    df_ch_a = pd.DataFrame(chart_rows_a)
+    chart_anual = alt.Chart(df_ch_a).mark_bar(cornerRadiusTopLeft=5, cornerRadiusTopRight=5).encode(
+        x=alt.X("Año:N", title=None, sort=anios_act, axis=alt.Axis(labelAngle=0, labelColor="#262320", labelFontWeight="bold", labelFontSize=13)),
+        y=alt.Y("Monto:Q", title="Monto (S/)", axis=alt.Axis(gridColor="#DFD9CE", labelColor="#6E665E")),
+        xOffset=alt.XOffset("KPI:N", sort=kpis_validos),
+        color=alt.Color(
+            "KPI:N",
+            scale=alt.Scale(domain=kpis_validos, range=colores_sel),
+            legend=alt.Legend(title="KPI Financiero", orient="top", labelColor="#262320", titleColor="#6E665E"),
+        ),
+        tooltip=[
+            alt.Tooltip("Año:N", title="Año"),
+            alt.Tooltip("Proyectos:Q", title="Proyectos"),
+            alt.Tooltip("KPI:N", title="KPI"),
+            alt.Tooltip("Monto:Q", title="Monto (S/)", format=",.2f"),
+            alt.Tooltip("Pct_Ventas:N", title="% s/ Ventas"),
+        ],
+    ).properties(height=320).configure_view(strokeOpacity=0)
+    st.altair_chart(chart_anual, use_container_width=True)
+
+    rows_anual_disp = []
+    for r_y in resumen_anual:
+        fila_t = {"Año": r_y["Año"], "Proyectos": r_y["Proyectos"]}
+        for k_lbl in kpis_validos:
+            kid = _FINANZAS_KPI_MAP[k_lbl]["id"]
+            fila_t[k_lbl] = format_currency(r_y[kid])
+        fila_t["Margen Util. %"] = f"{r_y['margen_pct']:.1f}%"
+        rows_anual_disp.append(fila_t)
+
+    if len(resumen_anual) > 1:
+        tot_v_sel = sum(r["ventas"] for r in resumen_anual)
+        tot_u_sel = sum(r["utilidades"] for r in resumen_anual)
+        margen_tot = (tot_u_sel / tot_v_sel * 100.0) if tot_v_sel > 0 else 0.0
+        fila_tot = {"Año": "TOTAL SELECCIONADO", "Proyectos": sum(r["Proyectos"] for r in resumen_anual)}
+        for k_lbl in kpis_validos:
+            kid = _FINANZAS_KPI_MAP[k_lbl]["id"]
+            fila_tot[k_lbl] = format_currency(sum(r[kid] for r in resumen_anual))
+        fila_tot["Margen Util. %"] = f"{margen_tot:.1f}%"
+        rows_anual_disp.append(fila_tot)
+
+    st.markdown("##### 📋 RESUMEN ANUAL CONSOLIDADO")
+    st.dataframe(pd.DataFrame(rows_anual_disp), use_container_width=True, hide_index=True)
+
+
+def _render_tab_finanzas_estudio(fecha_hoy):
+    """Consolidado de finanzas anuales y por proyecto: ventas, utilidades, caja chica y cobros."""
+    if "fin_incluir_archivados" not in st.session_state:
+        st.session_state["fin_incluir_archivados"] = False
+    incluir_arch = bool(st.session_state.get("fin_incluir_archivados", False))
+
+    df_proy_all = st.session_state.get("proyectos", pd.DataFrame())
+    df_p_act = get_proyectos_activos(df_proy_all)
+    if incluir_arch and isinstance(df_proy_all, pd.DataFrame) and not df_proy_all.empty:
+        df_p_base = df_proy_all.copy()
+        for col in COLS_PROY:
+            if col not in df_p_base.columns:
+                df_p_base[col] = ""
+    else:
+        df_p_base = df_p_act
+
+    nombres_base = (
+        [safe_str(n) for n in df_p_base["Nombre"].tolist()]
+        if not df_p_base.empty and "Nombre" in df_p_base.columns
+        else []
+    )
+
+    df_gg_raw = st.session_state.gg_log if "gg_log" in st.session_state else pd.DataFrame(columns=["Proyecto", "Monto"])
+    df_gg = (
+        df_gg_raw[df_gg_raw["Proyecto"].isin(nombres_base)]
+        if not df_gg_raw.empty and "Proyecto" in df_gg_raw.columns
+        else pd.DataFrame(columns=["Proyecto", "Monto"])
+    )
+
+    df_ing_raw = (
+        st.session_state.ingresos_socios
+        if "ingresos_socios" in st.session_state
+        else pd.DataFrame(columns=["Proyecto", "Categoria", "Monto"])
+    )
+    df_ing = (
+        df_ing_raw[df_ing_raw["Proyecto"].isin(nombres_base + ["General"])].copy()
+        if not df_ing_raw.empty and "Proyecto" in df_ing_raw.columns
+        else pd.DataFrame(columns=["Proyecto", "Categoria", "Monto"])
+    )
+
+    df_cob_raw = st.session_state.cobros if "cobros" in st.session_state else pd.DataFrame()
+    df_cob = (
+        df_cob_raw[df_cob_raw["Proyecto"].isin(nombres_base)]
+        if not df_cob_raw.empty and "Proyecto" in df_cob_raw.columns
+        else pd.DataFrame()
+    )
+
+    df_pag_raw = st.session_state.pagos if "pagos" in st.session_state else pd.DataFrame(columns=["Proyecto", "Monto"])
+    df_pag = (
+        df_pag_raw[df_pag_raw["Proyecto"].isin(nombres_base)]
+        if not df_pag_raw.empty and "Proyecto" in df_pag_raw.columns
+        else pd.DataFrame(columns=["Proyecto", "Monto"])
+    )
+
+    df_mat_raw = st.session_state.materiales if "materiales" in st.session_state else pd.DataFrame(columns=["Proyecto", "Costo_Real"])
+    df_mat = (
+        df_mat_raw[df_mat_raw["Proyecto"].isin(nombres_base)]
+        if not df_mat_raw.empty and "Proyecto" in df_mat_raw.columns
+        else pd.DataFrame(columns=["Proyecto", "Costo_Real"])
+    )
+
+    util_rec_info = obtener_utilidades_recibidas_estudio(nombres_base)
+    fin_base = calcular_datos_finanzas_estudio(
+        df_p_base,
+        df_cob,
+        df_pag,
+        df_gg,
+        df_mat,
+        df_ing,
+        util_rec_info,
+        anios_filtro=None,
+        fecha_ref=fecha_hoy,
+    )
+    kg_all = fin_base["kpis_globales"]
 
     # Sub-módulo de Manejo de Caja Chica y Gastos Generales (Punto 1.3)
     if st.session_state.get("modulo_caja_chica_abierto", False):
@@ -947,10 +1336,10 @@ def _render_tab_finanzas_estudio(fecha_hoy):
         )
 
         render_metric_row([
-            {"title": "Presupuesto Caja Chica", "value": format_currency(tot_caja_ppto), "subtitle": "Fondo total asignado a proyectos"},
-            {"title": "Caja Chica Ejecutada", "value": format_currency(tot_caja_gastada), "subtitle": f"{pct_caja:.1f}% del presupuesto ejecutado", "border_color": "#C85A32", "text_color": "#C85A32"},
-            {"title": "Saldo Disponible Caja", "value": format_currency(saldo_caja), "subtitle": "Presupuesto restante por ejecutar", "border_color": "#4A7C59" if saldo_caja >= 0 else "#C93B2B", "text_color": "#4A7C59" if saldo_caja >= 0 else "#C93B2B"},
-            {"title": "Gastos Generales Cobrados", "value": format_currency(gg_cobrados), "subtitle": "Ingresos aplicados a caja / GG", "border_color": "#4A7C59", "text_color": "#4A7C59"},
+            {"title": "Presupuesto Caja Chica", "value": format_currency(kg_all["tot_caja_ppto"]), "subtitle": "Fondo total asignado a proyectos"},
+            {"title": "Caja Chica Ejecutada", "value": format_currency(kg_all["tot_caja_gastada"]), "subtitle": f"{kg_all['pct_caja']:.1f}% del presupuesto ejecutado", "border_color": "#C85A32", "text_color": "#C85A32"},
+            {"title": "Saldo Disponible Caja", "value": format_currency(kg_all["saldo_caja"]), "subtitle": "Presupuesto restante por ejecutar", "border_color": "#4A7C59" if kg_all["saldo_caja"] >= 0 else "#C93B2B", "text_color": "#4A7C59" if kg_all["saldo_caja"] >= 0 else "#C93B2B"},
+            {"title": "Gastos Generales Cobrados", "value": format_currency(kg_all["gg_cobrados"]), "subtitle": "Ingresos aplicados a caja / GG", "border_color": "#4A7C59", "text_color": "#4A7C59"},
         ])
 
         if not df_gg.empty:
@@ -959,45 +1348,83 @@ def _render_tab_finanzas_estudio(fecha_hoy):
         return
 
     st.markdown("### 📊 FINANZAS")
-    st.caption("Control ejecutivo de contratos activos, utilidades proyectadas, ejecución de caja chica y utilidades + gastos generales cobrados.")
+    st.caption("Control ejecutivo anual y por proyecto: ventas (total contratos), utilidades, gastos generales, caja chica y cobros.")
 
-    # Cobrado a clientes y egresos adicionales para tablas y gráficos
-    df_cob = st.session_state.cobros if 'cobros' in st.session_state else pd.DataFrame()
-    if not df_cob.empty and 'Proyecto' in df_cob.columns:
-        df_cob = df_cob[df_cob['Proyecto'].isin(nombres_activos)]
+    anios_disp = fin_base["anios_disponibles"] or [str(fecha_hoy.year)]
+    k_anios_key = "fin_filtro_anios"
+    if k_anios_key in st.session_state:
+        anios_prev = [a for a in st.session_state[k_anios_key] if a in anios_disp]
+        if len(anios_prev) != len(st.session_state[k_anios_key]):
+            st.session_state[k_anios_key] = anios_prev or list(anios_disp)
 
-    df_pag = st.session_state.pagos if 'pagos' in st.session_state else pd.DataFrame(columns=['Proyecto', 'Monto'])
-    if not df_pag.empty and 'Proyecto' in df_pag.columns:
-        df_pag = df_pag[df_pag['Proyecto'].isin(nombres_activos)]
+    kpi_opts = [k["label"] for k in FINANZAS_KPIS_CONFIG]
+    kpi_defs = [k["label"] for k in FINANZAS_KPIS_CONFIG if k["default"]]
+    k_kpis_key = "fin_filtro_kpis"
+    if k_kpis_key in st.session_state:
+        kpis_prev = [k for k in st.session_state[k_kpis_key] if k in kpi_opts]
+        if len(kpis_prev) != len(st.session_state[k_kpis_key]):
+            st.session_state[k_kpis_key] = kpis_prev or list(kpi_defs)
 
-    df_mat = st.session_state.materiales if 'materiales' in st.session_state else pd.DataFrame(columns=['Proyecto', 'Costo_Real'])
-    if not df_mat.empty and 'Proyecto' in df_mat.columns:
-        df_mat = df_mat[df_mat['Proyecto'].isin(nombres_activos)]
+    cf1, cf2, cf3 = st.columns([3.0, 4.4, 2.6])
+    with cf1:
+        anios_sel = st.multiselect(
+            "📅 Años a visualizar:",
+            options=anios_disp,
+            default=list(anios_disp),
+            key=k_anios_key,
+        )
+    with cf2:
+        kpis_sel = st.multiselect(
+            "📊 KPIs en el gráfico:",
+            options=kpi_opts,
+            default=kpi_defs,
+            key=k_kpis_key,
+        )
+    with cf3:
+        vista_graf = st.radio(
+            "Vista del gráfico:",
+            options=["📅 Anual", "🏗️ Por Proyecto"],
+            index=0,
+            horizontal=True,
+            key="fin_vista_grafico",
+        )
+        st.checkbox("Incluir proyectos archivados", key="fin_incluir_archivados")
 
-    col_caja_card = "#C85A32" if tot_caja_gastada <= tot_caja_ppto else "#C93B2B"
-    pct_util_contratos = (tot_utilidades / tot_ventas * 100.0) if tot_ventas > 0 else 0.0
+    fin_filt = calcular_datos_finanzas_estudio(
+        df_p_base,
+        df_cob,
+        df_pag,
+        df_gg,
+        df_mat,
+        df_ing,
+        util_rec_info,
+        anios_filtro=anios_sel,
+        fecha_ref=fecha_hoy,
+    )
+    kg = fin_filt["kpis_globales"]
 
-    # Los 4 Widgets de Finanzas (Punto 1.2 - Foto 1) + Acceso directo a Caja Chica (Punto 1.3)
+    col_caja_card = "#C85A32" if kg["tot_caja_gastada"] <= kg["tot_caja_ppto"] else "#C93B2B"
+
     cw1, cw2, cw3, cw4 = st.columns(4)
     with cw1:
         render_metric_card(
             "1. Total Contratos",
-            format_currency(tot_ventas),
-            f"{len(df_p_act)} proyectos · Honorarios: {format_currency(tot_hon)}",
+            format_currency(kg["tot_ventas"]),
+            f"{kg['num_proyectos']} proyectos · Honorarios: {format_currency(kg['tot_hon'])}",
         )
     with cw2:
         render_metric_card(
             "2. Utilidades",
-            format_currency(tot_utilidades),
-            f"Margen est.: {pct_util_contratos:.0f}% · Recibidas: {format_currency(util_ejecutadas)}",
+            format_currency(kg["tot_utilidades"]),
+            f"Margen est.: {kg['pct_util_contratos']:.0f}% · Recibidas: {format_currency(kg['util_ejecutadas'])}",
             border_color="#4A7C59",
             text_color="#4A7C59",
         )
     with cw3:
         render_metric_card(
             "3. Caja Chica Ejecutada vs Caja Chica ↗",
-            f"{format_currency(tot_caja_gastada)} / {format_currency(tot_caja_ppto)}",
-            f"Ejecutado: {pct_caja:.1f}% · Saldo: {format_currency(saldo_caja)}",
+            f"{format_currency(kg['tot_caja_gastada'])} / {format_currency(kg['tot_caja_ppto'])}",
+            f"Ejecutado: {kg['pct_caja']:.1f}% · Saldo: {format_currency(kg['saldo_caja'])}",
             border_color=col_caja_card,
             text_color=col_caja_card,
         )
@@ -1007,91 +1434,36 @@ def _render_tab_finanzas_estudio(fecha_hoy):
     with cw4:
         render_metric_card(
             "4. Utilidades Recibidas + GG Cobrados",
-            format_currency(tot_util_ejec_mas_gg),
-            f"Util. Recibidas: {format_currency(util_ejecutadas)} · GG: {format_currency(gg_cobrados)}",
+            format_currency(kg["tot_util_ejec_mas_gg"]),
+            f"Util. Recibidas: {format_currency(kg['util_ejecutadas'])} · GG: {format_currency(kg['gg_cobrados'])}",
             border_color="#4A7C59",
             text_color="#4A7C59",
         )
 
     st.divider()
 
-    if df_p_act.empty:
+    if df_p_base.empty:
         st.info("No hay proyectos activos registrados.")
         return
 
-    rows_fin = []
-    chart_rows = []
-    for _, pr in df_p_act.iterrows():
-        p_name = pr['Nombre']
-        ppto_p = safe_float(pr.get('Presupuesto', 0))
-        util_p = safe_float(pr.get('Utilidades', 0))
-        if util_p == 0.0 and ppto_p > 0:
-            util_p = ppto_p * 0.20
-        gg_ppto_p = safe_float(pr.get('GG_Presupuesto', 0))
-        cob_p = pd.to_numeric(df_cob[df_cob['Proyecto'] == p_name]['Monto_Cobrado'], errors='coerce').sum() if not df_cob.empty and 'Proyecto' in df_cob.columns and 'Monto_Cobrado' in df_cob.columns else 0.0
-        pag_p = pd.to_numeric(df_pag[df_pag['Proyecto'] == p_name]['Monto'], errors='coerce').sum() if not df_pag.empty and 'Proyecto' in df_pag.columns and 'Monto' in df_pag.columns else 0.0
-        caja_p = pd.to_numeric(df_gg[df_gg['Proyecto'] == p_name]['Monto'], errors='coerce').sum() if not df_gg.empty and 'Proyecto' in df_gg.columns and 'Monto' in df_gg.columns else 0.0
-        ffe_p = pd.to_numeric(df_mat[df_mat['Proyecto'] == p_name]['Costo_Real'], errors='coerce').sum() if not df_mat.empty and 'Proyecto' in df_mat.columns and 'Costo_Real' in df_mat.columns else 0.0
-        egresos_p = pag_p + caja_p + ffe_p
-
-        if not df_ing_act.empty:
-            ing_p = df_ing_act[df_ing_act['Proyecto'] == p_name]
-            u_ej_p = float(pd.to_numeric(ing_p['Monto'], errors='coerce').fillna(0.0).sum())
-        else:
-            u_ej_p = 0.0
-
-        u_ej_p = round(u_ej_p + float(util_rec_info.get("por_proyecto", {}).get(p_name, {}).get("gestion_pagado", 0.0)), 2)
-
-        rows_fin.append({
-            "Proyecto": p_name,
-            "Cliente": safe_str(pr.get('Cliente', '')),
-            "Total Contrato": format_currency(ppto_p),
-            "Utilidades": format_currency(util_p),
-            "Caja Chica (Ejec. / Ppto.)": f"{format_currency(caja_p)} / {format_currency(gg_ppto_p)}",
-            "Util. Ejec. + GG Cobrados": format_currency(u_ej_p),
-            "Cobrado Cliente": format_currency(cob_p),
-            "Pagos Obra + FF&E": format_currency(egresos_p),
-        })
-
-        chart_rows.extend([
-            {"Proyecto": p_name, "Categoría": "1. Total Contrato", "Monto": ppto_p},
-            {"Proyecto": p_name, "Categoría": "2. Utilidades", "Monto": util_p},
-            {"Proyecto": p_name, "Categoría": "3. Util. Ejecutadas + GG Cobrados", "Monto": u_ej_p},
-        ])
-
-    # Gráfico Comparativo por Proyecto
-    if chart_rows:
-        st.markdown("#### COMPARATIVA FINANCIERA POR PROYECTO")
-        df_ch = pd.DataFrame(chart_rows)
-        chart_fin = alt.Chart(df_ch).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
-            x=alt.X('Proyecto:N', title=None, axis=alt.Axis(labelAngle=0, labelColor='#262320', labelFontWeight='bold')),
-            y=alt.Y('Monto:Q', title='Monto (S/)', axis=alt.Axis(gridColor='#DFD9CE', labelColor='#6E665E')),
-            xOffset='Categoría:N',
-            color=alt.Color(
-                'Categoría:N',
-                scale=alt.Scale(
-                    domain=["1. Total Contrato", "2. Utilidades", "3. Util. Ejecutadas + GG Cobrados"],
-                    range=['#262320', '#4A7C59', '#C85A32']
-                ),
-                legend=alt.Legend(title="Indicador Financiero", orient="top", labelColor='#262320', titleColor='#6E665E')
-            ),
-            tooltip=['Proyecto', 'Categoría', alt.Tooltip('Monto:Q', format=',.2f')]
-        ).properties(height=280).configure_view(strokeOpacity=0)
-        st.altair_chart(chart_fin, use_container_width=True)
+    _render_finanzas_chart_y_resumen(fin_filt, kpis_sel, vista_graf)
 
     st.markdown("#### DETALLE FINANCIERO POR PROYECTO")
+    rows_fin = fin_filt["rows_fin"]
     if rows_fin:
         df_fin_disp = pd.DataFrame(rows_fin)
         st.dataframe(df_fin_disp, use_container_width=True, hide_index=True)
 
-        csv_bytes = df_fin_disp.to_csv(index=False).encode('utf-8')
+        csv_bytes = df_fin_disp.to_csv(index=False).encode("utf-8")
         st.download_button(
             "📥 EXPORTAR REPORTE FINANCIERO A CSV",
             data=csv_bytes,
             file_name=f"finanzas_cota_{datetime.date.today().strftime('%Y%m%d')}.csv",
             mime="text/csv",
-            use_container_width=True
+            use_container_width=True,
         )
+    else:
+        st.info("No hay proyectos dentro de los años seleccionados.")
 
 
 def _render_tab_operativo_diario(lista_socios, fecha_hoy, conn, sheet_url, nube_ok):

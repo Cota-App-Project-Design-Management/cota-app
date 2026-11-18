@@ -63,7 +63,7 @@ def build_cell_payments_badge_and_tooltip(
     if pagos_celda or nota_manual:
         cor_color = "#C85A32" if nota_manual else "#4A7C59"
         corner_dot = (
-            f"<span style='position:absolute; top:0; right:0; width:0; height:0; "
+            f"<span class='cota-cell-corner-dot' style='position:absolute; top:0; right:0; width:0; height:0; "
             f"border-top:7px solid {cor_color}; border-left:7px solid transparent;'></span>"
         )
 
@@ -620,8 +620,8 @@ def build_pagos_floating_ui_js() -> str:
             const cornerHtml = (newPaymentsList.length > 0 || notaManual)
                 ? '<span style="position:absolute; top:0; right:0; width:0; height:0; border-top:7px solid ' + corColor + '; border-left:7px solid transparent;"></span>'
                 : '';
-            cell.innerHTML = badgeHtml + dispTxt + cornerHtml;
-            recalculateTableDOM(fsWrap);
+            // Solo actualiza data-* sin mutar childNodes administrados por React
+            void dispTxt; void badgeHtml; void cornerHtml; void fsWrap;
         }
 
         function renderPagosTableRowsHtml(pagosList, showPartidaCol) {
@@ -897,7 +897,7 @@ def build_pagos_floating_ui_js() -> str:
                     } else {
                         nextList = curList.concat([newEntry]);
                     }
-                    updateCellDomAfterMutation(cell, fsWrap, nextList);
+                    cell.setAttribute('data-cota-payments-json', JSON.stringify(nextList));
                 }
 
                 const monStr = pref.indexOf('$') >= 0 ? 'Dólares' : 'Soles';
@@ -1089,7 +1089,7 @@ def build_pagos_floating_ui_js() -> str:
             const btnClr = pop.querySelector('#cota_pop_clear_legacy');
             if (btnClr) {
                 btnClr.addEventListener('click', function() {
-                    updateCellDomAfterMutation(cell, fsWrap, []);
+                    cell.setAttribute('data-cota-payments-json', '[]');
                     closeCellPopover();
                     sendBridgePayload({ action: 'clear_legacy_cell', row_type: rType, row_idx: rIdx, field: colField });
                 });
@@ -1228,7 +1228,7 @@ def build_pagos_floating_ui_js() -> str:
                 const targetCell = cellHint || findCellDom(fsWrap, rType, rIdx, colField);
                 if (targetCell) {
                     const nextList = getCellPaymentsFromTd(targetCell).filter(p => p.id !== pid);
-                    updateCellDomAfterMutation(targetCell, fsWrap, nextList);
+                    targetCell.setAttribute('data-cota-payments-json', JSON.stringify(nextList));
                 }
                 allPayments = allPayments.filter(p => p.id !== pid);
                 closeAllPagosPopups();
