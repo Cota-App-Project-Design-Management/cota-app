@@ -105,6 +105,7 @@ from cota.cotizacion import (
     deshacer_presupuesto,
     eliminar_partida_presupuesto,
     eliminar_tareas_seleccionadas_presupuesto,
+    establecer_estado_sincronizacion_presupuesto,
     etiqueta_corta_columna_pago,
     etiqueta_export_columna_pago,
     exportar_cuadro_pagos_semanales_excel,
@@ -115,6 +116,8 @@ from cota.cotizacion import (
     generar_plantilla_cotizacion_venti,
     guardar_cuadro_pagos_semanales_proyecto,
     guardar_parametros_presupuesto_proyecto,
+    guardar_valor_contrato_proyecto,
+    integrar_presupuesto_con_gestion,
     guardar_snapshot_presupuesto,
     limpiar_nombre_partida,
     mover_partida_presupuesto,
@@ -122,6 +125,8 @@ from cota.cotizacion import (
     mover_tareas_seleccionadas_presupuesto,
     obtener_columnas_pago_semanal,
     obtener_cuadro_pagos_semanales_proyecto,
+    obtener_estado_sincronizacion_presupuesto,
+    obtener_items_presupuesto_proyecto,
     obtener_pagado_por_partida_proyecto,
     obtener_parametros_presupuesto_proyecto,
     parsear_cotizacion_venti,
@@ -164,7 +169,7 @@ try:
         importlib.reload(cota.ui.components)
 except Exception:
     pass
-from cota.ui.components import render_alertas_cruce_contratistas, render_alertas_cruce_partida, render_chat_notas_proyecto, render_metric_card
+from cota.ui.components import render_alertas_cruce_contratistas, render_alertas_cruce_partida, render_chat_notas_proyecto, render_editor_valor_contrato, render_metric_card
 from cota.utils import (
     analizar_tareas_proyecto,
     extraer_esp,
@@ -338,9 +343,8 @@ def _render_tab_resumen(proy_name, proy_data):
 
     col_d1, col_d2 = st.columns([1, 1.1])
     with col_d1:
-        c_ft_hdr, c_ft_est = st.columns([5.3, 4.7])
-        with c_ft_hdr:
-            st.markdown("#### FICHA TÉCNICA DEL PROYECTO")
+        st.markdown("#### FICHA TÉCNICA DEL PROYECTO")
+        c_ft_est, c_ft_ctr = st.columns(2)
         with c_ft_est:
             est_actual_res = safe_str(proy_data.get('Estado', STATUS_PROYECTOS[0])) or STATUS_PROYECTOS[0]
             if est_actual_res not in STATUS_PROYECTOS:
@@ -362,8 +366,16 @@ def _render_tab_resumen(proy_name, proy_data):
                 key=k_est_res,
                 on_change=_on_change_est_proy_res,
             )
+        with c_ft_ctr:
+            render_editor_valor_contrato(
+                proy_name,
+                key_prefix="ft",
+                other_prefix="sb",
+                show_summary_box=False,
+            )
         drive_link_val = safe_str(proy_data.get('Link_Drive', '')).strip()
         info_items = [
+            ("Valor del Contrato", format_currency(ppto_venta)),
             ("Estado del Proyecto", safe_str(proy_data.get('Estado', STATUS_PROYECTOS[0])) or STATUS_PROYECTOS[0]),
             ("Líder de Diseño", proy_data.get('Encargado', 'N/A')),
             ("Cliente", proy_data.get('Cliente', 'N/A')),
@@ -2647,6 +2659,97 @@ def _render_obra_date_range_controller(
     components.html(html_code, height=0, scrolling=False)
 
 
+def _render_barra_sync_presupuesto(proy_name: str, sync_gestion_act: bool, totales: dict):
+    """Control opcional para mantener 03. PRESUPUESTO independiente o integrarlo sin pérdida hacia 05 y 06."""
+    items_p = obtener_items_presupuesto_proyecto(proy_name, tc=totales.get("tc", 3.42))
+    n_p = len(items_p)
+    n_t = sum(len(it.get("tareas", []) or []) for it in items_p)
+
+    df_t_all = st.session_state.get("tasks", pd.DataFrame())
+    df_t_obra = (
+        df_t_all[df_t_all["Proyecto"] == proy_name]
+        if isinstance(df_t_all, pd.DataFrame) and not df_t_all.empty and "Proyecto" in df_t_all.columns
+        else pd.DataFrame()
+    )
+    n_t_obra = len(df_t_obra)
+    n_en_avance = 0
+    if not df_t_obra.empty and "Estado" in df_t_obra.columns:
+        n_en_avance = int(df_t_obra["Estado"].astype(str).apply(lambda x: x.strip() not in ("", "🟡 Planificado")).sum())
+
+    with st.container(border=True):
+        c_sw, c_act = st.columns([6.7, 3.3])
+        with c_sw:
+            k_sw = f"tog_sync_ppto_gestion_{proy_name}"
+            if k_sw not in st.session_state or bool(st.session_state[k_sw]) != bool(sync_gestion_act):
+                st.session_state[k_sw] = bool(sync_gestion_act)
+
+            def _on_toggle_sync():
+                nuevo_estado = bool(st.session_state.get(k_sw, False))
+                res_s = establecer_estado_sincronizacion_presupuesto(proy_name, nuevo_estado, aplicar_integracion=nuevo_estado)
+                integ = res_s.get("integracion") or {}
+                if nuevo_estado:
+                    st.toast(
+                        f"🔗 Sincronización activada (+{integ.get('partidas_agregadas', 0)} partidas, "
+                        f"+{integ.get('tareas_agregadas', 0)} tareas; {integ.get('avances_conservados', 0)} avances conservados).",
+                        icon="🔗",
+                    )
+                else:
+                    st.toast("🔒 Modo independiente activado: tus avances en 05 y pagos en 06 quedan protegidos.", icon="🔒")
+
+            st.toggle(
+                "🔗 Sincronizar cambios automáticamente con Gestión (05. Partidas/Tareas y 06. Cuadro de Pagos)",
+                key=k_sw,
+                on_change=_on_toggle_sync,
+                help="Si está desactivado, 03. Presupuesto actualiza el contrato y finanzas de forma independiente sin modificar el avance de procesos ni los pagos.",
+            )
+            if sync_gestion_act:
+                st.caption(
+                    f"🔗 Modo integrado activo · Presupuesto ({n_p} part., {n_t} tar.) ↔ Gestión ({n_t_obra} tareas, {n_en_avance} con avance conservado)."
+                )
+            else:
+                st.caption(
+                    f"🔒 Modo independiente · Editar o importar aquí actualiza Finanzas sin borrar tus {n_en_avance} tarea(s) avanzadas en 05 ni pagos en 06."
+                )
+
+        with c_act:
+            st.markdown("<div style='padding-top: 4px;'></div>", unsafe_allow_html=True)
+            with st.popover("🔄 Integrar Partidas con Gestión", use_container_width=True):
+                st.markdown("##### 🔗 Integración No Destructiva Presupuesto → Gestión")
+                st.caption(
+                    "Combina por nombre/código: **conserva estados** (*En Proceso / Completado*), "
+                    "**fechas**, **contratistas** y **pagos registrados**; actualiza montos y agrega solo lo nuevo."
+                )
+                st.markdown(
+                    f"- **En 03. Presupuesto:** `{n_p}` partida(s) · `{n_t}` tarea(s) · Casco `{format_currency(totales.get('subtotal_casco', 0.0))}`\n"
+                    f"- **En 05. Partidas y Tareas:** `{n_t_obra}` tarea(s) (`{n_en_avance}` con avance/estado activo)"
+                )
+                inc_obra = st.checkbox(
+                    "Integrar en 05. Partidas y Tareas (conservar avances)",
+                    value=True,
+                    key=f"chk_int_obra_{proy_name}",
+                )
+                inc_pagos = st.checkbox(
+                    "Sincronizar montos en 06. Cuadro de Pagos (conservar pagos)",
+                    value=True,
+                    key=f"chk_int_pagos_{proy_name}",
+                )
+                if st.button(
+                    "✅ INTEGRAR AHORA (CONSERVAR AVANCES)",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=(not inc_obra and not inc_pagos),
+                    key=f"btn_exec_integ_ppto_{proy_name}",
+                ):
+                    r_int = integrar_presupuesto_con_gestion(proy_name, incluir_obra=inc_obra, incluir_pagos=inc_pagos)
+                    st.toast(
+                        f"✅ Integrado: +{r_int['partidas_agregadas']} part. nuevas, "
+                        f"{r_int['tareas_actualizadas']} tar. actualizadas, +{r_int['tareas_agregadas']} nuevas "
+                        f"({r_int['avances_conservados']} avances conservados).",
+                        icon="✅",
+                    )
+                    st.rerun()
+
+
 def _render_tab_presupuesto(proy_name, proy_data):
     """
     Pestaña 3: Constructor y Editor de Presupuesto All-in-One dentro de COTA.
@@ -2654,7 +2757,9 @@ def _render_tab_presupuesto(proy_name, proy_data):
     y la cantidad de Tareas por cada Partida (1.01, 1.02, 1.03...), reordenarlas verticalmente,
     asignar Especialidad y Contratista (uso interno), o importar presupuestos de tablas / Excel / CSV.
     """
-    asegurar_estructura_presupuesto_proyecto(proy_name, n_partidas_default=3, n_tareas_default=3)
+    sync_gestion_act = obtener_estado_sincronizacion_presupuesto(proy_name)
+    st.session_state[f"_ppto_indep_ui_{proy_name}"] = not sync_gestion_act
+    asegurar_estructura_presupuesto_proyecto(proy_name, n_partidas_default=3, n_tareas_default=3, solo_presupuesto=(not sync_gestion_act))
     if "proyectos" in st.session_state and not st.session_state.proyectos.empty:
         m_p_sync = st.session_state.proyectos["Nombre"] == proy_name
         if m_p_sync.any():
@@ -2670,19 +2775,41 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 st.session_state.proyectos.at[idx_p_sync, "GG_Pct"] = float(safe_float(st.session_state.get(f"cfg_gg_pct_{proy_name}"), 2.0))
             if f"cfg_util_pct_{proy_name}" in st.session_state and st.session_state.get(f"cfg_modo_util_{proy_name}", "pct") == "pct":
                 st.session_state.proyectos.at[idx_p_sync, "Utilidades_Pct"] = float(safe_float(st.session_state.get(f"cfg_util_pct_{proy_name}"), 15.0))
-    totales = recalcular_totales_presupuesto_proyecto(proy_name)
+    totales = recalcular_totales_presupuesto_proyecto(proy_name, sincronizar_pactado=sync_gestion_act)
     params = obtener_parametros_presupuesto_proyecto(proy_name)
 
-    parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
+    items_ppto = obtener_items_presupuesto_proyecto(proy_name, tc=totales.get("tc", 3.42))
 
     safe_fn_p = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in proy_name).strip("_") or "Proyecto"
     col_tit_p, col_undo, col_imp_top, col_exp_x, col_exp_pdf = st.columns([3.7, 1.6, 1.7, 1.5, 1.5])
     with col_tit_p:
         st.markdown("### 📐 PRESUPUESTO Y COTIZACIÓN DEL PROYECTO")
-        st.caption(
-            "Define partidas, tareas, metrados y precios unitarios en tiempo real. "
-            "Se sincroniza automáticamente con **05. PARTIDAS Y TAREAS** y **06. COBROS & FINANZAS**."
-        )
+        if sync_gestion_act:
+            st.caption(
+                "Define partidas, tareas, metrados y precios unitarios en tiempo real. "
+                "Sincronización opcional **activada** hacia **05. PARTIDAS Y TAREAS** y **06. COBROS & FINANZAS** (conservando avances)."
+            )
+        else:
+            st.caption(
+                "Define partidas, tareas, metrados y precios unitarios de forma independiente para actualizar el contrato y Finanzas "
+                "sin alterar tus avances en **05. PARTIDAS Y TAREAS** ni pagos en **06. COBROS & FINANZAS**."
+            )
+        if totales.get("contrato_manual") and safe_float(totales.get("total_calculado_partidas", 0.0), 0.0) > 0.0:
+            c_cm_msg, c_cm_btn = st.columns([3.2, 1.8])
+            with c_cm_msg:
+                st.caption(
+                    f"💼 Contrato fijado manualmente en **{format_currency(totales.get('presupuesto_total', 0.0))}** "
+                    f"(calculado por partidas: {format_currency(totales.get('total_calculado_partidas', 0.0))})."
+                )
+            with c_cm_btn:
+                if st.button("🔄 Usar calculado", key=f"btn_reset_contrato_calc_{proy_name}", use_container_width=True):
+                    guardar_valor_contrato_proyecto(
+                        proy_name,
+                        safe_float(totales.get("total_calculado_partidas", 0.0), 0.0),
+                        manual=False,
+                    )
+                    recalcular_totales_presupuesto_proyecto(proy_name)
+                    st.rerun()
     with col_undo:
         st.markdown("<div style='padding-top: 8px;'></div>", unsafe_allow_html=True)
         cu1, cu2 = st.columns(2)
@@ -2725,6 +2852,9 @@ def _render_tab_presupuesto(proy_name, proy_data):
             use_container_width=True,
             key=f"btn_exp_pdf_top_{proy_name}",
         )
+
+    # Control de sincronización opcional Presupuesto <-> Gestión (05 y 06)
+    _render_barra_sync_presupuesto(proy_name, sync_gestion_act, totales)
 
     # Panel Importador Inteligente de Presupuesto
     if st.session_state.get(f"show_imp_ppto_{proy_name}", False):
@@ -2874,6 +3004,12 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     horizontal=True,
                     key=f"rad_modo_imp_ppto_{proy_name}",
                 )
+                sincronizar_en_import = st.checkbox(
+                    "🔗 Integrar también con Gestión (05. Partidas/Tareas y 06. Cuadro de Pagos, conservando avances)",
+                    value=sync_gestion_act,
+                    key=f"chk_sync_imp_ppto_{proy_name}",
+                    help="Desmarcado = actualiza solo 03. Presupuesto y las finanzas del proyecto sin modificar lo avanzado en procesos ni los pagos.",
+                )
                 if st.button("✅ TRANSFORMAR Y CARGAR EN EL PRESUPUESTO", type="primary", use_container_width=True, key=f"btn_apply_spark_{proy_name}"):
                     res_imp = aplicar_cotizacion_a_proyecto(
                         proy_name=proy_name,
@@ -2881,6 +3017,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                         modo=modo_aplicar,
                         actualizar_ficha=(modo_aplicar == "reemplazar"),
                         incluir_partidas_vacias=True,
+                        solo_presupuesto=(not sincronizar_en_import),
                     )
                     st.session_state[f"show_imp_ppto_{proy_name}"] = False
                     st.success(f"Presupuesto cargado con éxito: {res_imp['partidas_importadas']} partidas y {res_imp['tareas_importadas']} tareas.")
@@ -2939,7 +3076,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                 use_container_width=True,
                 help="Agrega una nueva partida principal al presupuesto con sus tareas iniciales.",
             ):
-                agregar_partida_presupuesto(proy_name, n_tareas_default=3)
+                agregar_partida_presupuesto(proy_name, n_tareas_default=3, ambito="presupuesto")
                 st.rerun()
         with c_cfg2:
             st.number_input(
@@ -3041,9 +3178,10 @@ def _render_tab_presupuesto(proy_name, proy_data):
             )
 
     # Recargar métricas actualizadas
-    totales = recalcular_totales_presupuesto_proyecto(proy_name)
-    parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
-    total_tareas_proy = len(st.session_state.tasks[st.session_state.tasks["Proyecto"] == proy_name])
+    totales = recalcular_totales_presupuesto_proyecto(proy_name, sincronizar_pactado=sync_gestion_act)
+    items_ppto = obtener_items_presupuesto_proyecto(proy_name, tc=totales.get("tc", 3.42))
+    n_parts_ppto = len(items_ppto)
+    total_tareas_proy = sum(len(it.get("tareas", []) or []) for it in items_ppto)
 
     unidades_cat = obtener_catalogo_estudio("unidades") or UNIDADES_MEDIDA
     especialidades_cat = list(dict.fromkeys([""] + (obtener_catalogo_estudio("especialidades") or ESPECIALIDADES_DEFAULT) + extraer_esp(st.session_state.maestro)))
@@ -3055,13 +3193,13 @@ def _render_tab_presupuesto(proy_name, proy_data):
         render_metric_card(
             "Sub Total (Casco)",
             format_currency(totales["subtotal_casco"]),
-            f"{len(parts_proy)} partidas · {total_tareas_proy} tareas",
+            f"{n_parts_ppto} partidas · {total_tareas_proy} tareas",
         )
     with k2:
         render_metric_card(
             f"Gastos Generales ({totales['gg_pct']:g}%)",
             format_currency(totales["gg_monto"]),
-            "Sincronizado con Caja Chica / GG",
+            "Sincronizado con Caja Chica / GG" if sync_gestion_act else "Presupuesto del proyecto (GG)",
             border_color="#C85A32",
             text_color="#C85A32",
         )
@@ -3069,7 +3207,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
         render_metric_card(
             f"Gestión / Superv. ({totales['utilidades_pct']:g}%)",
             format_currency(totales["utilidades_monto"]),
-            "Sincronizado con Utilidades",
+            "Sincronizado con Utilidades" if sync_gestion_act else "Presupuesto del proyecto (Utilidades)",
             border_color="#4A7C59",
             text_color="#4A7C59",
         )
@@ -3097,16 +3235,14 @@ def _render_tab_presupuesto(proy_name, proy_data):
     resumen_rows = []
     subtotal_casco_val = totales["subtotal_casco"]
 
-    for idx_zero, part_row in parts_proy.iterrows():
-        idx_p = idx_zero + 1
-        p_nom_completo = safe_str(part_row["Nombre_Partida"])
+    for idx_p, part_item in enumerate(items_ppto, start=1):
+        p_nom_completo = safe_str(part_item.get("nombre", f"Partida {idx_p}"))
         p_nom_limpio = limpiar_nombre_partida(p_nom_completo, idx_p)
 
-        mask_t_p = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == p_nom_completo)
-        df_t_p = st.session_state.tasks[mask_t_p].copy().reset_index(drop=True)
-        n_tareas_p = max(1, len(df_t_p))
+        tareas_list_p = part_item.get("tareas", []) or []
+        n_tareas_p = max(1, len(tareas_list_p))
 
-        sub_partida = totales["subtotales_por_partida"].get(p_nom_completo, 0.0)
+        sub_partida = totales["subtotales_por_partida"].get(p_nom_completo, safe_float(part_item.get("monto_pactado", 0.0), 0.0))
         mix_partida = (sub_partida / subtotal_casco_val * 100.0) if subtotal_casco_val > 0 else 0.0
 
         resumen_rows.append({
@@ -3140,13 +3276,13 @@ def _render_tab_presupuesto(proy_name, proy_data):
             def _make_on_rename(p_idx_1b, curr_full, k_nom):
                 def _cb():
                     nuevo_val = st.session_state.get(k_nom, "")
-                    renombrar_partida_presupuesto(proy_name, p_idx_1b, curr_full, nuevo_val)
+                    renombrar_partida_presupuesto(proy_name, p_idx_1b, curr_full, nuevo_val, ambito="presupuesto")
                 return _cb
 
             def _make_on_cant_tasks(p_idx_1b, curr_full, k_cnt, k_base, k_c):
                 def _cb():
                     nueva_c = st.session_state.get(k_cnt, 1)
-                    ajustar_cantidad_tareas_partida(proy_name, p_idx_1b, curr_full, int(nueva_c))
+                    ajustar_cantidad_tareas_partida(proy_name, p_idx_1b, curr_full, int(nueva_c), ambito="presupuesto")
                     if k_base in st.session_state:
                         del st.session_state[k_base]
                     st.session_state[k_c] = st.session_state.get(k_c, 0) + 1
@@ -3162,7 +3298,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
             with cp_cnt:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
                 if st.button("➕ Agregar Tarea", key=f"btn_add_task_ppto_{proy_name}_{idx_p}", use_container_width=True):
-                    agregar_tarea_presupuesto(proy_name, idx_p, p_nom_completo)
+                    agregar_tarea_presupuesto(proy_name, idx_p, p_nom_completo, ambito="presupuesto")
                     if base_ppto_key in st.session_state:
                         del st.session_state[base_ppto_key]
                     st.session_state[c_ppto_key] = st.session_state.get(c_ppto_key, 0) + 1
@@ -3202,11 +3338,11 @@ def _render_tab_presupuesto(proy_name, proy_data):
                         def _cb_ord():
                             nueva_pos = int(st.session_state.get(k_ord, p_curr))
                             if nueva_pos != p_curr:
-                                mover_partida_presupuesto(proy_name, p_curr, nueva_pos)
+                                mover_partida_presupuesto(proy_name, p_curr, nueva_pos, ambito="presupuesto")
                         return _cb_ord
                     st.selectbox(
                         "Orden",
-                        options=list(range(1, len(parts_proy) + 1)),
+                        options=list(range(1, n_parts_ppto + 1)),
                         format_func=lambda x: f"N° {x}",
                         key=key_ord_p,
                         on_change=_make_on_ord_p(idx_p, key_ord_p),
@@ -3215,47 +3351,49 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     )
                 with c_u:
                     if st.button("⬆", key=f"btn_mv_up_p_{proy_name}_{idx_p}", disabled=(idx_p == 1), help="Subir Partida completa", use_container_width=True):
-                        mover_partida_presupuesto(proy_name, idx_p, "subir")
+                        mover_partida_presupuesto(proy_name, idx_p, "subir", ambito="presupuesto")
                         st.rerun()
                 with c_d:
-                    if st.button("⬇", key=f"btn_mv_dn_p_{proy_name}_{idx_p}", disabled=(idx_p == len(parts_proy)), help="Bajar Partida completa", use_container_width=True):
-                        mover_partida_presupuesto(proy_name, idx_p, "bajar")
+                    if st.button("⬇", key=f"btn_mv_dn_p_{proy_name}_{idx_p}", disabled=(idx_p == n_parts_ppto), help="Bajar Partida completa", use_container_width=True):
+                        mover_partida_presupuesto(proy_name, idx_p, "bajar", ambito="presupuesto")
                         st.rerun()
                 with c_del:
                     with st.popover("🗑️ Eliminar", use_container_width=True):
-                        if len(parts_proy) <= 1:
+                        if n_parts_ppto <= 1:
                             st.info("El presupuesto debe conservar al menos 1 partida.")
                         else:
-                            st.warning(f"¿Eliminar **Partida {idx_p}: {p_nom_limpio}** y sus {len(df_t_p)} tarea(s)?")
+                            st.warning(f"¿Eliminar **Partida {idx_p}: {p_nom_limpio}** y sus {len(tareas_list_p)} tarea(s)?")
                             if st.button(
                                 "CONFIRMAR",
                                 key=f"btn_del_p_{proy_name}_{idx_p}",
                                 type="primary",
                                 use_container_width=True,
                             ):
-                                eliminar_partida_presupuesto(proy_name, idx_p, p_nom_completo)
+                                eliminar_partida_presupuesto(proy_name, idx_p, p_nom_completo, ambito="presupuesto")
                                 st.rerun()
 
             # Construir DataFrame editable para las tareas de esta partida (incluye Especialidad y Contratista para uso interno)
             rows_ed = []
-            for pos_t, (_, t_r) in enumerate(df_t_p.iterrows(), start=1):
+            for pos_t, t_r in enumerate(tareas_list_p, start=1):
                 cod_item = f"{idx_p}.{pos_t:02d}"
-                desc_t = extraer_descripcion_tarea(t_r.get("Tarea", ""), cod_item)
-                mon_t = safe_str(t_r.get("Moneda", "Soles")) or "Soles"
+                desc_t = extraer_descripcion_tarea(t_r.get("descripcion", t_r.get("Tarea", "")), cod_item)
+                mon_t = safe_str(t_r.get("moneda", t_r.get("Moneda", "Soles"))) or "Soles"
                 if mon_t not in ["Soles", "Dólares"]:
                     mon_t = "Soles"
-                und_t = safe_str(t_r.get("Unidad", "glb")) or "glb"
+                und_t = safe_str(t_r.get("unidad", t_r.get("Unidad", "glb"))) or "glb"
                 if und_t not in unidades_cat:
                     unidades_cat.append(und_t)
-                met_t = float(safe_float(t_r.get("Metrado", 1.0), 1.0))
+                met_t = float(safe_float(t_r.get("metrado", t_r.get("Metrado", 1.0)), 1.0))
                 if met_t <= 0:
                     met_t = 1.0
-                vu_t = float(safe_float(t_r.get("Valor_Unitario", 0.0), 0.0))
-                vp_t = float(safe_float(t_r.get("Presupuesto", 0.0), 0.0))
-                esp_t = safe_str(t_r.get("Especialidad", "")).strip()
+                vu_t = float(safe_float(t_r.get("valor_unitario", t_r.get("Valor_Unitario", 0.0)), 0.0))
+                vp_t = float(safe_float(t_r.get("presupuesto", t_r.get("Presupuesto", 0.0)), 0.0))
+                esp_t = safe_str(t_r.get("especialidad", t_r.get("Especialidad", ""))).strip()
+                if esp_t == "Ninguna":
+                    esp_t = ""
                 if esp_t and esp_t not in especialidades_cat:
                     especialidades_cat.append(esp_t)
-                con_t = safe_str(t_r.get("Contratista", "")).strip()
+                con_t = safe_str(t_r.get("contratista", t_r.get("Contratista", ""))).strip()
                 if con_t and con_t not in contratistas_cat:
                     contratistas_cat.append(con_t)
 
@@ -3348,7 +3486,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                         help="Sube la(s) tarea(s) seleccionada(s) una posición",
                     ):
                         movido, nuevos_idx = mover_tareas_seleccionadas_presupuesto(
-                            proy_name, idx_p, p_nom_completo, selected_indices, "subir"
+                            proy_name, idx_p, p_nom_completo, selected_indices, "subir", ambito="presupuesto"
                         )
                         if movido:
                             st.session_state[sel_saved_key] = nuevos_idx
@@ -3365,7 +3503,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                         help="Baja la(s) tarea(s) seleccionada(s) una posición",
                     ):
                         movido, nuevos_idx = mover_tareas_seleccionadas_presupuesto(
-                            proy_name, idx_p, p_nom_completo, selected_indices, "bajar"
+                            proy_name, idx_p, p_nom_completo, selected_indices, "bajar", ambito="presupuesto"
                         )
                         if movido:
                             st.session_state[sel_saved_key] = nuevos_idx
@@ -3382,7 +3520,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                         help="Elimina la(s) tarea(s) seleccionada(s) y renumera las restantes",
                     ):
                         if eliminar_tareas_seleccionadas_presupuesto(
-                            proy_name, idx_p, p_nom_completo, selected_indices
+                            proy_name, idx_p, p_nom_completo, selected_indices, ambito="presupuesto"
                         ):
                             st.session_state[sel_saved_key] = []
                             if base_ppto_key in st.session_state:
@@ -3443,6 +3581,7 @@ def _render_tab_presupuesto(proy_name, proy_data):
                     proy_name,
                     idx_p,
                     p_nom_completo,
+                    "presupuesto",
                 ),
             )
 
@@ -3790,9 +3929,14 @@ def _render_tab_obra(proy_name, proy_data):
                     st.rerun()
 
     with col_ap2:
-        if st.button("🔄 SINCRONIZAR CON 03. PRESUPUESTO", key=f"btn_sync_obra_ppto_{proy_name}", use_container_width=True):
-            recalcular_totales_presupuesto_proyecto(proy_name, sincronizar_pactado=True)
+        if st.button("🔄 SINCRONIZAR CON 03. PRESUPUESTO", key=f"btn_sync_obra_ppto_{proy_name}", use_container_width=True, help="Integra las partidas y montos de 03. Presupuesto aquí sin borrar tus estados En Proceso / Completado ni fechas."):
+            res_int_o = integrar_presupuesto_con_gestion(proy_name, incluir_obra=True, incluir_pagos=False)
             clear_base_dfs()
+            st.toast(
+                f"✅ Integrado con 03. Presupuesto: +{res_int_o['partidas_agregadas']} part., "
+                f"+{res_int_o['tareas_agregadas']} tar. ({res_int_o['avances_conservados']} avances conservados).",
+                icon="✅",
+            )
             st.rerun()
 
     # Ordenar las partidas estrictamente por su prefijo numérico (1., 2., 3...) para mantener el orden de 03. Presupuesto
@@ -4088,11 +4232,11 @@ def _render_tab_obra(proy_name, proy_data):
         col_ord_up, col_ord_dn, col_ord_sel, col_b1, col_b2, col_b3, col_b4, col_sug, col_b5 = st.columns([0.5, 0.5, 1.0, 1.3, 1.4, 1.55, 1.25, 1.35, 3.65])
         with col_ord_up:
             if st.button("⬆", key=f"btn_obra_up_p_{proy_name}_{idx_p_1b}", disabled=(idx_p_1b == 1), help="Subir Partida", use_container_width=True):
-                mover_partida_presupuesto(proy_name, idx_p_1b, "subir")
+                mover_partida_presupuesto(proy_name, idx_p_1b, "subir", ambito="gestion")
                 st.rerun()
         with col_ord_dn:
             if st.button("⬇", key=f"btn_obra_dn_p_{proy_name}_{idx_p_1b}", disabled=(idx_p_1b == len(parts_proy)), help="Bajar Partida", use_container_width=True):
-                mover_partida_presupuesto(proy_name, idx_p_1b, "bajar")
+                mover_partida_presupuesto(proy_name, idx_p_1b, "bajar", ambito="gestion")
                 st.rerun()
         with col_ord_sel:
             key_ord_obra = f"sel_ord_obra_{proy_name}_{idx_p_1b}"
@@ -4101,7 +4245,7 @@ def _render_tab_obra(proy_name, proy_data):
                 def _cb_ord_o():
                     nueva_pos_o = int(st.session_state.get(k_ord_o, p_curr_o))
                     if nueva_pos_o != p_curr_o:
-                        mover_partida_presupuesto(proy_name, p_curr_o, nueva_pos_o)
+                        mover_partida_presupuesto(proy_name, p_curr_o, nueva_pos_o, ambito="gestion")
                 return _cb_ord_o
             st.selectbox(
                 "Orden Partida",
@@ -4118,7 +4262,7 @@ def _render_tab_obra(proy_name, proy_data):
                 with st.form(f"ren_{proy_name}_{p_nom}_{idx_part}"):
                     nuevo_nombre = st.text_input("Nuevo Nombre", value=p_nom)
                     if st.form_submit_button("GUARDAR") and nuevo_nombre and nuevo_nombre != p_nom:
-                        renombrar_partida_presupuesto(proy_name, idx_p_1b, p_nom, nuevo_nombre)
+                        renombrar_partida_presupuesto(proy_name, idx_p_1b, p_nom, nuevo_nombre, ambito="gestion")
                         st.rerun()
 
         with col_b2:
@@ -5200,18 +5344,23 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
         data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name)
 
     # Barra de configuración superior
-    c_cfg1, c_cfg2, c_cfg3 = st.columns([1.3, 1.3, 4.4])
+    c_cfg1, c_cfg2, c_cfg3 = st.columns([1.5, 1.3, 4.2])
+    nuevo_num_sem = num_sem_actual
     with c_cfg1:
-        nuevo_num_sem = int(
-            st.number_input(
-                "N° de Semanas",
-                min_value=1,
-                max_value=30,
-                value=num_sem_actual,
-                step=1,
-                key=f"num_sem_pagos_{proy_name}",
-            )
-        )
+        st.markdown("<div style='padding-top: 27px;'></div>", unsafe_allow_html=True)
+        if st.button(
+            "➕ Agregar Semana",
+            key=f"btn_add_sem_pagos_{proy_name}",
+            disabled=(num_sem_actual >= 30),
+            use_container_width=True,
+            help=f"Agrega Semana {num_sem_actual + 1} al cuadro de pagos (actual: {num_sem_actual} semana(s)).",
+        ):
+            nuevo_num_sem = min(30, num_sem_actual + 1)
+            data_cuadro["num_semanas"] = nuevo_num_sem
+            guardar_cuadro_pagos_semanales_proyecto(proy_name, data_cuadro)
+            st.session_state.pop(f"base_df_pagos_cont_{proy_name}", None)
+            st.session_state.pop(f"base_df_pagos_ges_{proy_name}", None)
+            st.rerun()
     with c_cfg2:
         nuevo_tc = float(
             st.number_input(
@@ -5260,7 +5409,7 @@ def _render_cuadro_pagos_semanales(proy_name: str, proy_data: dict):
             use_container_width=True,
             help="Trae o actualiza las partidas y montos totales desde la pestaña 03. Presupuesto sin perder los pagos semanales registrados.",
         ):
-            data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name, sincronizar_partidas=True)
+            data_cuadro = obtener_cuadro_pagos_semanales_proyecto(proy_name, sincronizar_partidas=True, fuente="presupuesto")
             st.session_state.pop(f"base_df_pagos_cont_{proy_name}", None)
             st.session_state.pop(f"base_df_pagos_ges_{proy_name}", None)
             st.rerun()

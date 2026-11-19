@@ -35,7 +35,7 @@ COLS_PROY = [
     'Presupuesto_FFE', 'Honorarios_Diseno',
     'TC_Presupuesto', 'GG_Pct', 'Utilidades_Pct', 'Incluir_IGV',
     'Modo_GG', 'Monto_Fijo_GG', 'Modo_Utilidades', 'Monto_Fijo_Utilidades',
-    'Link_Drive', 'Pagos_Semanales_JSON'
+    'Link_Drive', 'Pagos_Semanales_JSON', 'Presupuesto_JSON'
 ]
 
 COLS_TASKS = [
@@ -451,7 +451,7 @@ def cargar_tabla(conn, sheet_url, nube_ok, pestaña, columnas):
             df['Supervisado'] = df['Supervisado'].apply(_normalizar_supervisado).astype(object)
 
     if pestaña == 'proyectos':
-        for c_extra in ['Link_Drive', 'Pagos_Semanales_JSON']:
+        for c_extra in ['Link_Drive', 'Pagos_Semanales_JSON', 'Presupuesto_JSON']:
             if c_extra not in df.columns:
                 df[c_extra] = ""
             df[c_extra] = df[c_extra].fillna("").astype(str).replace({"nan": "", "None": "", "<NA>": ""}).astype(object)

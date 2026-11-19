@@ -357,10 +357,6 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
 
     # 2. Barra de herramientas: Nuevo Proyecto + Buscador
     col_new, col_search = st.columns([2.8, 7.2])
-    banco_fases_estudio = obtener_banco_fases()
-    nombres_banco_all = [f["Fase"] for f in banco_fases_estudio]
-    nombres_banco_def = [f["Fase"] for f in banco_fases_estudio if f.get("Por_Defecto", True)]
-
     tipos_cat = obtener_catalogo_estudio("tipos_proyecto") or TIPOS_PROYECTO
 
     with col_new:
@@ -378,12 +374,6 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                 p_cliente = st.text_input("Nombre del Cliente", placeholder="")
                 p_color = st.color_picker("Color Identificador", value="#C85A32")
 
-                st.markdown("##### Etapas de Diseño del Proyecto (02. Diseño)")
-                fases_sel_nuevo = st.multiselect(
-                    "Selecciona las etapas de diseño (Moodboard, Planos, 3D, Renders) que aplican:",
-                    options=[f for f in nombres_banco_all if "ff&e" not in f.lower() and "ffe" not in f.lower()],
-                    default=[f for f in nombres_banco_def if "ff&e" not in f.lower() and "ffe" not in f.lower()],
-                )
                 st.caption("💡 El presupuesto total, utilidades, gastos generales y honorarios se definen directamente en la pestaña **03. PRESUPUESTO** del proyecto.")
 
                 if st.form_submit_button("CREAR PROYECTO", type="primary", use_container_width=True):
@@ -428,7 +418,11 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                         st.session_state.proyectos = pd.concat([st.session_state.proyectos, n_p[COLS_PROY]], ignore_index=True)
 
                         # Sembrar fases seleccionadas del Banco de Fases (sin FF&E)
-                        fases_a_sembrar = [f for f in (fases_sel_nuevo if fases_sel_nuevo else nombres_banco_def) if "ff&e" not in f.lower() and "ffe" not in f.lower()]
+                        fases_a_sembrar = [
+                            f["Fase"]
+                            for f in obtener_banco_fases()
+                            if f.get("Por_Defecto", True) and "ff&e" not in f["Fase"].lower() and "ffe" not in f["Fase"].lower()
+                        ]
                         nuevas_fases = sembrar_fases_default(pn, fases_seleccionadas=fases_a_sembrar)
                         if 'fases' not in st.session_state or st.session_state.fases.empty:
                             st.session_state.fases = nuevas_fases
@@ -436,7 +430,7 @@ def _render_tab_portafolio(exist_divs, exist_ubis, lista_socios, fecha_hoy):
                             st.session_state.fases = pd.concat([st.session_state.fases, nuevas_fases], ignore_index=True)
 
                         clear_base_dfs()
-                        st.success(f"Proyecto '{pn}' creado exitosamente con {len(fases_a_sembrar)} fase(s) activa(s).")
+                        st.success(f"Proyecto '{pn}' creado exitosamente.")
                         st.rerun()
 
     with col_search:
@@ -896,6 +890,24 @@ FINANZAS_KPIS_CONFIG = [
 _FINANZAS_KPI_MAP = {k["label"]: k for k in FINANZAS_KPIS_CONFIG}
 
 
+def es_estado_proyecto_aprobado_finanzas(estado) -> bool:
+    """Retorna True solo para proyectos aprobados ('En Proceso' o 'Completado')."""
+    est = safe_str(estado).strip().lower()
+    if not est or "planif" in est:
+        return False
+    return ("proceso" in est) or ("completad" in est) or ("aprobad" in est)
+
+
+def filtrar_proyectos_aprobados_finanzas(df_proyectos: pd.DataFrame) -> pd.DataFrame:
+    """Filtra el DataFrame conservando únicamente proyectos aprobados (En Proceso y Completado)."""
+    if df_proyectos is None or df_proyectos.empty:
+        return pd.DataFrame(columns=COLS_PROY)
+    if "Estado" not in df_proyectos.columns:
+        return df_proyectos.copy()
+    mask_ok = df_proyectos["Estado"].apply(es_estado_proyecto_aprobado_finanzas)
+    return df_proyectos[mask_ok].copy()
+
+
 def asignar_anio_proyecto(row, label_sin_fecha: str = "Sin fecha") -> str:
     """Determina el año financiero único de un proyecto priorizando Inicio y luego Fin."""
     if row is None or not hasattr(row, "get"):
@@ -943,6 +955,7 @@ def calcular_datos_finanzas_estudio(
         if isinstance(df_proyectos, pd.DataFrame) and not df_proyectos.empty
         else pd.DataFrame(columns=COLS_PROY)
     )
+    df_p = filtrar_proyectos_aprobados_finanzas(df_p)
     nombres_base = [safe_str(n) for n in df_p["Nombre"].tolist()] if "Nombre" in df_p.columns else []
     nombres_set = set(nombres_base)
 
@@ -1019,6 +1032,7 @@ def calcular_datos_finanzas_estudio(
 
         proy_records.append({
             "Proyecto": p_name,
+            "Estado": safe_str(pr.get("Estado", "")),
             "Cliente": safe_str(pr.get("Cliente", "")),
             "Año": anio_p,
             "ventas": ppto_p,
@@ -1090,6 +1104,7 @@ def calcular_datos_finanzas_estudio(
     rows_fin = [
         {
             "Proyecto": r["Proyecto"],
+            "Estado": r.get("Estado", ""),
             "Año": r["Año"],
             "Cliente": r["Cliente"],
             "Total Contrato": format_currency(r["ventas"]),
@@ -1255,6 +1270,7 @@ def _render_tab_finanzas_estudio(fecha_hoy):
     else:
         df_p_base = df_p_act
 
+    df_p_base = filtrar_proyectos_aprobados_finanzas(df_p_base)
     nombres_base = (
         [safe_str(n) for n in df_p_base["Nombre"].tolist()]
         if not df_p_base.empty and "Nombre" in df_p_base.columns
@@ -1348,7 +1364,7 @@ def _render_tab_finanzas_estudio(fecha_hoy):
         return
 
     st.markdown("### 📊 FINANZAS")
-    st.caption("Control ejecutivo anual y por proyecto: ventas (total contratos), utilidades, gastos generales, caja chica y cobros.")
+    st.caption("Control ejecutivo anual y por proyecto de proyectos aprobados (En Proceso y Completado): ventas, utilidades, gastos generales, caja chica y cobros.")
 
     anios_disp = fin_base["anios_disponibles"] or [str(fecha_hoy.year)]
     k_anios_key = "fin_filtro_anios"
@@ -1443,7 +1459,7 @@ def _render_tab_finanzas_estudio(fecha_hoy):
     st.divider()
 
     if df_p_base.empty:
-        st.info("No hay proyectos activos registrados.")
+        st.info("No hay proyectos aprobados (En Proceso o Completado) registrados.")
         return
 
     _render_finanzas_chart_y_resumen(fin_filt, kpis_sel, vista_graf)

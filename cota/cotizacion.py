@@ -16,12 +16,14 @@ Permite:
 
 from __future__ import annotations
 
+import copy
 import datetime
 import io
 import json
 import math
 import os
 import re
+import unicodedata
 import openpyxl
 from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -56,6 +58,600 @@ def formatear_nombre_partida(idx_1based: int, nombre_limpio: str) -> str:
     """Formatea el nombre canónico de la partida con prefijo de 2 dígitos: '01. Nombre'."""
     clean = limpiar_nombre_partida(nombre_limpio, idx_1based)
     return f"{idx_1based:02d}. {clean}"
+
+
+def _normalizar_texto_integracion(texto: str) -> str:
+    """Normaliza descripciones/nombres de partidas y tareas para emparejar sin pérdida de avance."""
+    s = safe_str(texto).strip()
+    s = re.sub(r"^\s*\d+(?:\.\d+)*[\.\-\s:]+", "", s).strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def _tc_proyecto_default(proy_name: str) -> float:
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if isinstance(df_p, pd.DataFrame) and not df_p.empty and "Nombre" in df_p.columns:
+        m = df_p[df_p["Nombre"] == proy_name]
+        if not m.empty:
+            tc_v = safe_float(m.iloc[0].get("TC_Presupuesto"), 0.0)
+            if tc_v > 0:
+                return tc_v
+    return 3.42
+
+
+def _leer_presupuesto_json_raw(proy_name: str) -> dict | None:
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if not isinstance(df_p, pd.DataFrame) or df_p.empty or "Nombre" not in df_p.columns or "Presupuesto_JSON" not in df_p.columns:
+        return None
+    m = df_p[df_p["Nombre"] == proy_name]
+    if m.empty:
+        return None
+    raw = safe_str(m.iloc[0].get("Presupuesto_JSON", "")).strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _escribir_presupuesto_json_raw(proy_name: str, data: dict):
+    if "proyectos" not in st.session_state or not isinstance(st.session_state.proyectos, pd.DataFrame) or st.session_state.proyectos.empty:
+        return
+    if "Presupuesto_JSON" not in st.session_state.proyectos.columns:
+        st.session_state.proyectos["Presupuesto_JSON"] = ""
+    if st.session_state.proyectos["Presupuesto_JSON"].dtype != object:
+        st.session_state.proyectos["Presupuesto_JSON"] = (
+            st.session_state.proyectos["Presupuesto_JSON"].fillna("").astype(str).replace({"nan": "", "None": ""}).astype(object)
+        )
+    mask = st.session_state.proyectos["Nombre"] == proy_name
+    if mask.any():
+        idx_p = st.session_state.proyectos[mask].index[0]
+        st.session_state.proyectos.at[idx_p, "Presupuesto_JSON"] = json.dumps(data, ensure_ascii=False)
+        st.session_state.pop(f"_ppto_runtime_cache_{proy_name}", None)
+
+
+def _normalizar_partidas_presupuesto_items(partidas_raw: list[dict], tc: float = 3.42) -> list[dict]:
+    """Normaliza partidas y tareas del presupuesto calculando códigos, parciales y contratistas."""
+    tc_eff = tc if tc > 0 else 3.42
+    norm_parts = []
+    for idx_p, p in enumerate(partidas_raw or [], start=1):
+        if not isinstance(p, dict):
+            continue
+        p_nom_comp = formatear_nombre_partida(idx_p, p.get("nombre", p.get("Nombre_Partida", f"Partida {idx_p}")))
+        tareas_raw = p.get("tareas", []) if isinstance(p.get("tareas"), list) else []
+        norm_tareas = []
+        sub_p = 0.0
+        contratistas_p = []
+        for idx_t, t in enumerate(tareas_raw, start=1):
+            if not isinstance(t, dict):
+                continue
+            cod_t = f"{idx_p}.{idx_t:02d}"
+            desc_t = extraer_descripcion_tarea(t.get("descripcion", t.get("Tarea", "")), safe_str(t.get("codigo", cod_t)))
+            mon_t = safe_str(t.get("moneda", "Soles")).strip() or "Soles"
+            if mon_t not in ["Soles", "Dólares"]:
+                mon_t = "Soles"
+            und_t = safe_str(t.get("unidad", "glb")).strip() or "glb"
+            met_t = safe_float(t.get("metrado", 1.0), 1.0)
+            if met_t <= 0:
+                met_t = 1.0
+            vu_t = max(0.0, safe_float(t.get("valor_unitario", 0.0), 0.0))
+            es_usd = any(d in mon_t.lower() for d in ["dolar", "dólar", "usd", "$"])
+            ppto_soles = round(met_t * vu_t * (tc_eff if es_usd else 1.0), 2)
+            esp_t = safe_str(t.get("especialidad", "Ninguna")).strip() or "Ninguna"
+            con_t = safe_str(t.get("contratista", "")).strip()
+            if con_t and con_t not in contratistas_p:
+                contratistas_p.append(con_t)
+            sub_p += ppto_soles
+            norm_tareas.append({
+                "orden": idx_t,
+                "codigo": cod_t,
+                "descripcion": desc_t,
+                "especialidad": esp_t,
+                "contratista": con_t,
+                "moneda": mon_t,
+                "unidad": und_t,
+                "metrado": float(met_t),
+                "valor_unitario": float(vu_t),
+                "presupuesto": float(ppto_soles),
+            })
+        sub_p = round(sub_p, 2)
+        monto_pact = sub_p if norm_tareas else round(max(0.0, safe_float(p.get("monto_pactado", 0.0), 0.0)), 2)
+        contra_str = ", ".join(contratistas_p) if contratistas_p else safe_str(p.get("contratista", "")).strip()
+        norm_parts.append({
+            "nombre": p_nom_comp,
+            "monto_pactado": float(monto_pact),
+            "contratista": contra_str,
+            "tareas": norm_tareas,
+        })
+    return norm_parts
+
+
+def _items_default_presupuesto(n_partidas: int = 3, n_tareas: int = 3) -> list[dict]:
+    n_p = max(1, int(n_partidas))
+    n_t = max(1, int(n_tareas))
+    return [
+        {
+            "nombre": formatear_nombre_partida(idx_p, f"Partida {idx_p}"),
+            "monto_pactado": 0.0,
+            "contratista": "",
+            "tareas": [
+                {
+                    "orden": idx_t,
+                    "codigo": f"{idx_p}.{idx_t:02d}",
+                    "descripcion": "",
+                    "especialidad": "Ninguna",
+                    "contratista": "",
+                    "moneda": "Soles",
+                    "unidad": "glb",
+                    "metrado": 1.0,
+                    "valor_unitario": 0.0,
+                    "presupuesto": 0.0,
+                }
+                for idx_t in range(1, n_t + 1)
+            ],
+        }
+        for idx_p in range(1, n_p + 1)
+    ]
+
+
+def _snapshot_gestion_como_presupuesto(proy_name: str, tc: float | None = None) -> list[dict]:
+    """Lee partidas, p_info y tasks existentes de Gestión en formato normalizado sin mutar Session State."""
+    df_parts = st.session_state.get("partidas", pd.DataFrame())
+    if not isinstance(df_parts, pd.DataFrame) or df_parts.empty or "Proyecto" not in df_parts.columns:
+        return []
+    parts_proy = df_parts[df_parts["Proyecto"] == proy_name].reset_index(drop=True)
+    if parts_proy.empty:
+        return []
+    df_pinfo = st.session_state.get("p_info", pd.DataFrame())
+    df_tasks = st.session_state.get("tasks", pd.DataFrame())
+    tc_eff = tc if (tc and tc > 0) else _tc_proyecto_default(proy_name)
+    raw_items = []
+    for idx_p, (_, p_row) in enumerate(parts_proy.iterrows(), start=1):
+        p_nom = safe_str(p_row.get("Nombre_Partida", f"Partida {idx_p}"))
+        monto_pact = 0.0
+        contra_p = ""
+        if isinstance(df_pinfo, pd.DataFrame) and not df_pinfo.empty and "Proyecto" in df_pinfo.columns:
+            m_pi = df_pinfo[(df_pinfo["Proyecto"] == proy_name) & (df_pinfo["Nombre_Partida"] == p_nom)]
+            if not m_pi.empty:
+                monto_pact = safe_float(m_pi["Monto_Pactado"].iloc[0], 0.0)
+                contra_p = safe_str(m_pi["Contratista"].iloc[0]).strip() if "Contratista" in m_pi.columns else ""
+        tareas_list = []
+        if isinstance(df_tasks, pd.DataFrame) and not df_tasks.empty and "Proyecto" in df_tasks.columns:
+            t_sub = df_tasks[(df_tasks["Proyecto"] == proy_name) & (df_tasks["Partida"] == p_nom)].copy()
+            if not t_sub.empty and "Orden" in t_sub.columns:
+                t_sub = t_sub.sort_values(by="Orden", kind="stable")
+            for idx_t, (_, t_r) in enumerate(t_sub.iterrows(), start=1):
+                cod_t = safe_str(t_r.get("Codigo_Item", f"{idx_p}.{idx_t:02d}")).strip() or f"{idx_p}.{idx_t:02d}"
+                desc_t = extraer_descripcion_tarea(t_r.get("Tarea", ""), cod_t)
+                mon_t = safe_str(t_r.get("Moneda", "Soles")).strip() or "Soles"
+                und_t = safe_str(t_r.get("Unidad", "glb")).strip() or "glb"
+                met_t = safe_float(t_r.get("Metrado", 1.0), 1.0)
+                if met_t <= 0:
+                    met_t = 1.0
+                vu_t = safe_float(t_r.get("Valor_Unitario", 0.0), 0.0)
+                ppto_t = safe_float(t_r.get("Presupuesto", 0.0), 0.0)
+                es_usd = any(d in mon_t.lower() for d in ["dolar", "dólar", "usd", "$"])
+                if vu_t <= 0 and ppto_t > 0:
+                    vu_t = round(ppto_t / (met_t * tc_eff), 2) if es_usd else round(ppto_t / met_t, 2)
+                tareas_list.append({
+                    "codigo": cod_t,
+                    "descripcion": desc_t,
+                    "especialidad": safe_str(t_r.get("Especialidad", "Ninguna")).strip() or "Ninguna",
+                    "contratista": safe_str(t_r.get("Contratista", "")).strip(),
+                    "moneda": mon_t,
+                    "unidad": und_t,
+                    "metrado": met_t,
+                    "valor_unitario": vu_t,
+                })
+        if not tareas_list and monto_pact > 0:
+            tareas_list.append({
+                "codigo": f"{idx_p}.01",
+                "descripcion": limpiar_nombre_partida(p_nom, idx_p),
+                "especialidad": "Ninguna",
+                "contratista": contra_p,
+                "moneda": "Soles",
+                "unidad": "glb",
+                "metrado": 1.0,
+                "valor_unitario": monto_pact,
+            })
+        raw_items.append({
+            "nombre": p_nom,
+            "monto_pactado": monto_pact,
+            "contratista": contra_p,
+            "tareas": tareas_list,
+        })
+    return _normalizar_partidas_presupuesto_items(raw_items, tc=tc_eff)
+
+
+def obtener_estado_sincronizacion_presupuesto(proy_name: str) -> bool:
+    """Indica si 03. PRESUPUESTO está en modo sincronización automática hacia Gestión (05 y 06)."""
+    raw = _leer_presupuesto_json_raw(proy_name)
+    if isinstance(raw, dict):
+        return bool(raw.get("sincronizar_gestion", False))
+    return False
+
+
+def _tiene_presupuesto_independiente_guardado(proy_name: str) -> bool:
+    raw = _leer_presupuesto_json_raw(proy_name)
+    return bool(isinstance(raw, dict) and raw.get("inicializado", False))
+
+
+def _usar_almacen_presupuesto_json(proy_name: str, solo_presupuesto: bool | None = None, ambito: str | None = None) -> bool:
+    if ambito == "gestion":
+        return False
+    if ambito == "presupuesto" or solo_presupuesto is True:
+        return True
+    if solo_presupuesto is False:
+        return False
+    return _tiene_presupuesto_independiente_guardado(proy_name) or bool(
+        st.session_state.get(f"_ppto_indep_ui_{proy_name}", False)
+    )
+
+
+def obtener_items_presupuesto_proyecto(proy_name: str, tc: float | None = None) -> list[dict]:
+    """Retorna la lista normalizada de partidas y tareas de 03. PRESUPUESTO para `proy_name`."""
+    tc_eff = tc if (tc and tc > 0) else _tc_proyecto_default(proy_name)
+    raw = _leer_presupuesto_json_raw(proy_name)
+    if isinstance(raw, dict) and raw.get("inicializado", False) and isinstance(raw.get("partidas"), list):
+        return _normalizar_partidas_presupuesto_items(raw["partidas"], tc=tc_eff)
+    cached = st.session_state.get(f"_ppto_runtime_cache_{proy_name}")
+    if isinstance(cached, dict) and isinstance(cached.get("partidas"), list):
+        return _normalizar_partidas_presupuesto_items(copy.deepcopy(cached["partidas"]), tc=tc_eff)
+    snap = _snapshot_gestion_como_presupuesto(proy_name, tc=tc_eff)
+    if snap:
+        return snap
+    return []
+
+
+def _guardar_items_presupuesto_proyecto(
+    proy_name: str,
+    items: list[dict],
+    solo_presupuesto: bool | None = None,
+    sincronizar_si_activo: bool = True,
+):
+    tc_eff = _tc_proyecto_default(proy_name)
+    norm_items = _normalizar_partidas_presupuesto_items(items, tc=tc_eff)
+    sync_pref = obtener_estado_sincronizacion_presupuesto(proy_name)
+    _escribir_presupuesto_json_raw(
+        proy_name,
+        {
+            "inicializado": True,
+            "sincronizar_gestion": sync_pref,
+            "partidas": norm_items,
+        },
+    )
+    sync_efectivo = sync_pref if solo_presupuesto is None else (not bool(solo_presupuesto))
+    recalcular_totales_presupuesto_proyecto(proy_name, sincronizar_pactado=sync_efectivo, _desde_presupuesto_json=True)
+    if sync_efectivo and sincronizar_si_activo:
+        integrar_presupuesto_con_gestion(proy_name, incluir_obra=True, incluir_pagos=True, _ya_recalculado=True)
+
+
+def _es_partida_placeholder_vacia(p_nom: str, df_t_p: pd.DataFrame) -> bool:
+    """Detecta una partida semilla intacta ('01. Partida 1') sin avances reales ni montos."""
+    if not re.match(r"^\s*\d+[\.\-\s]+Partida\s+\d+\s*$", safe_str(p_nom), flags=re.IGNORECASE):
+        return False
+    if df_t_p is None or df_t_p.empty:
+        return True
+    for _, r_t in df_t_p.iterrows():
+        cod_t = safe_str(r_t.get("Codigo_Item", "")).strip()
+        desc_t = extraer_descripcion_tarea(r_t.get("Tarea", ""), cod_t).strip()
+        if desc_t:
+            return False
+        if safe_float(r_t.get("Presupuesto", 0.0), 0.0) > 0:
+            return False
+        if safe_str(r_t.get("Contratista", "")).strip():
+            return False
+        if safe_str(r_t.get("Estado", "🟡 Planificado")).strip() not in ("", "🟡 Planificado"):
+            return False
+    return True
+
+
+def _limpiar_cache_editor_obra_proyecto(proy_name: str):
+    for k in list(st.session_state.keys()):
+        k_s = str(k)
+        if k_s.startswith(f"base_df_tasks_{proy_name}_") or k_s.startswith(f"c_base_df_tasks_{proy_name}_"):
+            if k_s.startswith("c_base_df_tasks_"):
+                st.session_state[k] = st.session_state.get(k, 0) + 1
+            else:
+                del st.session_state[k]
+
+
+def _integrar_items_presupuesto_en_obra(proy_name: str, items_ppto: list[dict]) -> dict:
+    """
+    Integra las partidas y tareas del Presupuesto hacia 05. PARTIDAS Y TAREAS preservando al 100%
+    los estados (En Proceso / Completado), fechas, contratistas y avances existentes.
+    """
+    res_stats = {
+        "partidas_actualizadas": 0,
+        "partidas_agregadas": 0,
+        "tareas_actualizadas": 0,
+        "tareas_agregadas": 0,
+        "avances_conservados": 0,
+    }
+    if not items_ppto:
+        return res_stats
+
+    if "partidas" not in st.session_state:
+        st.session_state.partidas = pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
+    if "p_info" not in st.session_state:
+        st.session_state.p_info = pd.DataFrame(columns=COLS_P_INFO)
+    if "tasks" not in st.session_state:
+        st.session_state.tasks = pd.DataFrame(columns=COLS_TASKS)
+    for col in COLS_P_INFO:
+        if col not in st.session_state.p_info.columns:
+            st.session_state.p_info[col] = ""
+    for col in COLS_TASKS:
+        if col not in st.session_state.tasks.columns:
+            st.session_state.tasks[col] = ""
+    _sanitizar_dtypes_tasks_y_proyectos()
+
+    # Si Gestión solo tiene las partidas semilla vacías ("01. Partida 1"...) y cero pagos, reemplazarlas limpiamente
+    df_parts_g = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name]
+    df_pagos_g = st.session_state.get("pagos", pd.DataFrame())
+    tiene_pagos_man = (
+        isinstance(df_pagos_g, pd.DataFrame)
+        and not df_pagos_g.empty
+        and "Proyecto" in df_pagos_g.columns
+        and bool((df_pagos_g["Proyecto"] == proy_name).any())
+    )
+    if not df_parts_g.empty and not tiene_pagos_man:
+        todas_placeholder = all(
+            _es_partida_placeholder_vacia(
+                p_r["Nombre_Partida"],
+                st.session_state.tasks[
+                    (st.session_state.tasks["Proyecto"] == proy_name)
+                    & (st.session_state.tasks["Partida"] == p_r["Nombre_Partida"])
+                ],
+            )
+            for _, p_r in df_parts_g.iterrows()
+        )
+        if todas_placeholder:
+            st.session_state.partidas = st.session_state.partidas[st.session_state.partidas["Proyecto"] != proy_name].reset_index(drop=True)
+            st.session_state.p_info = st.session_state.p_info[st.session_state.p_info["Proyecto"] != proy_name].reset_index(drop=True)
+            st.session_state.tasks = st.session_state.tasks[st.session_state.tasks["Proyecto"] != proy_name].reset_index(drop=True)
+
+    parts_exist_list = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name]["Nombre_Partida"].dropna().astype(str).tolist()
+    usadas_parts_g = set()
+    nuevas_partidas_rows = []
+    nuevas_pinfo_rows = []
+    nuevas_tasks_rows = []
+    hoy_iso = datetime.date.today().strftime("%Y-%m-%d")
+
+    for p_b in items_ppto:
+        p_nom_b = safe_str(p_b.get("nombre", "")).strip()
+        p_norm_b = _normalizar_texto_integracion(p_nom_b)
+        monto_b = round(safe_float(p_b.get("monto_pactado", 0.0), 0.0), 2)
+        contra_b = safe_str(p_b.get("contratista", "")).strip()
+
+        nom_g = None
+        for idx_cand, cand in enumerate(parts_exist_list, start=1):
+            if cand in usadas_parts_g:
+                continue
+            if p_norm_b and _normalizar_texto_integracion(cand) == p_norm_b:
+                nom_g = cand
+                idx_g_1b = idx_cand
+                break
+
+        if nom_g is not None:
+            usadas_parts_g.add(nom_g)
+            res_stats["partidas_actualizadas"] += 1
+            mask_pi = (st.session_state.p_info["Proyecto"] == proy_name) & (st.session_state.p_info["Nombre_Partida"] == nom_g)
+            if mask_pi.any():
+                st.session_state.p_info.loc[mask_pi, "Monto_Pactado"] = float(monto_b)
+                if contra_b and "Contratista" in st.session_state.p_info.columns:
+                    curr_c = safe_str(st.session_state.p_info.loc[mask_pi, "Contratista"].iloc[0]).strip()
+                    if not curr_c:
+                        st.session_state.p_info.loc[mask_pi, "Contratista"] = contra_b
+            else:
+                nuevas_pinfo_rows.append({
+                    "Proyecto": proy_name,
+                    "Nombre_Partida": nom_g,
+                    "Monto_Pactado": float(monto_b),
+                    "Nivel_Actual": "",
+                    "Contratista": contra_b,
+                    "Inicio": "",
+                    "Fin": "",
+                    "Estado": "🟡 Planificado",
+                    "Etapa": "Construcción",
+                    "Nivel_Inicio": "",
+                    "Nivel_Fin": "",
+                })
+        else:
+            idx_g_1b = len(parts_exist_list) + 1
+            nom_g = formatear_nombre_partida(idx_g_1b, limpiar_nombre_partida(p_nom_b, idx_g_1b))
+            parts_exist_list.append(nom_g)
+            usadas_parts_g.add(nom_g)
+            res_stats["partidas_agregadas"] += 1
+            nuevas_partidas_rows.append({"Proyecto": proy_name, "Nombre_Partida": nom_g})
+            nuevas_pinfo_rows.append({
+                "Proyecto": proy_name,
+                "Nombre_Partida": nom_g,
+                "Monto_Pactado": float(monto_b),
+                "Nivel_Actual": "",
+                "Contratista": contra_b,
+                "Inicio": "",
+                "Fin": "",
+                "Estado": "🟡 Planificado",
+                "Etapa": "Construcción",
+                "Nivel_Inicio": "",
+                "Nivel_Fin": "",
+            })
+
+        mask_tg = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nom_g)
+        idxs_tg = st.session_state.tasks[mask_tg].index.tolist()
+        usados_tg = set()
+        next_ord = len(idxs_tg) + 1
+
+        for t_b in p_b.get("tareas", []):
+            desc_b = safe_str(t_b.get("descripcion", "")).strip()
+            desc_b_norm = _normalizar_texto_integracion(desc_b)
+            cod_b = safe_str(t_b.get("codigo", "")).strip()
+            mon_b = safe_str(t_b.get("moneda", "Soles")).strip() or "Soles"
+            und_b = safe_str(t_b.get("unidad", "glb")).strip() or "glb"
+            met_b = safe_float(t_b.get("metrado", 1.0), 1.0)
+            if met_b <= 0:
+                met_b = 1.0
+            vu_b = safe_float(t_b.get("valor_unitario", 0.0), 0.0)
+            ppto_b = round(safe_float(t_b.get("presupuesto", 0.0), 0.0), 2)
+            esp_b = safe_str(t_b.get("especialidad", "Ninguna")).strip() or "Ninguna"
+            con_b = safe_str(t_b.get("contratista", "")).strip()
+
+            match_idx = None
+            if desc_b_norm:
+                for i_tg in idxs_tg:
+                    if i_tg in usados_tg:
+                        continue
+                    cod_g_cand = safe_str(st.session_state.tasks.at[i_tg, "Codigo_Item"]).strip()
+                    desc_g_cand = extraer_descripcion_tarea(st.session_state.tasks.at[i_tg, "Tarea"], cod_g_cand)
+                    if _normalizar_texto_integracion(desc_g_cand) == desc_b_norm:
+                        match_idx = i_tg
+                        break
+
+            if match_idx is None:
+                for i_tg in idxs_tg:
+                    if i_tg in usados_tg:
+                        continue
+                    cod_g_cand = safe_str(st.session_state.tasks.at[i_tg, "Codigo_Item"]).strip()
+                    desc_g_cand = extraer_descripcion_tarea(st.session_state.tasks.at[i_tg, "Tarea"], cod_g_cand).strip()
+                    est_g_cand = safe_str(st.session_state.tasks.at[i_tg, "Estado"]).strip()
+                    ppto_g_cand = safe_float(st.session_state.tasks.at[i_tg, "Presupuesto"], 0.0)
+                    if not desc_g_cand and est_g_cand in ("", "🟡 Planificado") and ppto_g_cand <= 0 and cod_b and cod_g_cand == cod_b:
+                        match_idx = i_tg
+                        break
+
+            if match_idx is not None:
+                usados_tg.add(match_idx)
+                res_stats["tareas_actualizadas"] += 1
+                est_act = safe_str(st.session_state.tasks.at[match_idx, "Estado"]).strip()
+                fin_act = safe_str(st.session_state.tasks.at[match_idx, "Fin"]).strip()
+                con_act = safe_str(st.session_state.tasks.at[match_idx, "Contratista"]).strip()
+                if est_act not in ("", "🟡 Planificado") or fin_act or con_act:
+                    res_stats["avances_conservados"] += 1
+
+                cod_g_keep = safe_str(st.session_state.tasks.at[match_idx, "Codigo_Item"]).strip() or cod_b
+                if desc_b:
+                    st.session_state.tasks.at[match_idx, "Tarea"] = f"{cod_g_keep} {desc_b}".strip()
+                st.session_state.tasks.at[match_idx, "Moneda"] = mon_b
+                st.session_state.tasks.at[match_idx, "Unidad"] = und_b
+                st.session_state.tasks.at[match_idx, "Metrado"] = float(met_b)
+                st.session_state.tasks.at[match_idx, "Valor_Unitario"] = float(vu_b)
+                st.session_state.tasks.at[match_idx, "Presupuesto"] = float(ppto_b)
+                if con_b and not con_act:
+                    st.session_state.tasks.at[match_idx, "Contratista"] = con_b
+                esp_act = safe_str(st.session_state.tasks.at[match_idx, "Especialidad"]).strip()
+                if esp_b not in ("", "Ninguna") and esp_act in ("", "Ninguna"):
+                    st.session_state.tasks.at[match_idx, "Especialidad"] = esp_b
+            else:
+                cod_new = f"{idx_g_1b}.{next_ord:02d}"
+                tarea_new = f"{cod_new} {desc_b}".strip() if desc_b else cod_new
+                notas_new = f"Ppto: S/ {ppto_b:,.2f} ({met_b:g} {und_b} x {vu_b:,.2f} {mon_b})" if ppto_b > 0 else ""
+                nuevas_tasks_rows.append({
+                    "Proyecto": proy_name,
+                    "Partida": nom_g,
+                    "Orden": int(next_ord),
+                    "Codigo_Item": cod_new,
+                    "Tarea": tarea_new,
+                    "Especialidad": esp_b,
+                    "Contratista": con_b,
+                    "Estado": "🟡 Planificado",
+                    "Supervisado": "No",
+                    "Inicio": hoy_iso,
+                    "Fin": "",
+                    "Causa_Cumplimiento": "",
+                    "Culpa_Contratista": False,
+                    "Permitir_Cruce": False,
+                    "Dependencia": "",
+                    "Notas": notas_new,
+                    "Moneda": mon_b,
+                    "Unidad": und_b,
+                    "Metrado": float(met_b),
+                    "Valor_Unitario": float(vu_b),
+                    "Presupuesto": float(ppto_b),
+                })
+                next_ord += 1
+                res_stats["tareas_agregadas"] += 1
+
+    if nuevas_partidas_rows:
+        st.session_state.partidas = pd.concat(
+            [st.session_state.partidas, pd.DataFrame(nuevas_partidas_rows)],
+            ignore_index=True,
+        ).drop_duplicates().reset_index(drop=True)
+    if nuevas_pinfo_rows:
+        st.session_state.p_info = pd.concat(
+            [st.session_state.p_info, pd.DataFrame(nuevas_pinfo_rows)[COLS_P_INFO]],
+            ignore_index=True,
+        )
+    if nuevas_tasks_rows:
+        st.session_state.tasks = pd.concat(
+            [st.session_state.tasks, pd.DataFrame(nuevas_tasks_rows)[COLS_TASKS]],
+            ignore_index=True,
+        )
+
+    _limpiar_cache_editor_obra_proyecto(proy_name)
+    clear_base_dfs()
+    return res_stats
+
+
+def integrar_presupuesto_con_gestion(
+    proy_name: str,
+    incluir_obra: bool = True,
+    incluir_pagos: bool = True,
+    _ya_recalculado: bool = False,
+) -> dict:
+    """
+    Integra de forma opcional y no destructiva las partidas y montos de 03. PRESUPUESTO
+    hacia Gestión (05. PARTIDAS Y TAREAS y 06. CUADRO DE PAGOS), conservando estados,
+    fechas, contratistas y pagos ya registrados.
+    """
+    items_ppto = obtener_items_presupuesto_proyecto(proy_name)
+    res = {
+        "partidas_actualizadas": 0,
+        "partidas_agregadas": 0,
+        "tareas_actualizadas": 0,
+        "tareas_agregadas": 0,
+        "avances_conservados": 0,
+        "cuadro_pagos_actualizado": False,
+    }
+    if not _ya_recalculado:
+        recalcular_totales_presupuesto_proyecto(proy_name, sincronizar_pactado=incluir_obra, _desde_presupuesto_json=bool(items_ppto))
+    if incluir_obra and items_ppto:
+        stats_obra = _integrar_items_presupuesto_en_obra(proy_name, items_ppto)
+        res.update(stats_obra)
+    if incluir_pagos:
+        obtener_cuadro_pagos_semanales_proyecto(proy_name, sincronizar_partidas=True, fuente="presupuesto")
+        st.session_state.pop(f"base_df_pagos_cont_{proy_name}", None)
+        st.session_state.pop(f"base_df_pagos_ges_{proy_name}", None)
+        res["cuadro_pagos_actualizado"] = True
+    clear_base_dfs()
+    return res
+
+
+def establecer_estado_sincronizacion_presupuesto(
+    proy_name: str,
+    sincronizar: bool,
+    aplicar_integracion: bool = False,
+) -> dict:
+    """Activa o desactiva la sincronización automática Presupuesto → Gestión para un proyecto."""
+    tc_eff = _tc_proyecto_default(proy_name)
+    items = obtener_items_presupuesto_proyecto(proy_name, tc=tc_eff)
+    if not items:
+        items = _items_default_presupuesto(3, 3)
+    _escribir_presupuesto_json_raw(
+        proy_name,
+        {
+            "inicializado": True,
+            "sincronizar_gestion": bool(sincronizar),
+            "partidas": items,
+        },
+    )
+    st.session_state[f"_ppto_indep_ui_{proy_name}"] = not bool(sincronizar)
+    integ_res = None
+    if sincronizar and aplicar_integracion:
+        integ_res = integrar_presupuesto_con_gestion(proy_name, incluir_obra=True, incluir_pagos=True)
+    return {"sincronizar_gestion": bool(sincronizar), "integracion": integ_res}
 
 
 def extraer_descripcion_tarea(tarea_raw: str, codigo_item: str = "") -> str:
@@ -185,15 +781,17 @@ def _crear_snapshot_presupuesto(proy_name: str) -> dict:
         m = st.session_state.proyectos["Nombre"] == proy_name
         if m.any():
             r = st.session_state.proyectos[m].iloc[0]
-            for f in ["Presupuesto", "Utilidades", "GG_Presupuesto", "TC_Presupuesto", "GG_Pct", "Utilidades_Pct", "Incluir_IGV", "Honorarios_Diseno"]:
+            for f in ["Presupuesto", "Utilidades", "GG_Presupuesto", "TC_Presupuesto", "GG_Pct", "Utilidades_Pct", "Incluir_IGV", "Honorarios_Diseno", "Presupuesto_JSON"]:
                 if f in r:
                     proy_fields[f] = r[f]
 
+    rt_cache = st.session_state.get(f"_ppto_runtime_cache_{proy_name}")
     return {
         "tasks": t_sub,
         "partidas": p_sub,
         "p_info": pi_sub,
         "proy_fields": proy_fields,
+        "runtime_cache": copy.deepcopy(rt_cache) if isinstance(rt_cache, dict) else None,
         "timestamp": datetime.datetime.now().isoformat(),
     }
 
@@ -209,7 +807,13 @@ def guardar_snapshot_presupuesto(proy_name: str):
         # Evitar guardar snapshots idénticos consecutivos
         if st.session_state[k_undo]:
             ult = st.session_state[k_undo][-1]
-            if ult["tasks"].equals(snap["tasks"]) and ult["partidas"].equals(snap["partidas"]) and ult["p_info"].equals(snap["p_info"]):
+            if (
+                ult["tasks"].equals(snap["tasks"])
+                and ult["partidas"].equals(snap["partidas"])
+                and ult["p_info"].equals(snap["p_info"])
+                and ult.get("proy_fields", {}).get("Presupuesto_JSON") == snap.get("proy_fields", {}).get("Presupuesto_JSON")
+                and ult.get("runtime_cache") == snap.get("runtime_cache")
+            ):
                 return
         st.session_state[k_undo].append(snap)
         if len(st.session_state[k_undo]) > 25:
@@ -268,7 +872,7 @@ def _restaurar_snapshot_presupuesto(proy_name: str, snap: dict):
         st.session_state.p_info = st.session_state.p_info[st.session_state.p_info["Proyecto"] != proy_name].reset_index(drop=True)
         st.session_state.p_info = pd.concat([st.session_state.p_info, snap["p_info"]], ignore_index=True)
 
-    # 4. Restaurar campos del proyecto
+    # 4. Restaurar campos del proyecto y caché efímera de presupuesto independiente
     if "proyectos" in st.session_state and not st.session_state.proyectos.empty:
         m = st.session_state.proyectos["Nombre"] == proy_name
         if m.any():
@@ -276,6 +880,10 @@ def _restaurar_snapshot_presupuesto(proy_name: str, snap: dict):
             for f, val in snap.get("proy_fields", {}).items():
                 if f in st.session_state.proyectos.columns:
                     st.session_state.proyectos.at[idx_p, f] = val
+    if snap.get("runtime_cache") is not None:
+        st.session_state[f"_ppto_runtime_cache_{proy_name}"] = copy.deepcopy(snap["runtime_cache"])
+    else:
+        st.session_state.pop(f"_ppto_runtime_cache_{proy_name}", None)
 
     # 5. Invalidar estados de data_editor para forzar recarga limpia en la UI
     clear_base_dfs()
@@ -365,11 +973,36 @@ def asegurar_estructura_presupuesto_proyecto(
     proy_name: str,
     n_partidas_default: int = 3,
     n_tareas_default: int = 3,
+    solo_presupuesto: bool | None = None,
 ):
     """
     Garantiza que el proyecto tenga una estructura de Partidas y Tareas lista para editarse
-    en '03. PRESUPUESTO' y sincronizada con '05. EJECUCIÓN & PARTIDAS'.
+    en '03. PRESUPUESTO'. Cuando el presupuesto está en modo independiente, no modifica
+    las tablas operativas de Gestión ('05. PARTIDAS Y TAREAS').
     """
+    if _usar_almacen_presupuesto_json(proy_name, solo_presupuesto=solo_presupuesto):
+        tc_eff = _tc_proyecto_default(proy_name)
+        raw_j = _leer_presupuesto_json_raw(proy_name)
+        if isinstance(raw_j, dict) and raw_j.get("inicializado", False):
+            items_norm = _normalizar_partidas_presupuesto_items(raw_j.get("partidas", []), tc=tc_eff)
+            if not items_norm:
+                items_norm = _items_default_presupuesto(n_partidas_default, n_tareas_default)
+                _escribir_presupuesto_json_raw(
+                    proy_name,
+                    {
+                        "inicializado": True,
+                        "sincronizar_gestion": bool(raw_j.get("sincronizar_gestion", False)),
+                        "partidas": items_norm,
+                    },
+                )
+            return
+        k_rt = f"_ppto_runtime_cache_{proy_name}"
+        if isinstance(st.session_state.get(k_rt), dict) and st.session_state[k_rt].get("partidas"):
+            return
+        snap = _snapshot_gestion_como_presupuesto(proy_name, tc=tc_eff)
+        items_init = snap if snap else _items_default_presupuesto(n_partidas_default, n_tareas_default)
+        st.session_state[k_rt] = {"inicializado": False, "partidas": items_init}
+        return
     if "partidas" not in st.session_state:
         st.session_state.partidas = pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
     if "p_info" not in st.session_state:
@@ -453,13 +1086,15 @@ def asegurar_estructura_presupuesto_proyecto(
         clear_base_dfs()
 
 
-def recalcular_totales_presupuesto_proyecto(proy_name: str, sincronizar_pactado: bool = True) -> dict:
+def recalcular_totales_presupuesto_proyecto(
+    proy_name: str,
+    sincronizar_pactado: bool = True,
+    _desde_presupuesto_json: bool = False,
+) -> dict:
     """
-    Recalcula en cascada:
-    1. El Valor Parcial (Presupuesto en S/) de cada tarea según su Metrado, Valor Unitario, Moneda y TC.
-    2. El Sub Total (Monto_Pactado) de cada Partida en st.session_state.p_info.
-    3. El Sub Total (Casco), Gastos Generales, Gestión/Supervisión (Utilidades), IGV y TOTAL del proyecto
-       en st.session_state.proyectos.
+    Recalcula en cascada el Sub Total (Casco), Gastos Generales, Gestión/Supervisión (Utilidades),
+    IGV y TOTAL del proyecto desde su Presupuesto independiente (o desde Gestión en modo legado),
+    actualizando la fila del proyecto sin sobrescribir avances de obra si la sincronización está desactivada.
     """
     _sanitizar_dtypes_tasks_y_proyectos()
     params = obtener_parametros_presupuesto_proyecto(proy_name)
@@ -468,60 +1103,93 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str, sincronizar_pactado:
     util_pct = params["utilidades_pct"]
     incluir_igv = params["incluir_igv"]
 
-    parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name] if "partidas" in st.session_state else pd.DataFrame()
-
     subtotal_casco = 0.0
     subtotales_por_partida = {}
 
-    for _, p_row in parts_proy.iterrows():
-        p_nom = safe_str(p_row["Nombre_Partida"])
-        mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == p_nom)
-        df_t_p = st.session_state.tasks[mask_t]
+    raw_j = _leer_presupuesto_json_raw(proy_name)
+    has_json = isinstance(raw_j, dict) and raw_j.get("inicializado", False) and isinstance(raw_j.get("partidas"), list)
+    rt_cache = st.session_state.get(f"_ppto_runtime_cache_{proy_name}")
+    has_rt = isinstance(rt_cache, dict) and isinstance(rt_cache.get("partidas"), list)
 
-        sub_p = 0.0
-        contratistas_p = []
-        for r_idx, t_row in df_t_p.iterrows():
-            mon = safe_str(t_row.get("Moneda", "Soles")) or "Soles"
-            met = safe_float(t_row.get("Metrado", 1.0), 1.0)
-            if met <= 0:
-                met = 1.0
-            vu = safe_float(t_row.get("Valor_Unitario", 0.0), 0.0)
-            es_usd = any(d in mon.lower() for d in ["dolar", "dólar", "usd", "$"])
-            factor_tc = tc if es_usd else 1.0
-            parcial_soles = round(met * vu * factor_tc, 2)
-            st.session_state.tasks.at[r_idx, "Presupuesto"] = float(parcial_soles)
-            sub_p += parcial_soles
-            c_t = safe_str(t_row.get("Contratista", "")).strip()
-            if c_t and c_t not in contratistas_p:
-                contratistas_p.append(c_t)
+    if _desde_presupuesto_json or has_json or has_rt:
+        items_raw = raw_j.get("partidas", []) if has_json else (rt_cache.get("partidas", []) if has_rt else [])
+        items_norm = _normalizar_partidas_presupuesto_items(items_raw, tc=tc)
+        for it in items_norm:
+            sub_p = round(safe_float(it.get("monto_pactado", 0.0), 0.0), 2)
+            subtotales_por_partida[it["nombre"]] = sub_p
+            subtotal_casco += sub_p
+        if has_json and items_norm != raw_j.get("partidas"):
+            _escribir_presupuesto_json_raw(
+                proy_name,
+                {
+                    "inicializado": True,
+                    "sincronizar_gestion": bool(raw_j.get("sincronizar_gestion", False)),
+                    "partidas": items_norm,
+                },
+            )
+        elif has_rt:
+            rt_cache["partidas"] = items_norm
+        if sincronizar_pactado and obtener_estado_sincronizacion_presupuesto(proy_name):
+            df_pi = st.session_state.get("p_info", pd.DataFrame())
+            if isinstance(df_pi, pd.DataFrame) and not df_pi.empty and "Proyecto" in df_pi.columns:
+                m_proy_pi = df_pi["Proyecto"] == proy_name
+                if m_proy_pi.any():
+                    for it in items_norm:
+                        p_norm_it = _normalizar_texto_integracion(it["nombre"])
+                        for idx_pi_r in df_pi[m_proy_pi].index:
+                            if _normalizar_texto_integracion(df_pi.at[idx_pi_r, "Nombre_Partida"]) == p_norm_it:
+                                st.session_state.p_info.at[idx_pi_r, "Monto_Pactado"] = float(it["monto_pactado"])
+                                break
+    else:
+        parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name] if "partidas" in st.session_state else pd.DataFrame()
+        for _, p_row in parts_proy.iterrows():
+            p_nom = safe_str(p_row["Nombre_Partida"])
+            mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == p_nom)
+            df_t_p = st.session_state.tasks[mask_t]
 
-        sub_p = round(sub_p, 2)
-        subtotales_por_partida[p_nom] = sub_p
-        subtotal_casco += sub_p
+            sub_p = 0.0
+            contratistas_p = []
+            for r_idx, t_row in df_t_p.iterrows():
+                mon = safe_str(t_row.get("Moneda", "Soles")) or "Soles"
+                met = safe_float(t_row.get("Metrado", 1.0), 1.0)
+                if met <= 0:
+                    met = 1.0
+                vu = safe_float(t_row.get("Valor_Unitario", 0.0), 0.0)
+                es_usd = any(d in mon.lower() for d in ["dolar", "dólar", "usd", "$"])
+                factor_tc = tc if es_usd else 1.0
+                parcial_soles = round(met * vu * factor_tc, 2)
+                st.session_state.tasks.at[r_idx, "Presupuesto"] = float(parcial_soles)
+                sub_p += parcial_soles
+                c_t = safe_str(t_row.get("Contratista", "")).strip()
+                if c_t and c_t not in contratistas_p:
+                    contratistas_p.append(c_t)
 
-        # Actualizar Monto_Pactado y Contratista en p_info
-        mask_pi = (st.session_state.p_info["Proyecto"] == proy_name) & (st.session_state.p_info["Nombre_Partida"] == p_nom)
-        contra_str = ", ".join(contratistas_p)
-        if mask_pi.any():
-            if sincronizar_pactado:
-                st.session_state.p_info.loc[mask_pi, "Monto_Pactado"] = float(sub_p)
-            if contra_str:
-                st.session_state.p_info.loc[mask_pi, "Contratista"] = contra_str
-        else:
-            nueva_pi = pd.DataFrame([{
-                "Proyecto": proy_name,
-                "Nombre_Partida": p_nom,
-                "Monto_Pactado": float(sub_p),
-                "Nivel_Actual": "",
-                "Contratista": contra_str,
-                "Inicio": "",
-                "Fin": "",
-                "Estado": "🟡 Planificado",
-                "Etapa": "Construcción",
-                "Nivel_Inicio": "",
-                "Nivel_Fin": "",
-            }])
-            st.session_state.p_info = pd.concat([st.session_state.p_info, nueva_pi[COLS_P_INFO]], ignore_index=True)
+            sub_p = round(sub_p, 2)
+            subtotales_por_partida[p_nom] = sub_p
+            subtotal_casco += sub_p
+
+            mask_pi = (st.session_state.p_info["Proyecto"] == proy_name) & (st.session_state.p_info["Nombre_Partida"] == p_nom)
+            contra_str = ", ".join(contratistas_p)
+            if mask_pi.any():
+                if sincronizar_pactado:
+                    st.session_state.p_info.loc[mask_pi, "Monto_Pactado"] = float(sub_p)
+                if contra_str:
+                    st.session_state.p_info.loc[mask_pi, "Contratista"] = contra_str
+            elif sincronizar_pactado:
+                nueva_pi = pd.DataFrame([{
+                    "Proyecto": proy_name,
+                    "Nombre_Partida": p_nom,
+                    "Monto_Pactado": float(sub_p),
+                    "Nivel_Actual": "",
+                    "Contratista": contra_str,
+                    "Inicio": "",
+                    "Fin": "",
+                    "Estado": "🟡 Planificado",
+                    "Etapa": "Construcción",
+                    "Nivel_Inicio": "",
+                    "Nivel_Fin": "",
+                }])
+                st.session_state.p_info = pd.concat([st.session_state.p_info, nueva_pi[COLS_P_INFO]], ignore_index=True)
 
     subtotal_casco = round(subtotal_casco, 2)
 
@@ -547,7 +1215,20 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str, sincronizar_pactado:
 
     base_imp = subtotal_casco + gg_monto + util_monto
     igv_monto = round(base_imp * 0.18, 2) if incluir_igv else 0.0
-    total_soles = round(base_imp + igv_monto, 2)
+    total_calculado_soles = round(base_imp + igv_monto, 2)
+    presupuesto_actual = 0.0
+    if "proyectos" in st.session_state and not st.session_state.proyectos.empty:
+        mask_p_curr = st.session_state.proyectos["Nombre"] == proy_name
+        if mask_p_curr.any() and "Presupuesto" in st.session_state.proyectos.columns:
+            presupuesto_actual = round(
+                safe_float(st.session_state.proyectos.loc[mask_p_curr, "Presupuesto"].iloc[0], 0.0), 2
+            )
+    contrato_manual_activo = _es_contrato_manual_proyecto(proy_name)
+    preservar_contrato_manual = bool(
+        (contrato_manual_activo and presupuesto_actual > 0.0)
+        or (subtotal_casco == 0.0 and total_calculado_soles == 0.0 and presupuesto_actual > 0.0)
+    )
+    total_soles = presupuesto_actual if preservar_contrato_manual else total_calculado_soles
     total_usd = round(total_soles / tc, 2) if tc > 0 else 0.0
 
     # Actualizar fila del proyecto en st.session_state.proyectos
@@ -578,16 +1259,137 @@ def recalcular_totales_presupuesto_proyecto(proy_name: str, sincronizar_pactado:
         "presupuesto_total": total_soles,
         "presupuesto_dolares": total_usd,
         "subtotales_por_partida": subtotales_por_partida,
+        "contrato_manual": contrato_manual_activo,
+        "total_calculado_partidas": total_calculado_soles,
     }
 
 
-def ajustar_cantidad_partidas_proyecto(proy_name: str, nueva_cantidad: int, n_tareas_default: int = 3):
+def _es_contrato_manual_proyecto(proy_name: str) -> bool:
+    """Indica si el valor del contrato (`Presupuesto`) fue fijado manualmente para este proyecto."""
+    if not proy_name:
+        return False
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if not isinstance(df_p, pd.DataFrame) or df_p.empty or "Nombre" not in df_p.columns:
+        return False
+    m = df_p[df_p["Nombre"] == proy_name]
+    if m.empty:
+        return False
+    raw_json = safe_str(m.iloc[0].get("Pagos_Semanales_JSON", "")).strip()
+    if not raw_json:
+        return False
+    try:
+        d = json.loads(raw_json)
+        return isinstance(d, dict) and bool(d.get("contrato_manual", False))
+    except Exception:
+        return False
+
+
+def obtener_valor_contrato_proyecto(proy_name: str) -> tuple[float, bool]:
+    """Retorna `(valor_contrato_soles, es_manual)` desde `st.session_state.proyectos`."""
+    df_p = st.session_state.get("proyectos", pd.DataFrame())
+    if not isinstance(df_p, pd.DataFrame) or df_p.empty or "Nombre" not in df_p.columns:
+        return 0.0, False
+    m = df_p[df_p["Nombre"] == proy_name]
+    if m.empty:
+        return 0.0, False
+    val = round(max(0.0, safe_float(m.iloc[0].get("Presupuesto", 0.0), 0.0)), 2)
+    return val, _es_contrato_manual_proyecto(proy_name)
+
+
+def guardar_valor_contrato_proyecto(proy_name: str, valor_contrato: float, manual: bool = True) -> float:
+    """
+    Guarda el valor del contrato (`Presupuesto`) directamente sin requerir partidas en 03. PRESUPUESTO,
+    marcando `contrato_manual` para conservar el monto ingresado y sincronizarlo con Finanzas y Resumen.
+    """
+    val_clean = round(max(0.0, safe_float(valor_contrato, 0.0)), 2)
+    if not proy_name or "proyectos" not in st.session_state:
+        return val_clean
+    df_p = st.session_state.proyectos
+    if df_p.empty or "Nombre" not in df_p.columns:
+        return val_clean
+    mask_p = df_p["Nombre"] == proy_name
+    if not mask_p.any():
+        return val_clean
+    idx_p = df_p[mask_p].index[0]
+
+    if "Presupuesto" not in df_p.columns:
+        df_p["Presupuesto"] = 0.0
+    elif df_p["Presupuesto"].dtype == object or not pd.api.types.is_numeric_dtype(df_p["Presupuesto"]):
+        df_p["Presupuesto"] = pd.to_numeric(df_p["Presupuesto"], errors="coerce").fillna(0.0).astype(float)
+
+    es_manual = bool(manual and val_clean > 0.0)
+    data_c = obtener_cuadro_pagos_semanales_proyecto(proy_name)
+    data_c["contrato_manual"] = es_manual
+    guardar_cuadro_pagos_semanales_proyecto(proy_name, data_c)
+    st.session_state.proyectos.at[idx_p, "Presupuesto"] = float(val_clean)
+    clear_base_dfs()
+    return val_clean
+
+
+def _nueva_tarea_json_ppto(cod_t: str) -> dict:
+    return {
+        "orden": int(cod_t.split(".")[-1]) if "." in cod_t else 1,
+        "codigo": cod_t,
+        "descripcion": "",
+        "especialidad": "Ninguna",
+        "contratista": "",
+        "moneda": "Soles",
+        "unidad": "glb",
+        "metrado": 1.0,
+        "valor_unitario": 0.0,
+        "presupuesto": 0.0,
+    }
+
+
+def _resolver_idx_partida_items(items: list[dict], idx_partida_1based: int, nombre_partida_completo: str = None) -> int:
+    c_pos = int(idx_partida_1based) - 1
+    if nombre_partida_completo and (not (0 <= c_pos < len(items)) or items[c_pos]["nombre"] != nombre_partida_completo):
+        c_pos = next((i for i, x in enumerate(items) if x["nombre"] == nombre_partida_completo), c_pos)
+    return c_pos
+
+
+def _mutar_items_presupuesto_json(proy_name: str, mutator, *, limpiar_widgets: bool = True):
+    """Ejecuta `mutator(items)` sobre el presupuesto en Presupuesto_JSON con soporte Undo y sync opcional."""
+    guardar_snapshot_presupuesto(proy_name)
+    tc_eff = _tc_proyecto_default(proy_name)
+    items = obtener_items_presupuesto_proyecto(proy_name, tc=tc_eff)
+    if not items:
+        items = _items_default_presupuesto(3, 3)
+    res = mutator(items)
+    if res is False:
+        return res
+    _guardar_items_presupuesto_proyecto(proy_name, items)
+    if limpiar_widgets:
+        _limpiar_estado_widgets_ppto(proy_name)
+    clear_base_dfs()
+    return res
+
+
+def ajustar_cantidad_partidas_proyecto(proy_name: str, nueva_cantidad: int, n_tareas_default: int = 3, ambito: str | None = None):
     """
     Ajusta dinámicamente el número de Partidas del proyecto (ej. de 3 a 4 partidas -> crea Partida 4
     con sus tareas iniciales; si disminuye, conserva las primeras `nueva_cantidad` partidas).
     """
-    guardar_snapshot_presupuesto(proy_name)
     nueva_cantidad = max(1, int(nueva_cantidad))
+    if _usar_almacen_presupuesto_json(proy_name, ambito=ambito):
+        def _mut_cant_p(items):
+            actual_c = len(items)
+            if nueva_cantidad > actual_c:
+                for idx_p in range(actual_c + 1, nueva_cantidad + 1):
+                    items.append({
+                        "nombre": formatear_nombre_partida(idx_p, f"Partida {idx_p}"),
+                        "monto_pactado": 0.0,
+                        "contratista": "",
+                        "tareas": [_nueva_tarea_json_ppto(f"{idx_p}.{t_i:02d}") for t_i in range(1, n_tareas_default + 1)],
+                    })
+            elif nueva_cantidad < actual_c:
+                del items[nueva_cantidad:]
+            return True
+
+        _mutar_items_presupuesto_json(proy_name, _mut_cant_p)
+        return
+
+    guardar_snapshot_presupuesto(proy_name)
     parts_proy = st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name].reset_index(drop=True)
     actual_cant = len(parts_proy)
 
@@ -656,15 +1458,20 @@ def ajustar_cantidad_partidas_proyecto(proy_name: str, nueva_cantidad: int, n_ta
     recalcular_totales_presupuesto_proyecto(proy_name)
 
 
-def agregar_partida_presupuesto(proy_name: str, n_tareas_default: int = 3) -> int:
+def agregar_partida_presupuesto(proy_name: str, n_tareas_default: int = 3, ambito: str | None = None) -> int:
     """Agrega una nueva Partida al final del presupuesto del proyecto con sus tareas iniciales."""
+    if _usar_almacen_presupuesto_json(proy_name, ambito=ambito):
+        items = obtener_items_presupuesto_proyecto(proy_name)
+        nueva_cant = len(items) + 1
+        ajustar_cantidad_partidas_proyecto(proy_name, nueva_cant, n_tareas_default=n_tareas_default, ambito=ambito)
+        return nueva_cant
     parts_proy = (
         st.session_state.partidas[st.session_state.partidas["Proyecto"] == proy_name]
         if "partidas" in st.session_state and not st.session_state.partidas.empty
         else pd.DataFrame()
     )
     nueva_cant = len(parts_proy) + 1
-    ajustar_cantidad_partidas_proyecto(proy_name, nueva_cant, n_tareas_default=n_tareas_default)
+    ajustar_cantidad_partidas_proyecto(proy_name, nueva_cant, n_tareas_default=n_tareas_default, ambito=ambito)
     return nueva_cant
 
 
@@ -726,11 +1533,27 @@ def eliminar_partida_presupuesto(
     proy_name: str,
     idx_partida_1based: int,
     nombre_partida_completo: str = None,
+    ambito: str | None = None,
 ) -> bool:
     """
     Elimina una Partida específica (conservando al menos 1 partida en el proyecto) y renumera
     las Partidas restantes junto con sus tareas (1.01, 2.01...).
     """
+    if _usar_almacen_presupuesto_json(proy_name, ambito=ambito):
+        def _mut_del_p(items):
+            n_it = len(items)
+            if n_it <= 1:
+                return False
+            c_pos = int(idx_partida_1based) - 1
+            if nombre_partida_completo and (not (0 <= c_pos < n_it) or items[c_pos]["nombre"] != nombre_partida_completo):
+                c_pos = next((i for i, x in enumerate(items) if x["nombre"] == nombre_partida_completo), c_pos)
+            if not (0 <= c_pos < n_it):
+                return False
+            items.pop(c_pos)
+            return True
+
+        return bool(_mutar_items_presupuesto_json(proy_name, _mut_del_p))
+
     if "partidas" not in st.session_state or st.session_state.partidas.empty:
         return False
 
@@ -810,10 +1633,10 @@ def renombrar_partida_presupuesto(
     idx_partida_1based,
     nombre_actual_completo: str,
     nuevo_nombre_limpio: str = None,
+    ambito: str | None = None,
 ):
     """
-    Renombra una Partida en el presupuesto y propaga el nuevo nombre automáticamente
-    a partidas, p_info, tasks (05. Ejecución & Partidas) y pagos.
+    Renombra una Partida en el presupuesto y propaga el nuevo nombre según el ámbito activo.
     Soporta llamada con 4 argumentos (proy_name, idx_p, nombre_actual, nuevo_limpio)
     o 3 argumentos (proy_name, nombre_actual, nuevo_nombre).
     """
@@ -826,6 +1649,19 @@ def renombrar_partida_presupuesto(
 
     nuevo_completo = formatear_nombre_partida(int(idx_partida_1based), nuevo_nombre_limpio)
     if nuevo_completo == nombre_actual_completo:
+        return nuevo_completo
+
+    if _usar_almacen_presupuesto_json(proy_name, ambito=ambito):
+        def _mut_ren_p(items):
+            c_pos = int(idx_partida_1based) - 1
+            if not (0 <= c_pos < len(items)) or items[c_pos]["nombre"] != nombre_actual_completo:
+                c_pos = next((i for i, x in enumerate(items) if x["nombre"] == nombre_actual_completo), c_pos)
+            if not (0 <= c_pos < len(items)):
+                return False
+            items[c_pos]["nombre"] = nuevo_completo
+            return True
+
+        _mutar_items_presupuesto_json(proy_name, _mut_ren_p, limpiar_widgets=False)
         return nuevo_completo
 
     guardar_snapshot_presupuesto(proy_name)
@@ -878,14 +1714,34 @@ def ajustar_cantidad_tareas_partida(
     idx_partida_1based: int,
     nombre_partida_completo: str,
     nueva_cant_tareas: int,
+    ambito: str | None = None,
 ):
     """
     Ajusta dinámicamente la cantidad de tareas (1.01, 1.02, 1.03...) dentro de una Partida,
     preservando las tareas existentes y su posición sin alterar el orden de las partidas.
     """
+    nueva_cant_tareas = max(1, int(nueva_cant_tareas))
+    if _usar_almacen_presupuesto_json(proy_name, ambito=ambito):
+        def _mut_cnt_t(items):
+            c_pos = int(idx_partida_1based) - 1
+            if not (0 <= c_pos < len(items)) or items[c_pos]["nombre"] != nombre_partida_completo:
+                c_pos = next((i for i, x in enumerate(items) if x["nombre"] == nombre_partida_completo), c_pos)
+            if not (0 <= c_pos < len(items)):
+                return False
+            t_list = items[c_pos]["tareas"]
+            actual_t = len(t_list)
+            if nueva_cant_tareas > actual_t:
+                for i_new in range(actual_t + 1, nueva_cant_tareas + 1):
+                    t_list.append(_nueva_tarea_json_ppto(f"{c_pos + 1}.{i_new:02d}"))
+            elif nueva_cant_tareas < actual_t:
+                del t_list[nueva_cant_tareas:]
+            return True
+
+        _mutar_items_presupuesto_json(proy_name, _mut_cnt_t, limpiar_widgets=False)
+        return
+
     guardar_snapshot_presupuesto(proy_name)
     _sanitizar_dtypes_tasks_y_proyectos()
-    nueva_cant_tareas = max(1, int(nueva_cant_tareas))
     mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
     df_t_p = st.session_state.tasks[mask_t].copy().reset_index(drop=True)
     actual_cant = len(df_t_p)
@@ -937,8 +1793,18 @@ def agregar_tarea_presupuesto(
     proy_name: str,
     idx_partida_1based: int,
     nombre_partida_completo: str,
+    ambito: str | None = None,
 ) -> int:
     """Agrega una nueva tarea al final de una Partida del presupuesto y retorna la nueva cantidad."""
+    if _usar_almacen_presupuesto_json(proy_name, ambito=ambito):
+        items = obtener_items_presupuesto_proyecto(proy_name)
+        c_pos = int(idx_partida_1based) - 1
+        if not (0 <= c_pos < len(items)) or items[c_pos]["nombre"] != nombre_partida_completo:
+            c_pos = next((i for i, x in enumerate(items) if x["nombre"] == nombre_partida_completo), c_pos)
+        actual_cant = len(items[c_pos]["tareas"]) if 0 <= c_pos < len(items) else 0
+        nueva_cant = actual_cant + 1
+        ajustar_cantidad_tareas_partida(proy_name, idx_partida_1based, nombre_partida_completo, nueva_cant, ambito=ambito)
+        return nueva_cant
     mask_t = (
         (st.session_state.tasks["Proyecto"] == proy_name)
         & (st.session_state.tasks["Partida"] == nombre_partida_completo)
@@ -947,7 +1813,7 @@ def agregar_tarea_presupuesto(
     )
     actual_cant = int(mask_t.sum()) if len(mask_t) else 0
     nueva_cant = actual_cant + 1
-    ajustar_cantidad_tareas_partida(proy_name, idx_partida_1based, nombre_partida_completo, nueva_cant)
+    ajustar_cantidad_tareas_partida(proy_name, idx_partida_1based, nombre_partida_completo, nueva_cant, ambito=ambito)
     return nueva_cant
 
 
@@ -957,11 +1823,27 @@ def mover_tarea_presupuesto(
     nombre_partida_completo: str,
     pos_tarea_0based: int,
     direccion: str,
+    ambito: str | None = None,
 ) -> bool:
     """
     Mueve verticalmente una tarea ('subir' o 'bajar') dentro de su Partida,
     renumerando automáticamente Codigo_Item (1.01, 1.02...) y Orden sin perder datos.
     """
+    if _usar_almacen_presupuesto_json(proy_name, ambito=ambito):
+        def _mut_mv_t(items):
+            c_pos = _resolver_idx_partida_items(items, idx_partida_1based, nombre_partida_completo)
+            if not (0 <= c_pos < len(items)):
+                return False
+            t_list = items[c_pos]["tareas"]
+            n_t = len(t_list)
+            tgt = pos_tarea_0based - 1 if direccion == "subir" else pos_tarea_0based + 1
+            if n_t <= 1 or not (0 <= pos_tarea_0based < n_t and 0 <= tgt < n_t):
+                return False
+            t_list[pos_tarea_0based], t_list[tgt] = t_list[tgt], t_list[pos_tarea_0based]
+            return True
+
+        return bool(_mutar_items_presupuesto_json(proy_name, _mut_mv_t, limpiar_widgets=False))
+
     guardar_snapshot_presupuesto(proy_name)
     _sanitizar_dtypes_tasks_y_proyectos()
     mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
@@ -1004,12 +1886,33 @@ def reordenar_tareas_partida_por_indices(
     idx_partida_1based: int,
     nombre_partida_completo: str,
     nuevos_indices_0based: list[int],
+    ambito: str | None = None,
 ) -> bool:
     """
     Reordena las tareas de una Partida según la permutación `nuevos_indices_0based`
     (proveniente de arrastrar y soltar / drag-and-drop), renumerando automáticamente
     Orden (1, 2, 3...) y Codigo_Item (1.01, 1.02, 1.03...).
     """
+    if _usar_almacen_presupuesto_json(proy_name, ambito=ambito):
+        def _mut_reord_t(items):
+            c_pos = _resolver_idx_partida_items(items, idx_partida_1based, nombre_partida_completo)
+            if not (0 <= c_pos < len(items)):
+                return False
+            t_list = items[c_pos]["tareas"]
+            n_t = len(t_list)
+            if n_t <= 1:
+                return False
+            valid_i = [int(i) for i in nuevos_indices_0based if 0 <= int(i) < n_t]
+            for i_f in range(n_t):
+                if i_f not in valid_i:
+                    valid_i.append(i_f)
+            if valid_i == list(range(n_t)):
+                return False
+            items[c_pos]["tareas"] = [t_list[i] for i in valid_i]
+            return True
+
+        return bool(_mutar_items_presupuesto_json(proy_name, _mut_reord_t, limpiar_widgets=False))
+
     guardar_snapshot_presupuesto(proy_name)
     _sanitizar_dtypes_tasks_y_proyectos()
     mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
@@ -1052,11 +1955,45 @@ def mover_tareas_seleccionadas_presupuesto(
     nombre_partida_completo: str,
     selected_indices_0based: list[int],
     direccion: str,
+    ambito: str | None = None,
 ) -> tuple[bool, list[int]]:
     """
     Mueve verticalmente una o varias tareas seleccionadas ('subir' o 'bajar') dentro de su Partida,
     preservando su orden relativo, renumerando Codigo_Item y Orden, y devolviendo (movido, nuevos_indices).
     """
+    if _usar_almacen_presupuesto_json(proy_name, ambito=ambito):
+        items = obtener_items_presupuesto_proyecto(proy_name)
+        c_pos = _resolver_idx_partida_items(items, idx_partida_1based, nombre_partida_completo)
+        if not (0 <= c_pos < len(items)):
+            return False, []
+        t_list = items[c_pos]["tareas"]
+        n_t = len(t_list)
+        valid_sel = sorted({int(i) for i in (selected_indices_0based or []) if 0 <= int(i) < n_t})
+        if n_t <= 1 or not valid_sel:
+            return False, valid_sel
+        sel_set = set(valid_sel)
+        perm = list(range(n_t))
+        if direccion == "subir":
+            for i in range(1, n_t):
+                if perm[i] in sel_set and perm[i - 1] not in sel_set:
+                    perm[i], perm[i - 1] = perm[i - 1], perm[i]
+        elif direccion == "bajar":
+            for i in range(n_t - 2, -1, -1):
+                if perm[i] in sel_set and perm[i + 1] not in sel_set:
+                    perm[i], perm[i + 1] = perm[i + 1], perm[i]
+        else:
+            return False, valid_sel
+        if perm == list(range(n_t)):
+            return False, valid_sel
+
+        def _mut_mvs(its):
+            its[c_pos]["tareas"] = [its[c_pos]["tareas"][i] for i in perm]
+            return True
+
+        _mutar_items_presupuesto_json(proy_name, _mut_mvs, limpiar_widgets=False)
+        nuevos_indices = [pos for pos, orig_idx in enumerate(perm) if orig_idx in sel_set]
+        return True, nuevos_indices
+
     if "tasks" not in st.session_state or st.session_state.tasks.empty:
         return False, []
     mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
@@ -1097,11 +2034,29 @@ def eliminar_tareas_seleccionadas_presupuesto(
     idx_partida_1based: int,
     nombre_partida_completo: str,
     selected_indices_0based: list[int],
+    ambito: str | None = None,
 ) -> bool:
     """
     Elimina las tareas seleccionadas dentro de una Partida y renumera las restantes.
     Si se seleccionan todas las tareas de la Partida, deja 1 tarea base vacía ({idx_p}.01).
     """
+    if _usar_almacen_presupuesto_json(proy_name, ambito=ambito):
+        def _mut_del_t(items):
+            c_pos = _resolver_idx_partida_items(items, idx_partida_1based, nombre_partida_completo)
+            if not (0 <= c_pos < len(items)):
+                return False
+            t_list = items[c_pos]["tareas"]
+            n_t = len(t_list)
+            valid_sel = sorted({int(i) for i in (selected_indices_0based or []) if 0 <= int(i) < n_t})
+            if n_t == 0 or not valid_sel:
+                return False
+            sel_set = set(valid_sel)
+            keep = [t_list[i] for i in range(n_t) if i not in sel_set]
+            items[c_pos]["tareas"] = keep if keep else [_nueva_tarea_json_ppto(f"{c_pos + 1}.01")]
+            return True
+
+        return bool(_mutar_items_presupuesto_json(proy_name, _mut_del_t, limpiar_widgets=False))
+
     if "tasks" not in st.session_state or st.session_state.tasks.empty:
         return False
     mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
@@ -1132,11 +2087,32 @@ def mover_partida_presupuesto(
     proy_name: str,
     idx_partida_1based: int,
     direccion: str,
+    ambito: str | None = None,
 ) -> bool:
     """
     Intercambia la posición de una Partida completa con la anterior ('subir') o posterior ('bajar'),
-    renumerando automáticamente los nombres (1. ..., 2. ...) y los códigos de tarea (1.01, 2.01...).
+    o la traslada a una posición específica (`direccion`), renumerando partidas y tareas.
     """
+    if _usar_almacen_presupuesto_json(proy_name, ambito=ambito):
+        def _mut_mv_p(items):
+            n_it = len(items)
+            c_pos = int(idx_partida_1based) - 1
+            if isinstance(direccion, int) or (isinstance(direccion, str) and direccion.strip().isdigit()):
+                t_pos = int(direccion) - 1
+            elif direccion == "subir":
+                t_pos = c_pos - 1
+            elif direccion == "bajar":
+                t_pos = c_pos + 1
+            else:
+                return False
+            if t_pos == c_pos or not (0 <= c_pos < n_it and 0 <= t_pos < n_it):
+                return False
+            mov = items.pop(c_pos)
+            items.insert(t_pos, mov)
+            return True
+
+        return bool(_mutar_items_presupuesto_json(proy_name, _mut_mv_p))
+
     guardar_snapshot_presupuesto(proy_name)
     _sanitizar_dtypes_tasks_y_proyectos()
 
@@ -1215,9 +2191,10 @@ def mover_partida_a_posicion_presupuesto(
     proy_name: str,
     idx_partida_1based: int,
     nueva_pos_1based: int,
+    ambito: str | None = None,
 ) -> bool:
     """Mueve una Partida directamente al número de orden `nueva_pos_1based` (1..N) y renumera todas las partidas y tareas."""
-    return mover_partida_presupuesto(proy_name, idx_partida_1based, int(nueva_pos_1based))
+    return mover_partida_presupuesto(proy_name, idx_partida_1based, int(nueva_pos_1based), ambito=ambito)
 
 
 def aplicar_edicion_tabla_presupuesto_partida(
@@ -1226,11 +2203,12 @@ def aplicar_edicion_tabla_presupuesto_partida(
     proy_name: str,
     idx_partida_1based: int,
     nombre_partida_completo: str,
+    ambito: str | None = None,
 ):
     """
     Callback on_change para el st.data_editor de cada Partida en '03. PRESUPUESTO'.
-    Actualiza Descripción, Especialidad, Contratista, Moneda, Unidad, Metrado, Valor Unitario y Presupuesto
-    en st.session_state.tasks sincronizado con '05. PARTIDAS Y TAREAS' y '06. COBROS & FINANZAS'.
+    Actualiza Descripción, Especialidad, Contratista, Moneda, Unidad, Metrado, Valor Unitario y Presupuesto;
+    sincroniza hacia '05. PARTIDAS Y TAREAS' y '06. COBROS & FINANZAS' únicamente si está activado.
     """
     if widget_key not in st.session_state or base_key not in st.session_state:
         return
@@ -1258,11 +2236,11 @@ def aplicar_edicion_tabla_presupuesto_partida(
             if base_key in st.session_state:
                 del st.session_state[base_key]
             if accion_mv in ("⬆ Subir", "subir", "⬆"):
-                mover_tarea_presupuesto(proy_name, idx_partida_1based, nombre_partida_completo, r_idx_pos, "subir")
+                mover_tarea_presupuesto(proy_name, idx_partida_1based, nombre_partida_completo, r_idx_pos, "subir", ambito=ambito)
                 st.session_state[c_key] = st.session_state.get(c_key, 0) + 1
                 return
             elif accion_mv in ("⬇ Bajar", "bajar", "⬇"):
-                mover_tarea_presupuesto(proy_name, idx_partida_1based, nombre_partida_completo, r_idx_pos, "bajar")
+                mover_tarea_presupuesto(proy_name, idx_partida_1based, nombre_partida_completo, r_idx_pos, "bajar", ambito=ambito)
                 st.session_state[c_key] = st.session_state.get(c_key, 0) + 1
                 return
 
@@ -1291,10 +2269,52 @@ def aplicar_edicion_tabla_presupuesto_partida(
                         df_base[col_k] = df_base[col_k].astype(object)
                     df_base.at[r_i, col_k] = safe_str(val)
 
-    _sanitizar_dtypes_tasks_y_proyectos()
     params = obtener_parametros_presupuesto_proyecto(proy_name)
     tc = params["tc"] if params["tc"] > 0 else 3.42
 
+    if _usar_almacen_presupuesto_json(proy_name, ambito=ambito):
+        items = obtener_items_presupuesto_proyecto(proy_name, tc=tc)
+        c_pos = _resolver_idx_partida_items(items, idx_partida_1based, nombre_partida_completo)
+        if 0 <= c_pos < len(items):
+            t_list = items[c_pos]["tareas"]
+            for pos_i, (_, row_ed) in enumerate(df_base.iterrows()):
+                if pos_i >= len(t_list):
+                    break
+                moneda = safe_str(row_ed.get("Moneda", "Soles")) or "Soles"
+                unidad = safe_str(row_ed.get("Unidad", "glb")) or "glb"
+                metrado = safe_float(row_ed.get("Metrado", 1.0), 1.0)
+                if metrado <= 0:
+                    metrado = 1.0
+                v_unit = safe_float(row_ed.get("Valor_Unitario", 0.0), 0.0)
+                es_usd = any(d in moneda.lower() for d in ["dolar", "dólar", "usd", "$"])
+                ppto_soles = round(metrado * v_unit * (tc if es_usd else 1.0), 2)
+                t_list[pos_i]["orden"] = int(pos_i + 1)
+                t_list[pos_i]["codigo"] = f"{c_pos + 1}.{pos_i + 1:02d}"
+                t_list[pos_i]["descripcion"] = safe_str(row_ed.get("Descripcion", "")).strip()
+                t_list[pos_i]["moneda"] = moneda
+                t_list[pos_i]["unidad"] = unidad
+                t_list[pos_i]["metrado"] = float(metrado)
+                t_list[pos_i]["valor_unitario"] = float(v_unit)
+                t_list[pos_i]["presupuesto"] = float(ppto_soles)
+                if "Especialidad" in row_ed:
+                    t_list[pos_i]["especialidad"] = safe_str(row_ed.get("Especialidad", "Ninguna")).strip() or "Ninguna"
+                if "Contratista" in row_ed:
+                    t_list[pos_i]["contratista"] = safe_str(row_ed.get("Contratista", "")).strip()
+
+            if "Sel" in df_base.columns:
+                st.session_state[f"sel_saved_ppto_{proy_name}_{idx_partida_1based}"] = [
+                    int(pos_s)
+                    for pos_s, (_, r_s) in enumerate(df_base.iterrows())
+                    if to_bool(r_s.get("Sel", False))
+                ]
+            if base_key in st.session_state:
+                del st.session_state[base_key]
+            c_key = f"c_{base_key}"
+            st.session_state[c_key] = st.session_state.get(c_key, 0) + 1
+            _guardar_items_presupuesto_proyecto(proy_name, items)
+        return
+
+    _sanitizar_dtypes_tasks_y_proyectos()
     mask_t = (st.session_state.tasks["Proyecto"] == proy_name) & (st.session_state.tasks["Partida"] == nombre_partida_completo)
     indices_tasks = st.session_state.tasks[mask_t].index.tolist()
 
@@ -2065,7 +3085,66 @@ def _construir_payload_presupuesto_export(
     partidas_precargadas = []
     subtotal_casco = 0.0
 
-    if not parts_proy.empty:
+    usar_items_ppto = _tiene_presupuesto_independiente_guardado(proy_name) or (
+        isinstance(st.session_state.get(f"_ppto_runtime_cache_{proy_name}"), dict)
+    )
+    items_exp = obtener_items_presupuesto_proyecto(proy_name, tc=tc_final) if usar_items_ppto else []
+
+    if items_exp:
+        for idx_p, p_item in enumerate(items_exp, start=1):
+            p_nom_clean = limpiar_nombre_partida(p_item.get("nombre", f"Partida {idx_p}"), idx_p)
+            monto_pact = safe_float(p_item.get("monto_pactado", 0.0), 0.0)
+            tareas_it = p_item.get("tareas", []) or []
+            subitems = []
+            subtot_p_calc = 0.0
+            if tareas_it:
+                for idx_t, t_r in enumerate(tareas_it, start=1):
+                    cod_item = f"{idx_p}.{idx_t:02d}"
+                    t_desc_clean = extraer_descripcion_tarea(t_r.get("descripcion", ""), cod_item)
+                    t_mon = safe_str(t_r.get("moneda", "Soles")) or "Soles"
+                    t_und = safe_str(t_r.get("unidad", "glb")) or "glb"
+                    t_met = safe_float(t_r.get("metrado", 1.0), 1.0)
+                    if t_met <= 0:
+                        t_met = 1.0
+                    t_ppto = safe_float(t_r.get("presupuesto", 0.0), 0.0)
+                    t_vu = safe_float(t_r.get("valor_unitario", 0.0), 0.0)
+                    es_usd_t = any(d in t_mon.lower() for d in ["dolar", "dólar", "usd", "$"])
+                    if t_vu <= 0 and t_ppto > 0:
+                        t_vu = round(t_ppto / (t_met * tc_final), 2) if es_usd_t else round(t_ppto / t_met, 2)
+                    vp_moneda = round(t_met * t_vu, 2)
+                    vp_soles = round(vp_moneda * (tc_final if es_usd_t else 1.0), 2)
+                    subtot_p_calc += vp_soles
+                    subitems.append({
+                        "codigo": cod_item,
+                        "descripcion": t_desc_clean,
+                        "moneda": t_mon,
+                        "unidad": t_und,
+                        "metrado": t_met,
+                        "valor_unitario": t_vu,
+                        "valor_parcial": vp_moneda,
+                        "parcial_soles": vp_soles,
+                    })
+            else:
+                subtot_p_calc = monto_pact
+                subitems.append({
+                    "codigo": f"{idx_p}.01",
+                    "descripcion": p_nom_clean if monto_pact > 0 else "",
+                    "moneda": "Soles",
+                    "unidad": "glb",
+                    "metrado": 1.0,
+                    "valor_unitario": monto_pact if monto_pact > 0 else None,
+                    "valor_parcial": monto_pact,
+                    "parcial_soles": monto_pact,
+                })
+            subtot_p_round = round(subtot_p_calc, 2)
+            subtotal_casco += subtot_p_round
+            partidas_precargadas.append({
+                "codigo": str(idx_p),
+                "nombre": p_nom_clean,
+                "monto_pactado": subtot_p_round,
+                "subitems": subitems,
+            })
+    elif not parts_proy.empty:
         for idx_p, (_, p_r) in enumerate(parts_proy.iterrows(), start=1):
             p_nom_raw = safe_str(p_r.get("Nombre_Partida", f"Partida {idx_p}"))
             p_nom_clean = limpiar_nombre_partida(p_nom_raw, idx_p)
@@ -3352,9 +4431,12 @@ def aplicar_cotizacion_a_proyecto(
     actualizar_ficha: bool = True,
     nombres_partidas_override: dict = None,
     incluir_partidas_vacias: bool = False,
+    solo_presupuesto: bool | None = None,
 ) -> dict:
     """
-    Importa los datos leídos por `parsear_cotizacion_venti` en `st.session_state` para el proyecto `proy_name`.
+    Importa los datos leídos por `parsear_cotizacion_venti` o `parsear_presupuesto_flexible` para `proy_name`.
+    Si `solo_presupuesto` es True (o el proyecto usa Presupuesto independiente con sync desactivado),
+    actualiza únicamente 03. PRESUPUESTO y sus totales financieros sin alterar lo avanzado en 05 ni 06.
     """
     guardar_snapshot_presupuesto(proy_name)
     if "proyectos" not in st.session_state:
@@ -3380,6 +4462,8 @@ def aplicar_cotizacion_a_proyecto(
     if actualizar_ficha and modo == "reemplazar" and mask_proy.any():
         idx_p = st.session_state.proyectos[mask_proy].index[0]
         if parsed_data.get("presupuesto_total", 0.0) > 0:
+            if _es_contrato_manual_proyecto(proy_name):
+                guardar_valor_contrato_proyecto(proy_name, float(parsed_data["presupuesto_total"]), manual=False)
             st.session_state.proyectos.at[idx_p, "Presupuesto"] = float(parsed_data["presupuesto_total"])
         if parsed_data.get("utilidades_monto", 0.0) >= 0:
             st.session_state.proyectos.at[idx_p, "Utilidades"] = float(parsed_data["utilidades_monto"])
@@ -3404,6 +4488,84 @@ def aplicar_cotizacion_a_proyecto(
         cli_parsed = safe_str(parsed_data.get("cliente", ""))
         if cli_parsed and not safe_str(st.session_state.proyectos.at[idx_p, "Cliente"]):
             st.session_state.proyectos.at[idx_p, "Cliente"] = cli_parsed
+
+    if solo_presupuesto is not None or _usar_almacen_presupuesto_json(proy_name):
+        eff_solo = bool(solo_presupuesto) if solo_presupuesto is not None else (not obtener_estado_sincronizacion_presupuesto(proy_name))
+        tc_eff = safe_float(parsed_data.get("tc", 0.0), 0.0) if modo == "reemplazar" else _tc_proyecto_default(proy_name)
+        if tc_eff <= 0:
+            tc_eff = _tc_proyecto_default(proy_name)
+
+        items_act = [] if modo == "reemplazar" else obtener_items_presupuesto_proyecto(proy_name, tc=tc_eff)
+        partidas_importadas = 0
+        tareas_importadas = 0
+
+        for p in parsed_data.get("partidas", []):
+            p_code = p["codigo"]
+            tiene_contenido = bool(p.get("tareas")) or p.get("monto_pactado", 0.0) > 0 or bool(p.get("nombre", "").strip())
+            if not incluir_partidas_vacias and not tiene_contenido:
+                continue
+            p_nom_final = (
+                nombres_partidas_override.get(p_code, p["nombre_completo"]).strip()
+                if nombres_partidas_override and p_code in nombres_partidas_override
+                else p["nombre_completo"]
+            )
+            tareas_new = []
+            for t in p.get("tareas", []):
+                t_desc = safe_str(t.get("descripcion", "")).strip()
+                t_cod = safe_str(t.get("codigo", "")).strip()
+                if t_cod and not t_desc:
+                    t_desc = ""
+                else:
+                    t_desc = extraer_descripcion_tarea(t_desc, t_cod)
+                tareas_new.append({
+                    "descripcion": t_desc,
+                    "especialidad": safe_str(t.get("especialidad", "Ninguna")).strip() or "Ninguna",
+                    "contratista": safe_str(t.get("contratista", "")).strip(),
+                    "moneda": safe_str(t.get("moneda", "Soles")).strip() or "Soles",
+                    "unidad": safe_str(t.get("unidad", "glb")).strip() or "glb",
+                    "metrado": float(safe_float(t.get("metrado", 1.0), 1.0)),
+                    "valor_unitario": float(safe_float(t.get("valor_unitario", 0.0), 0.0)),
+                })
+                tareas_importadas += 1
+
+            partidas_importadas += 1
+            if modo != "reemplazar" and not (nombres_partidas_override and p_code in nombres_partidas_override):
+                limp_new = limpiar_nombre_partida(p.get("nombre", "") or p_nom_final).strip().lower()
+                match_idx = next(
+                    (
+                        i_ex for i_ex, it_ex in enumerate(items_act, start=1)
+                        if limpiar_nombre_partida(it_ex.get("nombre", ""), i_ex).strip().lower() == limp_new
+                    ),
+                    None,
+                )
+                if match_idx is not None:
+                    items_act[match_idx - 1]["tareas"].extend(tareas_new)
+                    continue
+
+            items_act.append({
+                "nombre": p_nom_final,
+                "monto_pactado": float(p.get("monto_pactado", 0.0)),
+                "contratista": "",
+                "tareas": tareas_new,
+            })
+
+        _guardar_items_presupuesto_proyecto(
+            proy_name,
+            items_act,
+            solo_presupuesto=eff_solo,
+            sincronizar_si_activo=not eff_solo,
+        )
+        _limpiar_estado_widgets_ppto(proy_name)
+        clear_base_dfs()
+        tot_act = recalcular_totales_presupuesto_proyecto(proy_name, sincronizar_pactado=not eff_solo, _desde_presupuesto_json=True)
+        return {
+            "partidas_importadas": partidas_importadas,
+            "tareas_importadas": tareas_importadas,
+            "presupuesto_total": float(tot_act.get("presupuesto_total", 0.0)),
+            "utilidades_monto": float(tot_act.get("utilidades_monto", 0.0)),
+            "gg_monto": float(tot_act.get("gg_monto", 0.0)),
+            "solo_presupuesto": eff_solo,
+        }
 
     if modo == "reemplazar":
         st.session_state.partidas = st.session_state.partidas[st.session_state.partidas["Proyecto"] != proy_name].reset_index(drop=True)
@@ -4167,14 +5329,17 @@ def _fila_pertenece_a_partida(fila: dict, p_raw: str, p_clean: str, idx_p: int) 
     return False
 
 
-def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas: bool = False) -> dict:
+def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas: bool = False, fuente: str = "auto") -> dict:
     """
     Obtiene o inicializa la estructura del Cuadro de Pagos Semanales para el proyecto `proy_name`.
-    Sincroniza automáticamente las partidas, contratistas y montos desde 03. PRESUPUESTO
-    conservando todos los pagos semanales ya registrados y permitiendo múltiples filas por partida.
+    La sincronización desde 03. PRESUPUESTO es opcional cuando el proyecto usa presupuesto independiente;
+    conserva todos los pagos semanales ya registrados y permite múltiples filas por partida.
     """
+    usa_ppto_indep = _tiene_presupuesto_independiente_guardado(proy_name) or (
+        isinstance(st.session_state.get(f"_ppto_runtime_cache_{proy_name}"), dict)
+    )
     df_parts = st.session_state.get("partidas", pd.DataFrame())
-    if not df_parts.empty and "Proyecto" in df_parts.columns and not df_parts[df_parts["Proyecto"] == proy_name].empty:
+    if usa_ppto_indep or (not df_parts.empty and "Proyecto" in df_parts.columns and not df_parts[df_parts["Proyecto"] == proy_name].empty):
         recalcular_totales_presupuesto_proyecto(proy_name, sincronizar_pactado=False)
 
     df_p = st.session_state.get("proyectos", pd.DataFrame())
@@ -4203,7 +5368,16 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
     df_tasks = st.session_state.get("tasks", pd.DataFrame())
 
     partidas_proy = []
-    if not df_parts.empty and "Proyecto" in df_parts.columns:
+    if fuente == "presupuesto" or (fuente == "auto" and usa_ppto_indep):
+        items_ppto = obtener_items_presupuesto_proyecto(proy_name, tc=tc_proy)
+        for idx_p, it_p in enumerate(items_ppto, start=1):
+            p_raw = safe_str(it_p.get("nombre", f"Partida {idx_p}"))
+            p_clean = limpiar_nombre_partida(p_raw, idx_p).upper()
+            monto_p = round(safe_float(it_p.get("monto_pactado", 0.0), 0.0), 2)
+            contra_p = safe_str(it_p.get("contratista", "")).strip()
+            partidas_proy.append((idx_p, p_raw, p_clean, monto_p, contra_p))
+
+    if not partidas_proy and not df_parts.empty and "Proyecto" in df_parts.columns:
         p_sub = df_parts[df_parts["Proyecto"] == proy_name]
         for idx_p, (_, r_p) in enumerate(p_sub.iterrows(), start=1):
             p_raw = safe_str(r_p.get("Nombre_Partida", f"Partida {idx_p}"))
@@ -4226,6 +5400,7 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
             partidas_proy.append((idx_p, p_raw, p_clean, round(monto_p, 2), contra_p))
 
     tiene_ppto_activo = any(m > 0 for _, _, _, m, _ in partidas_proy)
+    sync_auto_habilitado = obtener_estado_sincronizacion_presupuesto(proy_name) or (not usa_ppto_indep)
 
     if data_guardada and isinstance(data_guardada, dict):
         num_sem = max(1, min(30, int(data_guardada.get("num_semanas", 5) or 5)))
@@ -4250,7 +5425,7 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
             "Gastos Generales",
         )
 
-        if (sincronizar_partidas or tiene_ppto_activo) and partidas_proy:
+        if (sincronizar_partidas or (sync_auto_habilitado and tiene_ppto_activo)) and partidas_proy:
             nuevas_filas_c = []
             indices_usados = set()
 
@@ -4316,6 +5491,7 @@ def obtener_cuadro_pagos_semanales_proyecto(proy_name: str, sincronizar_partidas
             "fila_gg": fila_gg,
             "semana_activa": safe_str(data_guardada.get("semana_activa", "")).strip(),
             "estado_diseno_general": safe_str(data_guardada.get("estado_diseno_general", "")).strip(),
+            "contrato_manual": bool(data_guardada.get("contrato_manual", False)),
             "planificacion_presupuesto": list(data_guardada.get("planificacion_presupuesto", [])) if isinstance(data_guardada.get("planificacion_presupuesto"), list) else [],
             "notas_presupuesto": [
                 str(n).strip()
@@ -4871,7 +6047,7 @@ def guardar_cuadro_pagos_semanales_proyecto(proy_name: str, data_cuadro: dict):
                     try:
                         d_prev = json.loads(raw_prev)
                         if isinstance(d_prev, dict):
-                            for k_pres in ("planificacion_presupuesto", "estado_diseno_general", "notas_presupuesto"):
+                            for k_pres in ("planificacion_presupuesto", "estado_diseno_general", "notas_presupuesto", "contrato_manual"):
                                 if k_pres not in data_cuadro and k_pres in d_prev:
                                     data_cuadro = {**data_cuadro, k_pres: d_prev[k_pres]}
                     except Exception:

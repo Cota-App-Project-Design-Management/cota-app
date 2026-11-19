@@ -81,7 +81,7 @@ from cota.db import (
     inicializar_conexion_gsheets,
     obtener_catalogo_estudio,
 )
-from cota.ui.components import render_header, render_sidebar_branding, render_sidebar_socio_chip
+from cota.ui.components import render_editor_valor_contrato, render_header, render_sidebar_branding, render_sidebar_socio_chip
 from cota.ui.styles import get_app_css
 from cota.ui.views_main import render_main_view
 from cota.ui.views_project import render_proyecto_view
@@ -365,6 +365,13 @@ with st.sidebar:
             st.session_state.proy_activo = None
             clear_base_dfs()
             st.rerun()
+        st.divider()
+        render_editor_valor_contrato(
+            st.session_state.proy_activo,
+            key_prefix="sb",
+            other_prefix="ft",
+            show_summary_box=True,
+        )
         st.divider()
 
     socios_cat = obtener_catalogo_estudio("socios")

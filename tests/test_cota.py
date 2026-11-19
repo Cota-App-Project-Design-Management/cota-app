@@ -2907,24 +2907,34 @@ def test_finanzas_estudio_anual_y_filtros():
         FINANZAS_KPIS_CONFIG,
         asignar_anio_proyecto,
         calcular_datos_finanzas_estudio,
+        es_estado_proyecto_aprobado_finanzas,
+        filtrar_proyectos_aprobados_finanzas,
     )
 
     assert asignar_anio_proyecto({"Inicio": "2024-03-10", "Fin": "2025-01-15"}) == "2024"
     assert asignar_anio_proyecto({"Inicio": "", "Fin": "2025-08-20"}) == "2025"
     assert asignar_anio_proyecto({"Inicio": "", "Fin": ""}) == "Sin fecha"
+    assert es_estado_proyecto_aprobado_finanzas("🔵 En Proceso") is True
+    assert es_estado_proyecto_aprobado_finanzas("🟢 Completado") is True
+    assert es_estado_proyecto_aprobado_finanzas("🟡 Planificación") is False
+    assert es_estado_proyecto_aprobado_finanzas("") is False
 
     df_proy = pd.DataFrame([
         {
-            "Nombre": "Proy 2024", "Cliente": "Cli A", "Inicio": "2024-05-01", "Fin": "2024-09-01",
+            "Nombre": "Proy 2024", "Estado": "🟢 Completado", "Cliente": "Cli A", "Inicio": "2024-05-01", "Fin": "2024-09-01",
             "Presupuesto": 100000.0, "Utilidades": 15000.0, "GG_Presupuesto": 3000.0, "Honorarios_Diseno": 5000.0,
         },
         {
-            "Nombre": "Proy 2025", "Cliente": "Cli B", "Inicio": "2025-11-15", "Fin": "2026-02-10",
+            "Nombre": "Proy 2025", "Estado": "🟢 Completado", "Cliente": "Cli B", "Inicio": "2025-11-15", "Fin": "2026-02-10",
             "Presupuesto": 200000.0, "Utilidades": 30000.0, "GG_Presupuesto": 6000.0, "Honorarios_Diseno": 0.0,
         },
         {
-            "Nombre": "Proy 2026", "Cliente": "Cli C", "Inicio": "2026-04-01", "Fin": "2026-08-01",
+            "Nombre": "Proy 2026", "Estado": "🔵 En Proceso", "Cliente": "Cli C", "Inicio": "2026-04-01", "Fin": "2026-08-01",
             "Presupuesto": 50000.0, "Utilidades": 10000.0, "GG_Presupuesto": 2000.0, "Honorarios_Diseno": 2500.0,
+        },
+        {
+            "Nombre": "Proy Borrador Planif", "Estado": "🟡 Planificación", "Cliente": "Cli Borrador", "Inicio": "2023-02-01", "Fin": "2023-06-01",
+            "Presupuesto": 900000.0, "Utilidades": 180000.0, "GG_Presupuesto": 25000.0, "Honorarios_Diseno": 15000.0,
         },
     ])
     df_cob = pd.DataFrame([
@@ -2986,6 +2996,8 @@ def test_finanzas_estudio_anual_y_filtros():
     assert res_sub["kpis_globales"]["tot_ventas"] == 250000.0
     assert res_sub["kpis_globales"]["tot_caja_ppto"] == 8000.0
     assert [r["Proyecto"] for r in res_sub["rows_fin"]] == ["Proy 2025", "Proy 2026"]
+    assert all(r["Estado"] in ("🔵 En Proceso", "🟢 Completado") for r in res_sub["rows_fin"])
+    assert len(filtrar_proyectos_aprobados_finanzas(df_proy)) == 3
 
     import inspect
     import cota.ui.views_main as vm_mod
@@ -2994,5 +3006,275 @@ def test_finanzas_estudio_anual_y_filtros():
     assert 'key="fin_filtro_anios"' in vm_src
     assert 'key="fin_filtro_kpis"' in vm_src
     assert 'options=["📅 Anual", "🏗️ Por Proyecto"]' in vm_src
+    assert "filtrar_proyectos_aprobados_finanzas(df_p_base)" in vm_src
+
+
+def test_valor_contrato_editable_proyecto():
+    import streamlit as st
+    from cota.cotizacion import (
+        _es_contrato_manual_proyecto,
+        agregar_partida_presupuesto,
+        asegurar_estructura_presupuesto_proyecto,
+        guardar_cuadro_pagos_semanales_proyecto,
+        guardar_valor_contrato_proyecto,
+        obtener_cuadro_pagos_semanales_proyecto,
+        obtener_valor_contrato_proyecto,
+        recalcular_totales_presupuesto_proyecto,
+    )
+    from cota.db import COLS_P_INFO, COLS_PROY, COLS_TASKS
+
+    proy = "Santa María 139 - Manual"
+    st.session_state["proyectos"] = pd.DataFrame([{
+        c: ("" if c not in ("Presupuesto", "Utilidades", "GG_Presupuesto", "Honorarios_Diseno") else 0.0)
+        for c in COLS_PROY
+    }])
+    st.session_state["proyectos"].at[0, "Nombre"] = proy
+    st.session_state["proyectos"].at[0, "TC_Presupuesto"] = 3.42
+    st.session_state["proyectos"].at[0, "GG_Pct"] = 2.0
+    st.session_state["proyectos"].at[0, "Utilidades_Pct"] = 15.0
+    st.session_state["partidas"] = pd.DataFrame(columns=["Proyecto", "Nombre_Partida"])
+    st.session_state["p_info"] = pd.DataFrame(columns=COLS_P_INFO)
+    st.session_state["tasks"] = pd.DataFrame(columns=COLS_TASKS)
+
+    assert obtener_valor_contrato_proyecto(proy) == 0.0
+    saved = guardar_valor_contrato_proyecto(proy, 45200.50, manual=True)
+    assert saved == 45200.50
+    assert obtener_valor_contrato_proyecto(proy) == 45200.50
+    assert _es_contrato_manual_proyecto(proy) is True
+
+    # Recalcular sin partidas debe preservar el contrato manual
+    tot0 = recalcular_totales_presupuesto_proyecto(proy)
+    assert tot0["presupuesto_total"] == 45200.50
+    assert tot0["contrato_manual"] is True
+
+    # Agregar partidas calculadas también conserva el contrato manual hasta liberar el bloqueo
+    asegurar_estructura_presupuesto_proyecto(proy, n_partidas_default=1, n_tareas_default=1)
+    st.session_state["tasks"].loc[0, "Metrado"] = 1.0
+    st.session_state["tasks"].loc[0, "Valor_Unitario"] = 1000.0
+    st.session_state["tasks"].loc[0, "Presupuesto"] = 1000.0
+    tot1 = recalcular_totales_presupuesto_proyecto(proy)
+    assert tot1["presupuesto_total"] == 45200.50
+    assert tot1["total_calculado_partidas"] == 1170.0
+    assert tot1["contrato_manual"] is True
+
+    # Guardar cuadro de pagos conserva la bandera contrato_manual
+    dc = obtener_cuadro_pagos_semanales_proyecto(proy)
+    guardar_cuadro_pagos_semanales_proyecto(proy, dc)
+    assert _es_contrato_manual_proyecto(proy) is True
+
+    # Desactivar modo manual vuelve al monto calculado por partidas
+    guardar_valor_contrato_proyecto(proy, tot1["total_calculado_partidas"], manual=False)
+    assert _es_contrato_manual_proyecto(proy) is False
+    tot2 = recalcular_totales_presupuesto_proyecto(proy)
+    assert tot2["presupuesto_total"] == 1170.0
+
+    # Verificar cableado en sidebar (app.py) y Ficha Técnica (views_project.py)
+    with open("D:/cota-app/app.py", "r", encoding="utf-8") as f_app:
+        app_src = f_app.read()
+    assert "render_editor_valor_contrato" in app_src
+    with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f_vp:
+        vp_src = f_vp.read()
+    assert "render_editor_valor_contrato" in vp_src
+    assert '("Valor del Contrato", format_currency(ppto_venta))' in vp_src
+    assert "btn_reset_contrato_calc_" in vp_src
+
+
+def test_presupuesto_independiente_y_integracion_opcional_gestion():
+    import streamlit as st
+    from cota.cotizacion import (
+        agregar_partida_presupuesto,
+        aplicar_cotizacion_a_proyecto,
+        deshacer_presupuesto,
+        establecer_estado_sincronizacion_presupuesto,
+        exportar_proyecto_a_formato_venti,
+        guardar_cuadro_pagos_semanales_proyecto,
+        integrar_presupuesto_con_gestion,
+        obtener_cuadro_pagos_semanales_proyecto,
+        obtener_estado_sincronizacion_presupuesto,
+        obtener_items_presupuesto_proyecto,
+        parsear_cotizacion_venti,
+        rehacer_presupuesto,
+    )
+    from cota.db import COLS_P_INFO, COLS_PROY, COLS_TASKS
+
+    proy = "Santa María 139"
+    assert "Presupuesto_JSON" in COLS_PROY
+    st.session_state["proyectos"] = pd.DataFrame([{
+        "Nombre": proy,
+        "Cliente": "Ana Maria",
+        "Presupuesto": 0.0,
+        "Utilidades": 0.0,
+        "GG_Presupuesto": 0.0,
+        "TC_Presupuesto": 3.42,
+        "GG_Pct": 2.0,
+        "Utilidades_Pct": 15.0,
+        "Modo_GG": "pct",
+        "Monto_Fijo_GG": 0.0,
+        "Modo_Utilidades": "pct",
+        "Monto_Fijo_Utilidades": 0.0,
+        "Incluir_IGV": False,
+        "Archivado": False,
+        "Pagos_Semanales_JSON": "",
+        "Presupuesto_JSON": "",
+    }])
+    st.session_state["partidas"] = pd.DataFrame([
+        {"Proyecto": proy, "Nombre_Partida": "01. Obras Civiles"}
+    ])
+    st.session_state["p_info"] = pd.DataFrame([{
+        "Proyecto": proy,
+        "Nombre_Partida": "01. Obras Civiles",
+        "Monto_Pactado": 1500.0,
+        "Nivel_Actual": "Piso 1",
+        "Contratista": "Elmer Loarte",
+        "Inicio": "2026-11-10",
+        "Fin": "2026-11-18",
+        "Estado": "🔵 En Proceso",
+        "Etapa": "Construcción",
+        "Nivel_Inicio": "",
+        "Nivel_Fin": "",
+    }])
+    st.session_state["tasks"] = pd.DataFrame([
+        {
+            "Proyecto": proy, "Partida": "01. Obras Civiles", "Orden": 1, "Codigo_Item": "1.01",
+            "Tarea": "1.01 Proteccion de areas verdes", "Especialidad": "Albañilería General",
+            "Contratista": "Elmer Loarte", "Estado": "🔵 En Proceso", "Supervisado": "Sí",
+            "Inicio": "2026-11-10", "Fin": "2026-11-18", "Causa_Cumplimiento": "",
+            "Culpa_Contratista": False, "Permitir_Cruce": False, "Dependencia": "",
+            "Notas": "Avance al 60%", "Moneda": "Soles", "Unidad": "glb",
+            "Metrado": 1.0, "Valor_Unitario": 1000.0, "Presupuesto": 1000.0,
+        },
+        {
+            "Proyecto": proy, "Partida": "01. Obras Civiles", "Orden": 2, "Codigo_Item": "1.02",
+            "Tarea": "1.02 Demolición de losa", "Especialidad": "Demolición y Preliminares",
+            "Contratista": "Elmer Loarte", "Estado": "🟢 Completado a tiempo", "Supervisado": "Sí",
+            "Inicio": "2026-11-05", "Fin": "2026-11-08", "Causa_Cumplimiento": "",
+            "Culpa_Contratista": False, "Permitir_Cruce": False, "Dependencia": "",
+            "Notas": "Ejecutada", "Moneda": "Soles", "Unidad": "glb",
+            "Metrado": 1.0, "Valor_Unitario": 500.0, "Presupuesto": 500.0,
+        },
+    ])[COLS_TASKS]
+
+    # Cuadro de Pagos ya tiene un pago registrado en SEMANA 1
+    cuadro0 = obtener_cuadro_pagos_semanales_proyecto(proy)
+    cuadro0["filas_contratistas"][0]["SEMANA 1"] = 500.0
+    cuadro0["filas_contratistas"][0]["Pagos_Detalle"] = {
+        "SEMANA 1": [{"id": "p_exist_1", "contratista": "Elmer Loarte", "tipo": "Adelanto", "fecha": "2026-11-11", "monto": 500.0}]
+    }
+    guardar_cuadro_pagos_semanales_proyecto(proy, cuadro0)
+
+    # Por defecto la sincronización automática está desactivada
+    assert obtener_estado_sincronizacion_presupuesto(proy) is False
+
+    # 1. Importar presupuesto para finanzas en modo independiente (solo_presupuesto=True)
+    parsed_new = {
+        "tc": 3.42,
+        "gg_pct": 2.0,
+        "utilidades_pct": 15.0,
+        "igv_pct": 0.0,
+        "gg_monto": 90.0,
+        "utilidades_monto": 700.0,
+        "presupuesto_total": 5290.0,
+        "partidas": [
+            {
+                "codigo": "1",
+                "nombre": "Obras Civiles",
+                "nombre_completo": "01. Obras Civiles",
+                "monto_pactado": 3300.0,
+                "tareas": [
+                    {"codigo": "1.01", "descripcion": "Protección de áreas verdes", "moneda": "Soles", "unidad": "glb", "metrado": 1.0, "valor_unitario": 2500.0, "presupuesto_soles": 2500.0},
+                    {"codigo": "1.02", "descripcion": "Resane de muros", "moneda": "Soles", "unidad": "glb", "metrado": 1.0, "valor_unitario": 800.0, "presupuesto_soles": 800.0},
+                ],
+            },
+            {
+                "codigo": "2",
+                "nombre": "Instalaciones Eléctricas",
+                "nombre_completo": "02. Instalaciones Eléctricas",
+                "monto_pactado": 1200.0,
+                "tareas": [
+                    {"codigo": "2.01", "descripcion": "Suministro de spots LED", "moneda": "Soles", "unidad": "glb", "metrado": 1.0, "valor_unitario": 1200.0, "presupuesto_soles": 1200.0},
+                ],
+            },
+        ],
+    }
+    res_imp = aplicar_cotizacion_a_proyecto(proy, parsed_new, modo="reemplazar", actualizar_ficha=True, solo_presupuesto=True)
+    assert res_imp["solo_presupuesto"] is True
+    assert res_imp["partidas_importadas"] == 2
+    assert float(st.session_state["proyectos"].iloc[0]["Presupuesto"]) == 5290.0
+
+    # Avances en 05. PARTIDAS Y TAREAS y pagos en 06 deben permanecer intactos
+    assert len(st.session_state["partidas"]) == 1
+    assert len(st.session_state["tasks"]) == 2
+    assert st.session_state["tasks"].iloc[0]["Estado"] == "🔵 En Proceso"
+    assert st.session_state["tasks"].iloc[1]["Estado"] == "🟢 Completado a tiempo"
+    assert float(st.session_state["tasks"].iloc[0]["Presupuesto"]) == 1000.0
+    cuadro_check = obtener_cuadro_pagos_semanales_proyecto(proy)
+    assert len(cuadro_check["filas_contratistas"]) == 1
+    assert float(cuadro_check["filas_contratistas"][0]["SEMANA 1"]) == 500.0
+
+    # Exportar Excel lee del Presupuesto independiente
+    xlsx_indep = exportar_proyecto_a_formato_venti(proy)
+    parsed_exp = parsear_cotizacion_venti(xlsx_indep)
+    assert len(parsed_exp["partidas"]) == 2
+
+    # Agregar partida y deshacer/rehacer funciona en Presupuesto sin tocar Gestión
+    agregar_partida_presupuesto(proy, n_tareas_default=1, ambito="presupuesto")
+    assert len(obtener_items_presupuesto_proyecto(proy)) == 3
+    assert len(st.session_state["partidas"]) == 1
+    assert deshacer_presupuesto(proy) is True
+    assert len(obtener_items_presupuesto_proyecto(proy)) == 2
+    assert rehacer_presupuesto(proy) is True
+    assert len(obtener_items_presupuesto_proyecto(proy)) == 3
+    assert deshacer_presupuesto(proy) is True
+
+    # 2. Integración opcional y no destructiva hacia 05. Partidas y 06. Cuadro de Pagos
+    res_int = integrar_presupuesto_con_gestion(proy, incluir_obra=True, incluir_pagos=True)
+    assert res_int["partidas_actualizadas"] == 1
+    assert res_int["partidas_agregadas"] == 1
+    assert res_int["tareas_actualizadas"] == 1
+    assert res_int["tareas_agregadas"] == 2
+    assert res_int["avances_conservados"] >= 1
+    assert res_int["cuadro_pagos_actualizado"] is True
+
+    # 05 conservó En Proceso / Completado, fechas y contratistas; actualizó montos e integró las nuevas
+    t_obra = st.session_state["tasks"][st.session_state["tasks"]["Proyecto"] == proy].reset_index(drop=True)
+    assert len(t_obra) == 4
+    r_prot = t_obra[t_obra["Tarea"].str.contains("áreas verdes", case=False)].iloc[0]
+    assert r_prot["Estado"] == "🔵 En Proceso"
+    assert r_prot["Contratista"] == "Elmer Loarte"
+    assert r_prot["Fin"] == "2026-11-18"
+    assert float(r_prot["Presupuesto"]) == 2500.0
+    r_demo = t_obra[t_obra["Tarea"].str.contains("Demolición de losa", case=False)].iloc[0]
+    assert r_demo["Estado"] == "🟢 Completado a tiempo"
+    assert float(r_demo["Presupuesto"]) == 500.0
+
+    # 06 conservó pago en SEMANA 1, actualizó TOTAL de Obras Civiles y sumó Eléctricas
+    cuadro_after = obtener_cuadro_pagos_semanales_proyecto(proy)
+    assert len(cuadro_after["filas_contratistas"]) == 2
+    assert float(cuadro_after["filas_contratistas"][0]["TOTAL"]) == 3300.0
+    assert float(cuadro_after["filas_contratistas"][0]["SEMANA 1"]) == 500.0
+    assert float(cuadro_after["filas_contratistas"][1]["TOTAL"]) == 1200.0
+
+    # Toggle de estado de sincronización automática
+    establecer_estado_sincronizacion_presupuesto(proy, True)
+    assert obtener_estado_sincronizacion_presupuesto(proy) is True
+    establecer_estado_sincronizacion_presupuesto(proy, False)
+    assert obtener_estado_sincronizacion_presupuesto(proy) is False
+
+    # Verificación de cableado en views_project.py
+    with open("D:/cota-app/cota/ui/views_project.py", "r", encoding="utf-8") as f_vp:
+        vp_code = f_vp.read()
+    assert "def _render_barra_sync_presupuesto(" in vp_code
+    assert "chk_sync_imp_ppto_" in vp_code
+    assert "solo_presupuesto=(not sincronizar_en_import)" in vp_code
+    assert 'integrar_presupuesto_con_gestion(proy_name, incluir_obra=True, incluir_pagos=False)' in vp_code
+    assert 'fuente="presupuesto"' in vp_code
+    assert '"➕ Agregar Semana"' in vp_code
+    assert '"N° de Semanas"' not in vp_code
+
+    with open("D:/cota-app/cota/ui/views_main.py", "r", encoding="utf-8") as f_vm:
+        vm_code = f_vm.read()
+    assert "Etapas de Diseño del Proyecto (02. Diseño)" not in vm_code
+    assert "fases_sel_nuevo" not in vm_code
+
 
 

@@ -14,7 +14,7 @@ from cota.db import (
     obtener_notas_chat_proyecto,
 )
 from cota.config import DEFAULT_BRAND_COLOR, SOCIOS_DEFAULT, get_secret
-from cota.utils import detectar_cruces_contratistas, get_image_base64, guardar_marca_estudio, normalizar_hex_color, obtener_marca_estudio, safe_str
+from cota.utils import detectar_cruces_contratistas, format_currency, get_image_base64, guardar_marca_estudio, normalizar_hex_color, obtener_marca_estudio, safe_float, safe_str
 
 
 def extraer_nombre_studio(raw_title: str = "", default_studio: str = "") -> str:
@@ -1100,3 +1100,48 @@ def render_chat_notas_proyecto(proy_name: str, socios_disp: list[str] | None = N
     </html>
     """
     components.html(js_controller, height=0, scrolling=False)
+
+
+def render_editor_valor_contrato(
+    proy_name: str,
+    key_prefix: str = "sb",
+    other_prefix: str | None = "ft",
+    show_summary_box: bool = True,
+) -> float:
+    """Renderiza un control editable sincronizado para el Valor del Contrato (`Presupuesto`) del proyecto."""
+    from cota.cotizacion import guardar_valor_contrato_proyecto, obtener_valor_contrato_proyecto
+
+    val_act, es_manual = obtener_valor_contrato_proyecto(proy_name)
+    w_key = f"{key_prefix}_contrato_proy_{proy_name}"
+    other_key = f"{other_prefix}_contrato_proy_{proy_name}" if other_prefix else ""
+
+    if w_key not in st.session_state or abs(safe_float(st.session_state[w_key], 0.0) - val_act) > 0.009:
+        st.session_state[w_key] = float(val_act)
+
+    if show_summary_box:
+        sub_lbl = "Valor manual · Sincronizado con Finanzas" if es_manual else "Calculado desde presupuesto / ficha"
+        st.markdown(
+            f"<div style='background:#FAF8F5; border:1px solid #DFD9CE; border-left:3px solid #C85A32; border-radius:8px; padding:8px 11px; margin-bottom:6px;'>"
+            f"<div style='font-size:10px; font-weight:700; color:#6E665E; text-transform:uppercase; letter-spacing:0.06em;'>Valor del Contrato</div>"
+            f"<div style='font-size:17px; font-weight:700; color:#262320; font-family:monospace; margin-top:2px;'>{format_currency(val_act)}</div>"
+            f"<div style='font-size:10px; color:#6E665E; margin-top:2px;'>{sub_lbl}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    def _on_change_contrato_widget():
+        nuevo_v = safe_float(st.session_state.get(w_key, 0.0), 0.0)
+        saved_v = guardar_valor_contrato_proyecto(proy_name, nuevo_v, manual=True)
+        if other_key:
+            st.session_state[other_key] = float(saved_v)
+
+    st.number_input(
+        "💼 Valor del Contrato (S/)" if not show_summary_box else "Editar Valor del Contrato (S/)",
+        min_value=0.0,
+        step=500.0,
+        format="%.2f",
+        key=w_key,
+        on_change=_on_change_contrato_widget,
+        help="Monto total del contrato en Soles. Útil para proyectos sin presupuesto detallado; se sincroniza con Resumen y Finanzas.",
+    )
+    return val_act
