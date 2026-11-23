@@ -1317,7 +1317,7 @@ def guardar_valor_contrato_proyecto(proy_name: str, valor_contrato: float, manua
     elif df_p["Presupuesto"].dtype == object or not pd.api.types.is_numeric_dtype(df_p["Presupuesto"]):
         df_p["Presupuesto"] = pd.to_numeric(df_p["Presupuesto"], errors="coerce").fillna(0.0).astype(float)
 
-    es_manual = bool(manual and val_clean > 0.0)
+    es_manual = bool(manual)
     data_c = obtener_cuadro_pagos_semanales_proyecto(proy_name)
     data_c["contrato_manual"] = es_manual
     guardar_cuadro_pagos_semanales_proyecto(proy_name, data_c)
@@ -3074,7 +3074,7 @@ def _construir_payload_presupuesto_export(
     proy_row = df_p[df_p["Nombre"] == proy_name].iloc[0] if not df_p.empty and proy_name in df_p["Nombre"].values else {}
 
     cliente = safe_str(proy_row.get("Cliente", ""))
-    fecha = safe_str(proy_row.get("Inicio", "")) or datetime.date.today().strftime("%Y-%m-%d")
+    fecha = datetime.date.today().strftime("%Y-%m-%d")
 
     df_parts = st.session_state.get("partidas", pd.DataFrame())
     parts_proy = df_parts[df_parts["Proyecto"] == proy_name] if not df_parts.empty and "Proyecto" in df_parts.columns else pd.DataFrame()

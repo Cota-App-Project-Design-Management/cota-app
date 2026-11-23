@@ -1109,14 +1109,26 @@ def render_editor_valor_contrato(
     show_summary_box: bool = True,
 ) -> float:
     """Renderiza un control editable sincronizado para el Valor del Contrato (`Presupuesto`) del proyecto."""
-    from cota.cotizacion import guardar_valor_contrato_proyecto, obtener_valor_contrato_proyecto
+    from cota.cotizacion import (
+        guardar_valor_contrato_proyecto,
+        obtener_valor_contrato_proyecto,
+        recalcular_totales_presupuesto_proyecto,
+    )
 
     val_act, es_manual = obtener_valor_contrato_proyecto(proy_name)
+    totales_p = recalcular_totales_presupuesto_proyecto(proy_name)
+    ppto_calc = round(max(0.0, safe_float(totales_p.get("total_calculado_partidas", 0.0), 0.0)), 2)
+
     w_key = f"{key_prefix}_contrato_proy_{proy_name}"
     other_key = f"{other_prefix}_contrato_proy_{proy_name}" if other_prefix else ""
+    use_key = f"{key_prefix}_usar_ppto_contrato_{proy_name}"
+    other_use_key = f"{other_prefix}_usar_ppto_contrato_{proy_name}" if other_prefix else ""
 
     if w_key not in st.session_state or abs(safe_float(st.session_state[w_key], 0.0) - val_act) > 0.009:
         st.session_state[w_key] = float(val_act)
+    usar_ppto_actual = not es_manual
+    if use_key not in st.session_state or bool(st.session_state[use_key]) != usar_ppto_actual:
+        st.session_state[use_key] = usar_ppto_actual
 
     if show_summary_box:
         sub_lbl = "Valor manual · Sincronizado con Finanzas" if es_manual else "Calculado desde presupuesto / ficha"
@@ -1132,8 +1144,24 @@ def render_editor_valor_contrato(
     def _on_change_contrato_widget():
         nuevo_v = safe_float(st.session_state.get(w_key, 0.0), 0.0)
         saved_v = guardar_valor_contrato_proyecto(proy_name, nuevo_v, manual=True)
+        st.session_state[use_key] = False
         if other_key:
             st.session_state[other_key] = float(saved_v)
+        if other_use_key:
+            st.session_state[other_use_key] = False
+
+    def _on_toggle_usar_ppto():
+        usar_p = bool(st.session_state.get(use_key, False))
+        if usar_p:
+            saved_v = guardar_valor_contrato_proyecto(proy_name, ppto_calc, manual=False)
+            st.session_state[w_key] = float(saved_v)
+            if other_key:
+                st.session_state[other_key] = float(saved_v)
+        else:
+            cur_v = safe_float(st.session_state.get(w_key, val_act), val_act)
+            guardar_valor_contrato_proyecto(proy_name, cur_v, manual=True)
+        if other_use_key:
+            st.session_state[other_use_key] = usar_p
 
     st.number_input(
         "💼 Valor del Contrato (S/)" if not show_summary_box else "Editar Valor del Contrato (S/)",
@@ -1143,5 +1171,35 @@ def render_editor_valor_contrato(
         key=w_key,
         on_change=_on_change_contrato_widget,
         help="Monto total del contrato en Soles. Útil para proyectos sin presupuesto detallado; se sincroniza con Resumen y Finanzas.",
+    )
+
+    st.markdown(
+        """
+        <style>
+        div[class*="st-key-"][class*="_usar_ppto_contrato_"] {
+            background: #FAF8F5;
+            border: 1px solid #DFD9CE;
+            border-radius: 6px;
+            padding: 3px 9px;
+            margin-top: -6px;
+            margin-bottom: 6px;
+        }
+        div[class*="st-key-"][class*="_usar_ppto_contrato_"] label {
+            margin-bottom: 0 !important;
+        }
+        div[class*="st-key-"][class*="_usar_ppto_contrato_"] label p {
+            font-size: 11.5px !important;
+            font-weight: 600 !important;
+            color: #262320 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.checkbox(
+        f"Usar presupuesto ({format_currency(ppto_calc)})",
+        key=use_key,
+        on_change=_on_toggle_usar_ppto,
+        help="Si está marcado, toma automáticamente el total calculado de 03. PRESUPUESTO. Si lo desmarcas, puedes escribir cualquier monto libremente.",
     )
     return val_act

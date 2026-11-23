@@ -26,6 +26,7 @@ from cota.config import (
     STATUS_TASKS,
     TIPOS_COBRO,
     TIPOS_ENTREGABLE_DISENO,
+    TIPOS_PROYECTO,
     TIPOS_REUNION,
     UNIDADES_MEDIDA,
 )
@@ -42,6 +43,7 @@ from cota.db import (
     _normalizar_estado_diseno,
     _normalizar_supervisado,
     agregar_fase_banco,
+    agregar_item_catalogo_estudio,
     agregar_nota_chat_proyecto,
     clear_base_dfs,
     eliminar_nota_chat_proyecto,
@@ -50,6 +52,7 @@ from cota.db import (
     obtener_notas_chat_proyecto,
     on_table_edit,
     registrar_cambio_diseno,
+    renombrar_proyecto,
     sanitizar_fases_estudio,
     sembrar_fases_default,
     sincronizar_fases_proyecto,
@@ -343,7 +346,72 @@ def _render_tab_resumen(proy_name, proy_data):
 
     col_d1, col_d2 = st.columns([1, 1.1])
     with col_d1:
-        st.markdown("#### FICHA TÉCNICA DEL PROYECTO")
+        ch_ft_tit, ch_ft_btn = st.columns([2.2, 1])
+        with ch_ft_tit:
+            st.markdown("#### FICHA TÉCNICA DEL PROYECTO")
+        with ch_ft_btn:
+            with st.popover("⚙️ Editar Ficha", use_container_width=True):
+                st.markdown("##### Editar Ficha Técnica")
+                socios_cat_ft = list(dict.fromkeys((obtener_catalogo_estudio("socios") or ["Alvaro", "Socio 1", "Socio 2"]) + ([safe_str(proy_data.get('Encargado', '')).strip()] if safe_str(proy_data.get('Encargado', '')).strip() else [])))
+                tipos_cat_ft = list(dict.fromkeys((obtener_catalogo_estudio("tipos_proyecto") or TIPOS_PROYECTO) + ([safe_str(proy_data.get('Tipo_Proyecto', '')).strip()] if safe_str(proy_data.get('Tipo_Proyecto', '')).strip() else [])))
+                ubis_cat_ft = list(dict.fromkeys((obtener_catalogo_estudio("ubicaciones") or ["Lima"]) + ([safe_str(proy_data.get('Ubicación', '')).strip()] if safe_str(proy_data.get('Ubicación', '')).strip() else [])))
+                divs_cat_ft = list(dict.fromkeys(["General"] + (obtener_catalogo_estudio("divisiones") or []) + ([safe_str(proy_data.get('Division', '')).strip()] if safe_str(proy_data.get('Division', '')).strip() else [])))
+                est_ft_def = safe_str(proy_data.get('Estado', STATUS_PROYECTOS[0])) or STATUS_PROYECTOS[0]
+                if est_ft_def not in STATUS_PROYECTOS:
+                    est_ft_def = STATUS_PROYECTOS[0]
+                enc_ft_def = safe_str(proy_data.get('Encargado', '')) or socios_cat_ft[0]
+                tipo_ft_def = safe_str(proy_data.get('Tipo_Proyecto', '')) or tipos_cat_ft[0]
+                ubi_ft_def = safe_str(proy_data.get('Ubicación', '')) or ubis_cat_ft[0]
+                div_ft_def = safe_str(proy_data.get('Division', 'General')) or "General"
+                f_ini_def = parse_date(proy_data.get('Inicio')) or datetime.date.today()
+                f_fin_def = parse_date(proy_data.get('Fin')) or datetime.date.today()
+
+                with st.form(f"form_editar_ficha_proy_{proy_name}"):
+                    f_nom = st.text_input("Nombre del Proyecto", value=proy_name)
+                    f_cli = st.text_input("Cliente", value=safe_str(proy_data.get('Cliente', '')))
+                    c_ft_f1, c_ft_f2 = st.columns(2)
+                    f_enc = c_ft_f1.selectbox("Líder de Diseño", socios_cat_ft, index=socios_cat_ft.index(enc_ft_def) if enc_ft_def in socios_cat_ft else 0)
+                    f_est = c_ft_f2.selectbox("Estado", STATUS_PROYECTOS, index=STATUS_PROYECTOS.index(est_ft_def))
+                    c_ft_f3, c_ft_f4 = st.columns(2)
+                    f_tipo = c_ft_f3.selectbox("Tipología", tipos_cat_ft, index=tipos_cat_ft.index(tipo_ft_def) if tipo_ft_def in tipos_cat_ft else 0)
+                    f_div = c_ft_f4.selectbox("Carpeta / División", divs_cat_ft, index=divs_cat_ft.index(div_ft_def) if div_ft_def in divs_cat_ft else 0)
+                    opciones_ubi_ft = ubis_cat_ft + ["+ Agregar Ubicación"]
+                    f_ubi_sel = st.selectbox("Ubicación", opciones_ubi_ft, index=ubis_cat_ft.index(ubi_ft_def) if ubi_ft_def in ubis_cat_ft else 0)
+                    f_ubi_new = st.text_input("Nueva Ubicación (opcional)", placeholder="").strip()
+                    c_ft_d1, c_ft_d2 = st.columns(2)
+                    f_ini = c_ft_d1.date_input("Fecha Inicio", value=f_ini_def)
+                    f_fin = c_ft_d2.date_input("Fecha Estimada Entrega", value=f_fin_def)
+                    f_drive = st.text_input("Presentación Drive / Slides (URL)", value=safe_str(proy_data.get('Link_Drive', '')))
+
+                    if st.form_submit_button("💾 GUARDAR FICHA", type="primary", use_container_width=True):
+                        nom_nuevo = safe_str(f_nom).strip() or proy_name
+                        proy_target = proy_name
+                        if nom_nuevo != proy_name:
+                            renombrar_proyecto(proy_name, nom_nuevo)
+                            st.session_state.proy_activo = nom_nuevo
+                            proy_target = nom_nuevo
+
+                        if f_ubi_new:
+                            agregar_item_catalogo_estudio("ubicaciones", f_ubi_new)
+                            f_ubi_final = f_ubi_new
+                        else:
+                            f_ubi_final = ubi_ft_def if f_ubi_sel == "+ Agregar Ubicación" else f_ubi_sel
+
+                        m_upd = st.session_state.proyectos['Nombre'] == proy_target
+                        if m_upd.any():
+                            idx_upd = st.session_state.proyectos[m_upd].index[0]
+                            st.session_state.proyectos.at[idx_upd, 'Cliente'] = safe_str(f_cli).strip()
+                            st.session_state.proyectos.at[idx_upd, 'Encargado'] = f_enc
+                            st.session_state.proyectos.at[idx_upd, 'Estado'] = f_est
+                            st.session_state.proyectos.at[idx_upd, 'Tipo_Proyecto'] = f_tipo
+                            st.session_state.proyectos.at[idx_upd, 'Division'] = f_div
+                            st.session_state.proyectos.at[idx_upd, 'Ubicación'] = f_ubi_final
+                            st.session_state.proyectos.at[idx_upd, 'Inicio'] = f_ini.strftime('%Y-%m-%d')
+                            st.session_state.proyectos.at[idx_upd, 'Fin'] = f_fin.strftime('%Y-%m-%d')
+                            st.session_state.proyectos.at[idx_upd, 'Link_Drive'] = safe_str(f_drive).strip()
+                        clear_base_dfs()
+                        st.success("Ficha técnica actualizada.")
+                        st.rerun()
         c_ft_est, c_ft_ctr = st.columns(2)
         with c_ft_est:
             est_actual_res = safe_str(proy_data.get('Estado', STATUS_PROYECTOS[0])) or STATUS_PROYECTOS[0]

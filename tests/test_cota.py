@@ -1717,7 +1717,8 @@ def test_exportacion_formato_monedas_y_encabezado_ordenado():
     # 1. Verificar encabezado exacto formato Venti (Logo en B2:B4, Proyecto/Fecha fila 2, espacio fila 3, Cliente/TC fila 4, cabecera fila 5)
     assert ws1["C2"].value == "Proyecto:"
     assert ws1["D2"].value == proy
-    assert ws1["I2"].value == "2026-11-09"
+    hoy_str = datetime.date.today().strftime("%Y-%m-%d")
+    assert ws1["I2"].value == hoy_str
     assert ws1["C3"].value is None
     assert ws1["C4"].value == "Cliente:"
     assert ws1["D4"].value == "Maruja Morín"
@@ -1757,7 +1758,7 @@ def test_exportacion_formato_monedas_y_encabezado_ordenado():
     parsed = parsear_cotizacion_venti(xlsx_bytes)
     assert parsed["proyecto"] == proy
     assert parsed["cliente"] == "Maruja Morín"
-    assert parsed["fecha"] == "2026-11-09"
+    assert parsed["fecha"] == hoy_str
     assert parsed["tc"] == 3.42
 
 
